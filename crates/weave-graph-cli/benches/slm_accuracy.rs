@@ -1,0 +1,51 @@
+//! `benches/slm_accuracy.rs` (`suges-slm.md` §4.3): tool-selection and
+//! parameter-grounding rates of a router against the held-out prompt
+//! set. This file measures the deterministic fallback (the baseline any
+//! model router must match); `weave slm doctor` is the runnable gate
+//! for the model router. Held-out routing is fast, so criterion's
+//! number is suite wall-clock — the rates are asserted in the
+//! accompanying `weave-graph-cli` unit tests, never published unmeasured.
+//!
+//! `weave-graph-cli` is a bin-only package, so the module is included
+//! by path; this file compiles empty without `--features slm`.
+#![cfg(feature = "slm")]
+
+#[path = "../src/slm.rs"]
+mod slm;
+
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+
+use slm::{FuzzyRouter, HELD_OUT, HeldOutPrompt, IntentRouter};
+
+fn symbol_table(prompt: &HeldOutPrompt) -> Vec<String> {
+    prompt
+        .symbol_table
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
+}
+
+fn bench_held_out_accuracy_set(c: &mut Criterion) {
+    let mut group = c.benchmark_group("slm_accuracy");
+    group.throughput(criterion::Throughput::Elements(HELD_OUT.len() as u64));
+    group.bench_function("deterministic_held_out_set", |b| {
+        b.iter(|| {
+            let mut tool_ok = 0usize;
+            let mut ground_ok = 0usize;
+            for prompt in HELD_OUT.iter() {
+                let table = symbol_table(prompt);
+                if let Ok(call) = FuzzyRouter.route(prompt.question, black_box(&table)) {
+                    tool_ok += (call.tool == prompt.expected_tool) as usize;
+                    ground_ok +=
+                        (call.symbol.to_lowercase() == prompt.expected_symbol.to_lowercase())
+                            as usize;
+                }
+            }
+            black_box((tool_ok, ground_ok))
+        })
+    });
+    group.finish();
+}
+
+criterion_group!(benches, bench_held_out_accuracy_set);
+criterion_main!(benches);

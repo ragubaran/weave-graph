@@ -1,0 +1,218 @@
+name: Release Pipeline
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (e.g., v0.1.0)'
+        required: true
+        type: string
+      create_tag:
+        description: 'Create Git tag and release branch automatically'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Tag & Branch Initialization (If triggered manually)
+  # ---------------------------------------------------------------------------
+  prepare-tag:
+    name: Prepare Git Tag & Branch
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.resolve_tag.outputs.tag }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve and Create Tag/Branch
+        id: resolve_tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag_name }}"
+            if [ "${{ inputs.create_tag }}" = "true" ]; then
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git tag -a "$TAG" -m "Release $TAG"
+              git branch "release/$TAG" "$TAG" || true
+              git push origin "$TAG"
+              git push origin "release/$TAG" || true
+            fi
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # 2. Cross-Platform Binary Build Matrix
+  # ---------------------------------------------------------------------------
+  build-binaries:
+    name: Build (${{ matrix.variant }}, ${{ matrix.target }})
+    needs: [prepare-tag]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Two release variants (docs/deploy.md §1) built across every
+        # platform target: `weave` (team = docs+federation; single and
+        # multiple mode) and `weave-custom` (custom = team+hub+rbac+otel+
+        # policy-lint; adds custom mode on top).
+        include:
+          # Linux x86_64 (GLIBC)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: weave
+            archive_ext: tar.gz
+            variant: weave
+            features: team
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: weave
+            archive_ext: tar.gz
+            variant: weave-custom
+            features: custom
+          # Linux x86_64 (MUSL Static)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            binary_name: weave
+            archive_ext: tar.gz
+            variant: weave
+            features: team
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            binary_name: weave
+            archive_ext: tar.gz
+            variant: weave-custom
+            features: custom
+          # macOS Apple Silicon (ARM64)
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: weave
+            archive_ext: tar.gz
+            variant: weave
+            features: team
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: weave
+            archive_ext: tar.gz
+            variant: weave-custom
+            features: custom
+          # macOS Intel (x86_64)
+          - os: macos-13
+            target: x86_64-apple-darwin
+            binary_name: weave
+            archive_ext: tar.gz
+            variant: weave
+            features: team
+          - os: macos-13
+            target: x86_64-apple-darwin
+            binary_name: weave
+            archive_ext: tar.gz
+            variant: weave-custom
+            features: custom
+          # Windows x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: weave.exe
+            archive_ext: zip
+            variant: weave
+            features: team
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: weave.exe
+            archive_ext: zip
+            variant: weave-custom
+            features: custom
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux Musl Dependencies
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.variant }}-${{ matrix.target }}
+
+      - name: Build Optimized Production Binary
+        run: cargo build --release --locked --bin weave --target ${{ matrix.target }} --features ${{ matrix.features }}
+
+      - name: Package Binary & Checksum (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          TAG="${{ needs.prepare-tag.outputs.release_tag }}"
+          ARCHIVE="${{ matrix.variant }}-${TAG}-${{ matrix.target }}.${{ matrix.archive_ext }}"
+          cp target/${{ matrix.target }}/release/${{ matrix.binary_name }} .
+          tar -czvf "$ARCHIVE" ${{ matrix.binary_name }} README.md AGENTS.md
+          shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
+
+      - name: Package Binary & Checksum (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $Tag = "${{ needs.prepare-tag.outputs.release_tag }}"
+          $Archive = "${{ matrix.variant }}-${Tag}-${{ matrix.target }}.${{ matrix.archive_ext }}"
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" .
+          Compress-Archive -Path "${{ matrix.binary_name }}", "README.md", "AGENTS.md" -DestinationPath "$Archive"
+          $Hash = (Get-FileHash -Algorithm SHA256 "$Archive").Hash.ToLower()
+          "$Hash  $Archive" | Out-File -Encoding ascii "${Archive}.sha256"
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.variant }}-${{ matrix.target }}
+          path: |
+            weave-*.*
+            *.sha256
+
+  # ---------------------------------------------------------------------------
+  # 3. Publish GitHub Release
+  # ---------------------------------------------------------------------------
+  publish-release:
+    name: Publish GitHub Release
+    needs: [prepare-tag, build-binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download All Release Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Generate Consolidated SHA256 Checksum Manifest
+        run: |
+          cd release-assets
+          cat *.sha256 > SHA256SUMS.txt
+          rm -f *.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare-tag.outputs.release_tag }}
+          name: Release ${{ needs.prepare-tag.outputs.release_tag }}
+          files: |
+            release-assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false

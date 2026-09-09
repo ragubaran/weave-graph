@@ -1,0 +1,57 @@
+[package]
+name = "weave-graph-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The `weave` binary; wires the other weave-graph crates together per enabled features."
+
+[[bin]]
+name = "weave"
+path = "src/main.rs"
+
+[[bench]]
+name = "slm_routing"
+harness = false
+
+[[bench]]
+name = "slm_accuracy"
+harness = false
+
+[dependencies]
+weave-graph-core = { path = "../weave-graph-core" }
+weave-graph-parse = { path = "../weave-graph-parse" }
+weave-graph-store-sqlite = { path = "../weave-graph-store-sqlite" }
+weave-graph-mcp = { path = "../weave-graph-mcp" }
+weave-graph-store-turso = { path = "../weave-graph-store-turso", optional = true }
+weave-graph-hub = { path = "../weave-graph-hub", optional = true }
+clap = { version = "=4.5.55", features = ["derive"] }
+walkdir = "2.5"
+fslock = "0.2.1"
+toml = "1.1.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = { version = "0.10", optional = true }
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.27.0"
+criterion = "0.8.2"
+
+[features]
+default = []
+turso = ["dep:weave-graph-store-turso"]
+hub = ["dep:weave-graph-hub"]
+docs = ["weave-graph-parse/docs"]
+federation = ["weave-graph-core/federation"]
+provenance = ["weave-graph-core/provenance", "weave-graph-store-sqlite/provenance"]
+slm = ["dep:sha2"]
+# Convenience bundles (plan.md §0.2), matching the two distributed release
+# variants (docs/deploy.md §1): no new code, just a named shorthand for the
+# feature list a `weave`/`weave-custom` build actually needs.
+team = ["docs", "federation"]
+# rbac/otel/policy-lint are unimplemented (no code, no feature flag yet) —
+# join this list once they land; `hub`/`provenance` are what "custom" adds
+# over "team" today.
+custom = ["team", "hub", "provenance"]

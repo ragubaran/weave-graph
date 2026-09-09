@@ -1,0 +1,21 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Runtime index data a `weave init` project writes locally — not this repo's own state
+.weave/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`)
+/graft/
+.ignore
+.mcp.json
+
+# OS / editor
+.DS_Store
+
+# Claude Code local overrides (machine-specific, not shared config)
+.claude/settings.local.json
+.claude/
+.gemini
+.agents/
+docs/

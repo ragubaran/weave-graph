@@ -1,0 +1,153 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Lint & Format Verification
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint & Code Style
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify Formatting (cargo fmt)
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy Linter
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # ---------------------------------------------------------------------------
+  # 2. Unit Tests & Code Coverage (> 90% Line Threshold)
+  # ---------------------------------------------------------------------------
+  coverage:
+    name: Unit Tests & Code Coverage (>90%)
+    runs-on: ubuntu-latest
+    needs: [lint]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Run Unit Tests with Coverage Gate (>= 90%)
+        run: |
+          cargo llvm-cov --workspace \
+            --all-targets \
+            --fail-under-lines 90 \
+            --lcov \
+            --output-path lcov.info
+
+      - name: Upload Coverage Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-coverage-report
+          path: lcov.info
+
+  # ---------------------------------------------------------------------------
+  # 3. Integration, E2E & BDD CLI Tests
+  # ---------------------------------------------------------------------------
+  e2e-bdd:
+    name: Integration, E2E & BDD Tests
+    runs-on: ${{ matrix.os }}
+    needs: [lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Test Binaries
+        run: cargo build --workspace --tests --all-features
+
+      - name: Run Integration Tests
+        run: cargo test --test '*' --all-features -- --nocapture
+
+  # ---------------------------------------------------------------------------
+  # 4. Proactive N+1 Stable Forward-Compatibility
+  # ---------------------------------------------------------------------------
+  # continue-on-error: advisory-only, same as the bench job below — a beta
+  # regression should surface here before it hits stable, not block a PR on it.
+  n-plus-one:
+    name: N+1 (Beta) Compatibility Check
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Beta Toolchain
+        uses: dtolnay/rust-toolchain@beta
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test Against N+1 Compiler
+        run: cargo check --workspace --all-targets --all-features
+
+  # ---------------------------------------------------------------------------
+  # 5. Benchmark Regression Gate (performance_compare.md §5.3)
+  # ---------------------------------------------------------------------------
+  bench:
+    name: Benchmark Regression Check
+    runs-on: ubuntu-latest
+    needs: [lint]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      # criterion has no built-in hard-fail threshold flag: this saves a
+      # baseline on `main` and, on PRs, runs against it so criterion's own
+      # "Performance has regressed/improved" lines land in the CI log for
+      # review. Turning that into an automatic pass/fail needs a script
+      # parsing `target/criterion/**/estimates.json` (or `critcmp`) — not
+      # implemented yet; tracked as an M1.9 follow-up, not silently claimed.
+      - name: Run benchmarks (save baseline on main)
+        if: github.ref == 'refs/heads/main'
+        run: cargo bench --workspace -- --save-baseline main
+
+      - name: Run benchmarks (compare against main)
+        if: github.ref != 'refs/heads/main'
+        run: cargo bench --workspace -- --baseline main || true

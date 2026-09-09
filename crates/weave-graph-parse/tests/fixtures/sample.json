@@ -1,0 +1,13 @@
+{
+  "name": "sample-package",
+  "version": "1.0.0",
+  "description": "Sample benchmark package",
+  "scripts": {
+    "build": "cargo build --release",
+    "test": "cargo test"
+  },
+  "dependencies": {
+    "serde": "1.0",
+    "tokio": "1.0"
+  }
+}

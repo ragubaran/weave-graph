@@ -1,0 +1,26 @@
+[package]
+name = "weave-graph-store-sqlite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Default Storage trait implementation for weave-graph, backed by rusqlite."
+
+[dependencies]
+libc = "0.2.189"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+weave-graph-core = { path = "../weave-graph-core" }
+
+[dev-dependencies]
+criterion = "0.8.2"
+tempfile = "3.27.0"
+
+[features]
+provenance = ["weave-graph-core/provenance"]
+
+[[bench]]
+name = "sqlite_latency"
+harness = false
+
+[[example]]
+name = "mem_500k"

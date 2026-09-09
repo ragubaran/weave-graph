@@ -1,0 +1,14 @@
+@import "theme.css";
+
+#main-header {
+    color: red;
+}
+
+.nav {
+    display: flex;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}

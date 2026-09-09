@@ -1,0 +1,10 @@
+[package]
+name = "weave-graph-hub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Optional delta ingestion/publish service for weave-graph. Never linked into the default binary. Stubbed until the `hub` feature is scheduled."
+
+[dependencies]
+weave-graph-core = { path = "../weave-graph-core" }

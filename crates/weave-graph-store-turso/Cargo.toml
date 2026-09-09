@@ -1,0 +1,10 @@
+[package]
+name = "weave-graph-store-turso"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Optional Storage trait implementation for weave-graph, backed by libSQL/Turso. Stubbed until the `turso` feature is scheduled."
+
+[dependencies]
+weave-graph-core = { path = "../weave-graph-core" }
