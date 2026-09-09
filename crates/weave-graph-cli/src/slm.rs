@@ -217,15 +217,8 @@ impl IntentRouter for FuzzyRouter {
         };
         let mut picks = candidate_symbols(question)
             .into_iter()
-            .take(count)
-            .filter_map(|token| match ground(&token, symbols) {
-                Some(g) => Some(g),
-                // Ungrounded tokens ride through: the caller's grounding
-                // pass reports "not found in index", which is the honest
-                // answer — not a parse failure.
-                None if count == 1 => Some(token),
-                None => None,
-            });
+            .filter_map(|token| ground(&token, symbols))
+            .take(count);
         let symbol = picks.next().ok_or_else(|| {
             RouterError::Malformed("no symbol-like token in question".to_string())
         })?;

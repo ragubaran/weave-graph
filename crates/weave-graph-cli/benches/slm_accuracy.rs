@@ -7,7 +7,9 @@
 //! accompanying `weave-graph-cli` unit tests, never published unmeasured.
 //!
 //! `weave-graph-cli` is a bin-only package, so the module is included
-//! by path; this file compiles empty without `--features slm`.
+//! by path. `required-features = ["slm"]` in Cargo.toml skips building
+//! this target entirely without the feature — an empty `#![cfg(...)]`
+//! file has no `main`, which criterion's macro can't produce from nothing.
 #![cfg(feature = "slm")]
 
 #[path = "../src/slm.rs"]
