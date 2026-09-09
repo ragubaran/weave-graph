@@ -37,12 +37,11 @@ pub(crate) fn cmd_journal(
     // One CSR/Storage reuse for the whole union — never per-symbol.
     let mut blast: HashSet<NodeId> = HashSet::new();
     for &id in &touched_ids {
-        blast.extend(csr.reachable_within(id, u32::MAX).iter().map(|i| {
-            nodes
-                .get(i as usize)
-                .map(|n| n.id)
-                .unwrap_or(id)
-        }));
+        blast.extend(
+            csr.reachable_within(id, u32::MAX)
+                .iter()
+                .map(|i| nodes.get(i as usize).map(|n| n.id).unwrap_or(id)),
+        );
     }
 
     // Docs referencing changed code: inbound edges from doc_note nodes.
@@ -53,14 +52,22 @@ pub(crate) fn cmd_journal(
         .flat_map(|&id| storage.get_callers(id).unwrap_or_default())
         .filter_map(|edge| {
             let source = nodes.iter().find(|n| n.id == edge.source_id)?;
-            (kind_of.get(&source.id).map(|k| k.as_str()) == Some("doc_note"))
-                .then(|| format!("{} (references {})", source.path, symbol_of(&nodes, edge.target_id)))
+            (kind_of.get(&source.id).map(|k| k.as_str()) == Some("doc_note")).then(|| {
+                format!(
+                    "{} (references {})",
+                    source.path,
+                    symbol_of(&nodes, edge.target_id)
+                )
+            })
         })
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
 
-    print!("{}", render(&base, &changed, &touched, &blast, &nodes, &referencing));
+    print!(
+        "{}",
+        render(&base, &changed, &touched, &blast, &nodes, &referencing)
+    );
     Ok(())
 }
 

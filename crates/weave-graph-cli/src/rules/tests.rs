@@ -48,7 +48,11 @@ fn code_fences_and_weave_dirs_are_excluded() {
 #[test]
 fn listing_hides_rejected_and_confirmed_texts() {
     let root = temp_root();
-    write_md(root.path(), "docs/a.md", "Handlers must log.\nBuilds must be reproducible.\n");
+    write_md(
+        root.path(),
+        "docs/a.md",
+        "Handlers must log.\nBuilds must be reproducible.\n",
+    );
     let mut state = RulesState::default();
     state.rejected.push("Handlers must log.".to_string());
     state.confirmed.push(RuleCandidate {
@@ -66,7 +70,11 @@ fn listing_hides_rejected_and_confirmed_texts() {
 #[test]
 fn confirm_and_reject_persist_by_text_and_are_idempotent() {
     let root = temp_root();
-    write_md(root.path(), "docs/a.md", "Handlers must log.\nDeploys must be atomic.\n");
+    write_md(
+        root.path(),
+        "docs/a.md",
+        "Handlers must log.\nDeploys must be atomic.\n",
+    );
 
     cmd_review_rules(root.path(), Some("1"), None).unwrap();
     // Re-confirming the same index after the listing shrank must move

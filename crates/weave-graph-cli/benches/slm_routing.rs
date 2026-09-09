@@ -6,13 +6,19 @@
 //! model (weights are never fetched by a bench).
 //!
 //! `weave-graph-cli` is a bin-only package, so the module is included
-//! by path; this file compiles empty without `--features slm`.
+//! by path. `required-features = ["slm"]` in Cargo.toml skips building
+//! this target entirely without the feature — an empty `#![cfg(...)]`
+//! file has no `main`, which criterion's macro can't produce from nothing.
 #![cfg(feature = "slm")]
 
 #[path = "../src/slm.rs"]
+// Standalone bench compilation sees only a slice of the module's
+// internal API — dead-code analysis is meaningless in this context.
+#[allow(dead_code)]
 mod slm;
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 
 use slm::{FuzzyRouter, HELD_OUT, HeldOutPrompt, IntentRouter, LlamaCliRouter};
 
@@ -49,9 +55,9 @@ fn bench_model_router_when_available(c: &mut Criterion) {
                 b.iter(|| route_all(black_box(&router)))
             });
         }
-        Ok(model) => eprintln!(
-            "skipping model bench: {model} not downloaded (weave slm pull first)"
-        ),
+        Ok(model) => {
+            eprintln!("skipping model bench: {model} not downloaded (weave slm pull first)")
+        }
         Err(_) => eprintln!(
             "skipping model bench: WEAVE_SLM_BENCH_MODEL unset (weights are never fetched by a bench)"
         ),

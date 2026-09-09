@@ -11,9 +11,13 @@
 #![cfg(feature = "slm")]
 
 #[path = "../src/slm.rs"]
+// Standalone bench compilation sees only a slice of the module's
+// internal API — dead-code analysis is meaningless in this context.
+#[allow(dead_code)]
 mod slm;
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 
 use slm::{FuzzyRouter, HELD_OUT, HeldOutPrompt, IntentRouter};
 
@@ -36,9 +40,9 @@ fn bench_held_out_accuracy_set(c: &mut Criterion) {
                 let table = symbol_table(prompt);
                 if let Ok(call) = FuzzyRouter.route(prompt.question, black_box(&table)) {
                     tool_ok += (call.tool == prompt.expected_tool) as usize;
-                    ground_ok +=
-                        (call.symbol.to_lowercase() == prompt.expected_symbol.to_lowercase())
-                            as usize;
+                    ground_ok += (call.symbol.to_lowercase()
+                        == prompt.expected_symbol.to_lowercase())
+                        as usize;
                 }
             }
             black_box((tool_ok, ground_ok))

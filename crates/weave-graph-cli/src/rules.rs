@@ -150,7 +150,13 @@ pub(crate) fn cmd_review_rules(
     }
     println!("\nPending candidates ({}):", pending.len());
     for (index, candidate) in pending.iter().enumerate() {
-        println!("  {}. {} ({}:{})", index + 1, candidate.text, candidate.file, candidate.line);
+        println!(
+            "  {}. {} ({}:{})",
+            index + 1,
+            candidate.text,
+            candidate.file,
+            candidate.line
+        );
     }
     println!("\nweave slm review-rules --confirm <n[,m]> | --reject <n>");
     Ok(())

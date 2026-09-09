@@ -18,9 +18,18 @@ fn deterministic_router_maps_keywords_to_tools() {
         ("what breaks if I edit jwt_auth?", "impact"),
     ];
     for (question, tool) in cases {
-        let symbols = table(&["helper", "token_service", "parse_file", "session_manager", "jwt_auth"]);
+        let symbols = table(&[
+            "helper",
+            "token_service",
+            "parse_file",
+            "session_manager",
+            "jwt_auth",
+        ]);
         let call = FuzzyRouter.route(question, &symbols).unwrap();
-        assert_eq!(call.tool, tool, "question {question:?} must route to {tool}");
+        assert_eq!(
+            call.tool, tool,
+            "question {question:?} must route to {tool}"
+        );
     }
 }
 
@@ -32,7 +41,11 @@ fn backticked_symbol_wins_even_when_uncommon() {
 
 #[test]
 fn identifier_looking_token_is_preferred_over_plain_words() {
-    let call = route("what is the impact of changing session_manager?", &["session_manager"]).unwrap();
+    let call = route(
+        "what is the impact of changing session_manager?",
+        &["session_manager"],
+    )
+    .unwrap();
     assert_eq!(call.symbol, "session_manager");
 }
 
@@ -51,7 +64,11 @@ fn ambiguous_substring_stays_unresolved() {
 
 #[test]
 fn path_question_extracts_both_endpoints() {
-    let call = route("path between event_bus and event_sink", &["event_bus", "event_sink", "event_src"]).unwrap();
+    let call = route(
+        "path between event_bus and event_sink",
+        &["event_bus", "event_sink", "event_src"],
+    )
+    .unwrap();
     assert_eq!(call.tool, "path");
     assert_eq!(call.symbol, "event_bus");
     assert_eq!(call.second.as_deref(), Some("event_sink"));
@@ -84,7 +101,9 @@ fn model_router_without_weights_is_unavailable_and_select_router_degrades() {
 
 #[test]
 fn parse_route_accepts_conforming_json_and_rejects_unknown_tool() {
-    let call = parse_route(r#"noise {"tool": "impact", "symbol": "jwt_auth", "second": null} tail"#).unwrap();
+    let call =
+        parse_route(r#"noise {"tool": "impact", "symbol": "jwt_auth", "second": null} tail"#)
+            .unwrap();
     assert_eq!(call.tool, "impact");
     assert_eq!(call.symbol, "jwt_auth");
     assert!(call.second.is_none());
@@ -114,7 +133,12 @@ fn pull_model_refuses_a_malformed_checksum_before_any_network_io() {
 #[test]
 fn held_out_set_is_exactly_aced_by_the_deterministic_router() {
     let outcome = run_doctor(&FuzzyRouter);
-    assert_eq!(outcome.tool_ok, HELD_OUT.len(), "failures: {:?}", outcome.failures);
+    assert_eq!(
+        outcome.tool_ok,
+        HELD_OUT.len(),
+        "failures: {:?}",
+        outcome.failures
+    );
     assert_eq!(outcome.ground_ok, HELD_OUT.len());
     assert!(outcome.pass(), "{:?}", outcome.failures);
 }

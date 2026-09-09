@@ -16,7 +16,12 @@ fn node(symbol: &str, id: u32) -> Node {
 }
 
 fn nodes() -> Vec<Node> {
-    vec![node("helper", 1), node("verifyJWTSession", 2), node("event_bus", 3), node("event_sink", 4)]
+    vec![
+        node("helper", 1),
+        node("verifyJWTSession", 2),
+        node("event_bus", 3),
+        node("event_sink", 4),
+    ]
 }
 
 #[test]
@@ -28,8 +33,13 @@ fn exact_symbol_grouns_to_itself() {
 #[test]
 fn case_insensitive_near_miss_corrects() {
     let nodes = nodes();
-    let id = ground_symbol(&nodes, "jwt").map_err(|(name, _)| name).unwrap();
-    assert_eq!(nodes.iter().find(|n| n.id == id).map(|n| n.symbol.as_str()), Some("verifyJWTSession"));
+    let id = ground_symbol(&nodes, "jwt")
+        .map_err(|(name, _)| name)
+        .unwrap();
+    assert_eq!(
+        nodes.iter().find(|n| n.id == id).map(|n| n.symbol.as_str()),
+        Some("verifyJWTSession")
+    );
 }
 
 #[test]
@@ -65,5 +75,8 @@ fn invented_symbol_is_refused_with_candidates_named() {
         second: None,
     };
     let err = ground_call(&nodes, &routed).unwrap_err();
-    assert!(err.contains("symbol not found in index: madeUpThing"), "{err}");
+    assert!(
+        err.contains("symbol not found in index: madeUpThing"),
+        "{err}"
+    );
 }

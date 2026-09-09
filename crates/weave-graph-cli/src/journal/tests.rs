@@ -48,7 +48,14 @@ fn render_covers_files_symbols_blast_and_docs() {
 #[test]
 fn render_handles_the_empty_working_tree() {
     let nodes: Vec<Node> = Vec::new();
-    let out = render("main", &[], &[], &std::collections::HashSet::new(), &nodes, &[]);
+    let out = render(
+        "main",
+        &[],
+        &[],
+        &std::collections::HashSet::new(),
+        &nodes,
+        &[],
+    );
     assert!(out.contains("(working tree clean"));
     assert!(out.contains("(none indexed"));
     assert!(out.contains("- 0 symbols reachable"));
@@ -58,10 +65,16 @@ fn render_handles_the_empty_working_tree() {
 #[test]
 fn doc_note_inbound_edges_surface_as_referencing_docs() {
     let mut storage = SqliteStorage::open_in_memory().unwrap();
-    storage.upsert_node(&node("helper", "function", "src/a.rs", 1)).unwrap();
-    storage.upsert_node(&node("adr", "doc_note", "docs/adr.md", 2)).unwrap();
+    storage
+        .upsert_node(&node("helper", "function", "src/a.rs", 1))
+        .unwrap();
+    storage
+        .upsert_node(&node("adr", "doc_note", "docs/adr.md", 2))
+        .unwrap();
     storage.upsert_edge(&edge(2, 1)).unwrap();
-    storage.upsert_node(&node("plain_caller", "function", "src/b.rs", 3)).unwrap();
+    storage
+        .upsert_node(&node("plain_caller", "function", "src/b.rs", 3))
+        .unwrap();
     storage.upsert_edge(&edge(3, 1)).unwrap();
 
     let nodes = storage.all_nodes().unwrap();
@@ -71,11 +84,15 @@ fn doc_note_inbound_edges_surface_as_referencing_docs() {
         .flat_map(|n| storage.get_callers(n.id).unwrap_or_default())
         .filter_map(|e| {
             let source = nodes.iter().find(|n| n.id == e.source_id)?;
-            (source.kind == "doc_note").then(|| format!("{} (references {})", source.path, source.symbol))
+            (source.kind == "doc_note")
+                .then(|| format!("{} (references {})", source.path, source.symbol))
         })
         .collect();
 
-    assert_eq!(referencing, vec!["docs/adr.md (references adr)".to_string()]);
+    assert_eq!(
+        referencing,
+        vec!["docs/adr.md (references adr)".to_string()]
+    );
 }
 
 #[test]

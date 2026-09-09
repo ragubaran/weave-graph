@@ -123,7 +123,10 @@ pub(crate) fn model_path(name: &str) -> PathBuf {
 /// bundled and never fetched at startup (`suges-slm.md` §4.2).
 pub(crate) fn model_available(name: &str) -> bool {
     let path = model_path(name);
-    path.is_file() && std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false)
+    path.is_file()
+        && std::fs::metadata(&path)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false)
 }
 
 pub(crate) fn sha256_file(path: &Path) -> Result<String, String> {
@@ -187,18 +190,26 @@ impl IntentRouter for FuzzyRouter {
 
     fn route(&self, question: &str, symbols: &[String]) -> Result<RoutedCall, RouterError> {
         let lower = question.to_lowercase();
-        let (tool, count) = if lower.contains("path from") || lower.contains("path between") {
-            ("path", 2)
-        } else if lower.contains("who calls")
+        if let Some(call) = lower
+            .contains("path")
+            .then(|| path_call(question, symbols))
+            .flatten()
+        {
+            return Ok(call);
+        }
+        let (tool, count) = if lower.contains("who calls")
             || lower.contains("callers")
             || lower.contains("who uses")
             || lower.contains("depends on")
         {
             ("callers", 1)
-        } else if lower.contains("callees") || (lower.contains("what does") && lower.contains("call"))
+        } else if lower.contains("callees")
+            || (lower.contains("what does") && lower.contains("call"))
         {
             ("callees", 1)
-        } else if lower.contains("impact") || lower.contains("blast") || lower.contains("what breaks")
+        } else if lower.contains("impact")
+            || lower.contains("blast")
+            || lower.contains("what breaks")
         {
             ("impact", 1)
         } else {
@@ -206,11 +217,18 @@ impl IntentRouter for FuzzyRouter {
         };
         let mut picks = candidate_symbols(question)
             .into_iter()
-            .filter_map(|token| ground(&token, symbols))
-            .take(count);
-        let symbol = picks
-            .next()
-            .ok_or_else(|| RouterError::Malformed("no symbol-like token in question".to_string()))?;
+            .take(count)
+            .filter_map(|token| match ground(&token, symbols) {
+                Some(g) => Some(g),
+                // Ungrounded tokens ride through: the caller's grounding
+                // pass reports "not found in index", which is the honest
+                // answer — not a parse failure.
+                None if count == 1 => Some(token),
+                None => None,
+            });
+        let symbol = picks.next().ok_or_else(|| {
+            RouterError::Malformed("no symbol-like token in question".to_string())
+        })?;
         let second = if count == 2 { picks.next() } else { None };
         Ok(RoutedCall {
             tool: tool.to_string(),
@@ -218,6 +236,45 @@ impl IntentRouter for FuzzyRouter {
             second,
         })
     }
+}
+
+/// Path questions need endpoint *order* ("path from A to B" must route
+/// as `path(a,b)`, not whichever name is longer), so they are parsed
+/// positionally: the word after "from"/"between" is the source, the
+/// word after "to"/"and" the target. Falls through to the generic
+/// candidate heuristics when the shape doesn't match.
+fn path_call(question: &str, symbols: &[String]) -> Option<RoutedCall> {
+    let lower = question.to_lowercase();
+    let from_idx = lower.find(" from ").map(|i| (i, 6));
+    let between_idx = lower.find(" between ").map(|i| (i, 9));
+    let (idx, skip) = match (from_idx, between_idx) {
+        (Some(a), Some(b)) if a.0 < b.0 => a,
+        (Some(_), Some(b)) => b,
+        (Some(a), None) | (None, Some(a)) => a,
+        (None, None) => return None,
+    };
+    let tail = &question[idx + skip..];
+    let lower_tail = tail.to_lowercase();
+    let (x_raw, y_raw) = match (
+        lower_tail.find(" to ").map(|i| (i, 4)),
+        lower_tail.find(" and ").map(|i| (i, 5)),
+    ) {
+        (Some(a), Some(b)) if a.0 < b.0 => (&tail[..a.0], &tail[a.0 + a.1..]),
+        (Some(_), Some(b)) => (&tail[..b.0], &tail[b.0 + b.1..]),
+        (Some(a), None) | (None, Some(a)) => (&tail[..a.0], &tail[a.0 + a.1..]),
+        (None, None) => return None,
+    };
+    fn clean(s: &str) -> &str {
+        s.trim()
+            .trim_matches(|c: char| !c.is_alphanumeric() && c != '_')
+    }
+    let symbol = ground(clean(x_raw), symbols)?;
+    let second = ground(clean(y_raw), symbols)?;
+    Some(RoutedCall {
+        tool: "path".to_string(),
+        symbol,
+        second: Some(second),
+    })
 }
 
 /// Case-insensitive exact match first, then a unique substring match —
@@ -229,36 +286,49 @@ fn ground(token: &str, symbols: &[String]) -> Option<String> {
     if let Some(exact) = symbols.iter().find(|s| s.to_lowercase() == lower) {
         return Some(exact.clone());
     }
-    let hits: Vec<&String> = symbols.iter().filter(|s| s.to_lowercase().contains(&lower)).collect();
+    let hits: Vec<&String> = symbols
+        .iter()
+        .filter(|s| s.to_lowercase().contains(&lower))
+        .collect();
     if hits.len() == 1 {
         return Some(hits[0].clone());
     }
     None
 }
 
-/// Backticked tokens win (a human marking an exact symbol); otherwise
-/// identifier-looking tokens (`_`, digits, internal capitals) rank by
-/// length, and a plain capitalized word is the last resort.
+fn backtick_token(question: &str) -> Option<String> {
+    let start = question.find('`')? + 1;
+    let end = question[start..].find('`')? + start;
+    Some(question[start..end].to_string())
+}
+
+/// Backticked tokens win outright. Then identifier-looking tokens
+/// (`_`, digits, internal capitals) ranked by length, then plain words
+/// in question order — a plain word is what lets a lowercase near-miss
+/// like "jwt" reach `ground` and correct against the symbol table.
 fn candidate_symbols(question: &str) -> Vec<String> {
     let mut candidates: Vec<String> = Vec::new();
-    if let Some(start) = question.find('`') {
-        if let Some(end) = question[start + 1..].find('`') {
-            candidates.push(question[start + 1..start + 1 + end].to_string());
-        }
+    let mut plain: Vec<String> = Vec::new();
+    if let Some(token) = backtick_token(question) {
+        candidates.push(token);
     }
     for token in question.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '.') {
         let token = token.trim_matches(|c: char| !c.is_alphanumeric());
         if token.len() < 2 || is_stopword(token) {
             continue;
         }
+        let token = token.to_string();
         let symbol_like = token.contains('_')
             || token.chars().any(|c| c.is_ascii_digit())
             || token[1..].chars().any(|c| c.is_uppercase());
         if symbol_like {
             candidates.push(token.to_string());
+        } else {
+            plain.push(token.to_string());
         }
     }
     candidates.sort_by_key(|t| std::cmp::Reverse(t.len()));
+    candidates.extend(plain);
     candidates.dedup();
     candidates
 }
@@ -266,8 +336,24 @@ fn candidate_symbols(question: &str) -> Vec<String> {
 fn is_stopword(token: &str) -> bool {
     matches!(
         token.to_lowercase().as_str(),
-        "what" | "who" | "when" | "where" | "which" | "does" | "this" | "that" | "from" | "the"
-            | "calls" | "call" | "path" | "impact" | "blast" | "radius" | "between" | "and"
+        "what"
+            | "who"
+            | "when"
+            | "where"
+            | "which"
+            | "does"
+            | "this"
+            | "that"
+            | "from"
+            | "the"
+            | "calls"
+            | "call"
+            | "path"
+            | "impact"
+            | "blast"
+            | "radius"
+            | "between"
+            | "and"
     )
 }
 
@@ -312,14 +398,25 @@ fn run_llama(router: &LlamaCliRouter, prompt: &str) -> Result<String, RouterErro
     let mut child = Command::new(&router.llama_bin)
         .args(["-m"])
         .arg(&router.model_path)
-        .args(["-p", prompt, "-n", "64", "--temp", "0", "--no-display-prompt"])
+        .args([
+            "-p",
+            prompt,
+            "-n",
+            "64",
+            "--temp",
+            "0",
+            "--no-display-prompt",
+        ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|e| RouterError::Unavailable(format!("{}: {e}", router.llama_bin)))?;
     let started = Instant::now();
     loop {
-        match child.try_wait().map_err(|e| RouterError::Unavailable(e.to_string()))? {
+        match child
+            .try_wait()
+            .map_err(|e| RouterError::Unavailable(e.to_string()))?
+        {
             Some(status) if !status.success() => {
                 return Err(RouterError::Unavailable(format!("exit status {status}")));
             }
@@ -343,7 +440,12 @@ fn run_llama(router: &LlamaCliRouter, prompt: &str) -> Result<String, RouterErro
 }
 
 fn build_prompt(question: &str, symbols: &[String]) -> String {
-    let table = symbols.iter().take(200).cloned().collect::<Vec<_>>().join(", ");
+    let table = symbols
+        .iter()
+        .take(200)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         "You route code-graph queries. Answer with EXACTLY one JSON object and nothing else: \
          {{\"tool\": \"callers|callees|impact|path\", \"symbol\": \"<name>\", \"second\": \"<name or null>\"}}. \
@@ -462,6 +564,7 @@ pub(crate) struct DoctorOutcome {
     pub(crate) route_ms: Vec<f64>,
     pub(crate) failures: Vec<String>,
     pub(crate) fallback_used: bool,
+    pub(crate) router_name: &'static str,
 }
 
 impl DoctorOutcome {
@@ -493,6 +596,7 @@ pub(crate) fn run_doctor(router: &dyn IntentRouter) -> DoctorOutcome {
         route_ms: Vec::new(),
         failures: Vec::new(),
         fallback_used: false,
+        router_name: router.name(),
     };
     for prompt in HELD_OUT.iter() {
         let started = Instant::now();
@@ -502,16 +606,19 @@ pub(crate) fn run_doctor(router: &dyn IntentRouter) -> DoctorOutcome {
             .map(|s| (*s).to_string())
             .collect();
         let result = router.route(prompt.question, &table);
-        outcome.route_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+        outcome
+            .route_ms
+            .push(started.elapsed().as_secs_f64() * 1000.0);
         match result {
             Ok(call) if call.tool == prompt.expected_tool => {
                 outcome.tool_ok += 1;
                 if call.symbol.to_lowercase() == prompt.expected_symbol.to_lowercase() {
                     outcome.ground_ok += 1;
                 } else {
-                    outcome
-                        .failures
-                        .push(format!("{}: symbol {} ≠ {}", prompt.question, call.symbol, prompt.expected_symbol));
+                    outcome.failures.push(format!(
+                        "{}: symbol {} ≠ {}",
+                        prompt.question, call.symbol, prompt.expected_symbol
+                    ));
                 }
             }
             Ok(call) => outcome.failures.push(format!(
@@ -537,19 +644,28 @@ pub(crate) fn render_doctor(model: &str, outcome: &DoctorOutcome) -> String {
     let tool_pct = DoctorOutcome::pct(outcome.tool_ok, total);
     let ground_pct = DoctorOutcome::pct(outcome.ground_ok, total);
     let mut out = format!(
-        "model: {model}\ntool selection      {}/{} ({tool_pct:.0}% target > 95%)\nparam grounding     {}/{} ({ground_pct:.0}% target > 98%)\nTTFT p50            {ttft_p50:.1}ms (target < 100ms)\nTTFT p95            {ttft_p95:.1}ms\n",
-        outcome.tool_ok, total, outcome.ground_ok, total
+        "router: {}\nmodel: {model}\ntool selection      {}/{} ({tool_pct:.0}% target > 95%)\nparam grounding     {}/{} ({ground_pct:.0}% target > 98%)\nTTFT p50            {ttft_p50:.1}ms (target < 100ms)\nTTFT p95            {ttft_p95:.1}ms\n",
+        outcome.router_name, outcome.tool_ok, total, outcome.ground_ok, total
     );
     for failure in &outcome.failures {
         out.push_str(&format!("✗ {failure}\n"));
     }
     if outcome.fallback_used {
-        out.push_str("note: entries failed entirely — no graceful per-entry fallback exists inside doctor; \
-                      rerun with the model router or the deterministic router\n");
+        out.push_str(
+            "note: entries failed entirely — no graceful per-entry fallback exists inside doctor; \
+                      rerun with the model router or the deterministic router\n",
+        );
     }
-    out.push_str(if outcome.pass() { "→ PASS" } else { "→ FAIL" });
+    out.push_str(if outcome.pass() {
+        "→ PASS"
+    } else {
+        "→ FAIL"
+    });
     out
 }
 
+// Explicit path: when included by a bench target (`#[path]` include),
+// a bare `mod tests` would resolve relative to the including file.
 #[cfg(test)]
+#[path = "slm/tests.rs"]
 mod tests;

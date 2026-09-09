@@ -13,10 +13,12 @@ path = "src/main.rs"
 [[bench]]
 name = "slm_routing"
 harness = false
+required-features = ["slm"]
 
 [[bench]]
 name = "slm_accuracy"
 harness = false
+required-features = ["slm"]
 
 [dependencies]
 weave-graph-core = { path = "../weave-graph-core" }

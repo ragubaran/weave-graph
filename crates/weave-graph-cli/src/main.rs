@@ -1,15 +1,15 @@
 #![deny(unsafe_code)]
 
+#[cfg(feature = "slm")]
+mod ask;
 mod cache;
 mod config;
 #[cfg(feature = "federation")]
 mod contracts;
-#[cfg(feature = "docs")]
-mod docs;
 #[cfg(feature = "provenance")]
 mod doc_provenance;
-#[cfg(feature = "slm")]
-mod ask;
+#[cfg(feature = "docs")]
+mod docs;
 mod export;
 #[cfg(feature = "federation")]
 mod federation;
@@ -280,8 +280,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(feature = "slm")]
 fn slm_cmd_pull(model: &str, sha256: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let spec = crate::slm::model_spec(model)
-        .ok_or_else(|| format!("unknown model {model:?} — run `weave slm list` for the registry"))?;
+    let spec = crate::slm::model_spec(model).ok_or_else(|| {
+        format!("unknown model {model:?} — run `weave slm list` for the registry")
+    })?;
     let dest = crate::slm::model_path(spec.name);
     crate::slm::pull_model(spec, sha256, &dest)?;
     println!("✓ installed {} to {}", spec.name, dest.display());
@@ -290,9 +291,13 @@ fn slm_cmd_pull(model: &str, sha256: &str) -> Result<(), Box<dyn std::error::Err
 
 #[cfg(feature = "slm")]
 fn slm_cmd_list() -> Result<(), Box<dyn std::error::Error>> {
-    println!("{:<22} {:>8}  {:<12} {}", "model", "ram", "downloaded", "role");
+    println!("{:<22} {:>8}  {:<12} role", "model", "ram", "downloaded");
     for spec in crate::slm::MODEL_REGISTRY.iter() {
-        let downloaded = if crate::slm::model_available(spec.name) { "yes" } else { "no" };
+        let downloaded = if crate::slm::model_available(spec.name) {
+            "yes"
+        } else {
+            "no"
+        };
         println!(
             "{:<22} {:>6}MB  {:<12} {}",
             spec.name, spec.ram_mb, downloaded, spec.role
