@@ -1,6 +1,8 @@
 # Release Notes
 
-## v0.1.0 — First Release
+## v1.0.0 — First Release
+
+Tag `v1.0.0`, commit `7d2b8b9`.
 
 The deterministic core (Phase 1) plus every scheduled Phase 2 feature
 except the two documented exceptions below.
