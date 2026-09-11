@@ -46,6 +46,11 @@ jobs:
               git branch "release/$TAG" "$TAG" || true
               git push origin "$TAG"
               git push origin "release/$TAG" || true
+            elif ! git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+              # create_tag=false with a tag that doesn't exist would publish a
+              # GitHub Release with no matching git ref to check out.
+              echo "::error::Tag '$TAG' not found. Push it first, or re-run with create_tag=true."
+              exit 1
             fi
           else
             TAG="${GITHUB_REF#refs/tags/}"
@@ -128,6 +133,21 @@ jobs:
             archive_ext: tar.gz
             variant: weave-custom
             features: custom
+          # Linux ARM64 (MUSL Static) — docs/release.md §2.1 lists this as a
+          # supported Homebrew/tap target; no native apt cross-gcc for musl
+          # aarch64 exists, so this one builds via `cross` (Docker), not `cargo`.
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            binary_name: weave
+            archive_ext: tar.gz
+            variant: weave
+            features: team
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            binary_name: weave
+            archive_ext: tar.gz
+            variant: weave-custom
+            features: custom
           # macOS Apple Silicon (ARM64)
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -186,8 +206,17 @@ jobs:
         with:
           key: ${{ matrix.variant }}-${{ matrix.target }}
 
-      - name: Build Optimized Production Binary
+      - name: Install cross (aarch64 musl cross-compiler)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        uses: taiki-e/install-action@cross
+
+      - name: Build Optimized Production Binary (native)
+        if: matrix.target != 'aarch64-unknown-linux-musl'
         run: cargo build --release --locked --bin weave --target ${{ matrix.target }} --features ${{ matrix.features }}
+
+      - name: Build Optimized Production Binary (cross)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: cross build --release --locked --bin weave --target ${{ matrix.target }} --features ${{ matrix.features }}
 
       - name: Package Binary & Checksum (Unix)
         if: matrix.os != 'windows-latest'
@@ -218,7 +247,7 @@ jobs:
             *.sha256
 
   # ---------------------------------------------------------------------------
-  # 3. Publish GitHub Release
+  # 4. Publish GitHub Release
   # ---------------------------------------------------------------------------
   publish-release:
     name: Publish GitHub Release
