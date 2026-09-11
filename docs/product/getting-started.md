@@ -2,11 +2,28 @@
 
 ## Install
 
-`weave` isn't published to a package registry yet — build it from source
-(requires a Rust 2024-edition toolchain, `rustc 1.93+`):
+`weave` is available via package managers or can be built directly from source:
+
+### Package Managers
+```bash
+# Homebrew (macOS & Linux)
+brew tap weave-graph/tap && brew install weave
+
+# Cargo (crates.io / Rust Toolchain)
+cargo install weave-graph-cli --features team
+
+# npm / npx (Zero-install instant execution for AI agents)
+npx @weave-graph/cli serve --mcp
+
+# Python / pip (CLI + in-memory bindings)
+pip install weave-graph
+```
+
+### Build from Source
+Requires a Rust 2024-edition toolchain (`rustc 1.93+`):
 
 ```bash
-git clone <this-repo-url>
+git clone https://github.com/ragubaran/weave-graph.git
 cd weave-graph
 cargo build --release -p weave-graph-cli --features team
 ```

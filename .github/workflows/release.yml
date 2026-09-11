@@ -53,11 +53,46 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
-  # 2. Cross-Platform Binary Build Matrix
+  # 2. Pre-Release Quality Gate (AGENTS.md §7.1) — a tag push skips ci.yml
+  # entirely (it only triggers on branches), so this is the only check a
+  # release build gets. Mirrors ci.yml's lint+coverage jobs.
+  # ---------------------------------------------------------------------------
+  pre-release-gate:
+    name: Pre-Release Quality Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Verify Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy Linter
+        run: cargo clippy --workspace --all-targets --all-features --exclude weave-graph-python -- -D warnings
+
+      - name: Run Workspace Tests
+        run: cargo test --workspace --all-features --exclude weave-graph-python
+
+      - name: Verify Coverage (>= 90%)
+        run: cargo llvm-cov --workspace --all-targets --fail-under-lines 90
+
+  # ---------------------------------------------------------------------------
+  # 3. Cross-Platform Binary Build Matrix
   # ---------------------------------------------------------------------------
   build-binaries:
     name: Build (${{ matrix.variant }}, ${{ matrix.target }})
-    needs: [prepare-tag]
+    needs: [prepare-tag, pre-release-gate]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

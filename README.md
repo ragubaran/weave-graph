@@ -49,9 +49,42 @@ Convenience bundles (wired in `weave-graph-cli/Cargo.toml`): `team = [docs, fede
 
 ## Usage
 
-### Install
+### Installation
 
-`weave` isn't published to a package registry yet — build it from source. Two release variants cover every mode:
+`weave` can be installed across multiple package channels depending on your environment:
+
+#### 1. Homebrew (macOS & Linux)
+```bash
+brew tap weave-graph/tap
+brew install weave
+```
+
+#### 2. Cargo (crates.io / Rust Toolchain)
+```bash
+# Recommended default variant (Single + Multiple mode federation)
+cargo install weave-graph-cli --features team
+
+# Or directly from the Git repository
+cargo install --git https://github.com/ragubaran/weave-graph.git weave-graph-cli --features team
+```
+
+#### 3. npm / npx (Zero-Install for AI Agents & Node.js)
+```bash
+# Run immediately via npx without pre-installing (e.g. for MCP server configuration)
+npx @weave-graph/cli serve --mcp
+
+# Or install globally
+npm install -g @weave-graph/cli
+```
+
+#### 4. Python / pip (`pip`)
+```bash
+# Installs CLI executable on virtualenv PATH + exposes in-memory query bindings
+pip install weave-graph
+```
+
+#### 5. Build from Source
+Two release variants cover every mode:
 
 | Variant               | Build Command                                                | Covers                                                                             |
 | :-------------------- | :----------------------------------------------------------- | :--------------------------------------------------------------------------------- |
@@ -59,7 +92,7 @@ Convenience bundles (wired in `weave-graph-cli/Cargo.toml`): `team = [docs, fede
 | **`weave-custom`**    | `cargo build --release -p weave-graph-cli --features custom` | Everything in `weave`, plus Custom mode (RBAC, policy-lint, OTel — in development) |
 
 ```bash
-git clone <this-repo-url>
+git clone https://github.com/ragubaran/weave-graph.git
 cd weave-graph
 cargo build --release -p weave-graph-cli --features team
 ```

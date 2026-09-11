@@ -23,6 +23,44 @@ federation, pinned agent notes, a file watcher, natural-language querying,
 alternate storage backends, Python bindings — is an off-by-default Cargo
 feature that costs nothing when not compiled in.
 
+## Installation
+
+`weave` can be installed via your preferred package manager or built from source:
+
+### Homebrew (macOS & Linux)
+```bash
+brew tap weave-graph/tap
+brew install weave
+```
+
+### Cargo (crates.io / Rust Toolchain)
+```bash
+# Recommended default build (Single + Multiple mode federation)
+cargo install weave-graph-cli --features team
+```
+
+### npm / npx (Zero-Install for AI Agents & Node.js)
+```bash
+# Instant execution without pre-installation (e.g. for MCP server configuration)
+npx @weave-graph/cli serve --mcp
+
+# Global installation
+npm install -g @weave-graph/cli
+```
+
+### Python / pip (`pip`)
+```bash
+pip install weave-graph
+```
+
+### Build from Source
+```bash
+git clone https://github.com/ragubaran/weave-graph.git
+cd weave-graph
+cargo build --release -p weave-graph-cli --features team
+cp target/release/weave ~/.local/bin/
+```
+
 See the repository root [`README.md`](../../README.md) for the architecture
 overview and build instructions; this directory is where the day-to-day
 *usage* documentation lives.
