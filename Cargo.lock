@@ -2181,7 +2181,7 @@ dependencies = [
 
 [[package]]
 name = "weave-graph-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -2206,7 +2206,7 @@ dependencies = [
 
 [[package]]
 name = "weave-graph-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "blake3",
  "criterion 0.8.2",
@@ -2217,7 +2217,7 @@ dependencies = [
 
 [[package]]
 name = "weave-graph-hub"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "thiserror 2.0.20",
  "weave-graph-core",
@@ -2225,7 +2225,7 @@ dependencies = [
 
 [[package]]
 name = "weave-graph-mcp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "weave-graph-parse"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "criterion 0.8.2",
  "pulldown-cmark",
@@ -2279,7 +2279,7 @@ dependencies = [
 
 [[package]]
 name = "weave-graph-python"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "pyo3",
  "tempfile",
@@ -2289,7 +2289,7 @@ dependencies = [
 
 [[package]]
 name = "weave-graph-store-sqlite"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "criterion 0.8.2",
  "libc",
@@ -2300,7 +2300,7 @@ dependencies = [
 
 [[package]]
 name = "weave-graph-store-turso"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "criterion 0.5.1",
  "futures",
