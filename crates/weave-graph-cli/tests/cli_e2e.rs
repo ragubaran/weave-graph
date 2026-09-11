@@ -565,3 +565,133 @@ fn test_cli_check_contracts_detects_divergence_end_to_end() {
         .failure()
         .stdout(predicate::str::contains("Contract drift detected"));
 }
+
+/// impl.md M2.11: `weave index --watch` picks up a real file change on its
+/// own, through a real spawned process and a real (fast-debounced) watcher
+/// — not a mocked filesystem event.
+#[test]
+#[cfg(feature = "watch")]
+fn test_cli_index_watch_auto_reindexes_on_file_change() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("lib.rs"), "fn only_fn() {}\n").unwrap();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--mode", "single"])
+        .assert()
+        .success();
+    // Fast debounce so the test doesn't have to wait on the 2s default.
+    std::fs::write(
+        root.join(".weave").join("config.toml"),
+        "mode = \"single\"\n\n[watch]\ndebounce_ms = 100\n",
+    )
+    .unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_weave"))
+        .current_dir(root)
+        .args(["index", "--watch"])
+        .spawn()
+        .unwrap();
+
+    // Let the watcher actually start before touching anything.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    std::fs::write(root.join("lib.rs"), "fn only_fn() {}\nfn added_fn() {}\n").unwrap();
+    // Debounce (100ms) + a real incremental reindex + margin.
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    let _ = child.kill();
+    let _ = child.wait();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Total Symbols:  2"));
+}
+
+/// impl.md M2.11: a change whose blast radius meets/exceeds
+/// `[watch] blast_radius_ceiling` defers behind the visible
+/// `pending-manual-reindex` marker instead of auto-reindexing, and a
+/// manual `weave index` clears it and picks up the change for real.
+#[test]
+#[cfg(feature = "watch")]
+fn test_cli_index_watch_defers_a_large_blast_radius_change() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(
+        root.join("lib.rs"),
+        "fn caller() { callee(); }\nfn callee() { helper(); }\nfn helper() {}\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--mode", "single"])
+        .assert()
+        .success();
+    // Ceiling of 1: any change touching this 3-symbol call chain exceeds it.
+    std::fs::write(
+        root.join(".weave").join("config.toml"),
+        "mode = \"single\"\n\n[watch]\ndebounce_ms = 100\nblast_radius_ceiling = 1\n",
+    )
+    .unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_weave"))
+        .current_dir(root)
+        .args(["index", "--watch"])
+        .spawn()
+        .unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    std::fs::write(
+        root.join("lib.rs"),
+        "fn caller() { callee(); }\nfn callee() { helper(); }\nfn helper() { extra(); }\nfn extra() {}\n",
+    )
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // Deferred: the auto-sync never ran, so the symbol count is unchanged
+    // and the pending marker is visible in `weave status`.
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Total Symbols:  3"))
+        .stdout(predicate::str::contains("blast radius pending"));
+
+    // A manual `weave index` clears the marker and picks up the change.
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Total Symbols:  4"))
+        .stdout(predicate::str::contains("blast radius pending").not());
+}

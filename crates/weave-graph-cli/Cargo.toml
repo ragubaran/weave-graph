@@ -34,6 +34,8 @@ toml = "1.1.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = { version = "0.10", optional = true }
+notify = { version = "8.2.0", optional = true }
+roaring = { version = "0.11.5", optional = true }
 
 [dev-dependencies]
 assert_cmd = "2.0"
@@ -57,3 +59,4 @@ team = ["docs", "federation"]
 # join this list once they land; `hub`/`provenance` are what "custom" adds
 # over "team" today.
 custom = ["team", "hub", "provenance"]
+watch = ["dep:notify", "dep:roaring"]

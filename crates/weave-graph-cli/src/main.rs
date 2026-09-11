@@ -28,6 +28,8 @@ mod slm;
 mod storage_location;
 #[cfg(feature = "hub")]
 mod sync;
+#[cfg(feature = "watch")]
+mod watch;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -67,6 +69,11 @@ enum Commands {
         /// change set is large enough that a rebuild is actually cheaper.
         #[arg(long)]
         incremental: bool,
+        /// Foreground auto-sync: watch for file changes and incrementally
+        /// reindex on a debounce, deferring large changes behind a visible
+        /// marker instead of auto-reindexing regardless (feature: watch)
+        #[arg(long)]
+        watch: bool,
     },
     /// Print summary status of the indexed graph
     Status {
@@ -229,7 +236,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         Commands::Init { mode } => cmd_init(&mode)?,
-        Commands::Index { path, incremental } => cmd_index(&path, incremental)?,
+        Commands::Index {
+            path,
+            incremental,
+            watch,
+        } => {
+            if watch {
+                #[cfg(feature = "watch")]
+                {
+                    cmd_index_watch(&path)?;
+                }
+                #[cfg(not(feature = "watch"))]
+                {
+                    feature_not_compiled("weave index --watch", "watch");
+                }
+            } else {
+                cmd_index(&path, incremental)?;
+            }
+        }
         Commands::Status { path } => cmd_status(&path)?,
         Commands::Serve {
             mcp,
@@ -522,6 +546,8 @@ fn try_fast_path(
         && active_db.exists()
     {
         println!("Already up to date (commit {cur}).");
+        #[cfg(feature = "watch")]
+        watch::clear_pending_marker(weave_dir);
         return Ok(true);
     }
     if let Some(cur) = current_sha
@@ -532,6 +558,8 @@ fn try_fast_path(
             "✓ Restored cached index for commit {cur} in {:?}",
             start.elapsed()
         );
+        #[cfg(feature = "watch")]
+        watch::clear_pending_marker(weave_dir);
         return Ok(true);
     }
     Ok(false)
@@ -613,6 +641,8 @@ fn cmd_index(root: &Path, incremental: bool) -> Result<(), Box<dyn std::error::E
             cache::save_snapshot(&weave_dir, &active_db, cur)?;
         }
     }
+    #[cfg(feature = "watch")]
+    watch::clear_pending_marker(&weave_dir);
 
     println!(
         "✓ Indexed {} files ({} symbols, {} edges) in {:?}",
@@ -623,6 +653,157 @@ fn cmd_index(root: &Path, incremental: bool) -> Result<(), Box<dyn std::error::E
     );
 
     Ok(())
+}
+
+/// `weave index --watch` (impl.md M2.11's secondary integration path, for a
+/// human with no agent session open). Requires an existing index — the
+/// watcher only ever incrementally updates one, never does the first build.
+#[cfg(feature = "watch")]
+fn cmd_index_watch(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use notify::Watcher;
+
+    // `notify` reports absolute event paths regardless of what was passed to
+    // `watch()`; stripping a relative `root` (e.g. the default ".") against
+    // those would never match and every event would be silently dropped.
+    let root = root.canonicalize()?;
+    let root = root.as_path();
+
+    let weave_home_env = std::env::var("WEAVE_HOME").ok();
+    let data_dir = storage_location::resolve_data_dir(root, weave_home_env.as_deref());
+    if data_dir.on_network_fs {
+        return Err(storage_location::network_fs_refusal(root).into());
+    }
+    let weave_dir = data_dir.path;
+    let active_db = weave_dir.join("graph.db");
+    if !active_db.exists() {
+        return Err(
+            "weave index --watch needs an existing index — run `weave index` first.".into(),
+        );
+    }
+
+    let cfg = watch::WatchConfig::load(root);
+    let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
+    let weave_dir_filter = weave_dir.clone();
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(event) = res {
+            for path in event.paths {
+                // Exclude our own bookkeeping directory — the pending
+                // marker, lock file, and rebuild swap all live under here,
+                // and without this a watcher-triggered write would notify
+                // itself and re-tick forever on an already-deferred change.
+                if !path.starts_with(&weave_dir_filter) {
+                    let _ = tx.send(path);
+                }
+            }
+        }
+    })?;
+    watcher.watch(root, notify::RecursiveMode::Recursive)?;
+
+    println!(
+        "Watching {} (debounce {}ms, blast-radius ceiling {}). Ctrl-C to stop.",
+        root.display(),
+        cfg.debounce_ms,
+        cfg.blast_radius_ceiling
+    );
+
+    run_watch_loop(&rx, root, &weave_dir, &active_db, &cfg);
+    Ok(())
+}
+
+/// Drives `watch::run` with the accumulate-until-reindexed state this
+/// milestone's own "re-evaluated against the accumulated diff on every
+/// subsequent tick" requirement needs: a batch that gets deferred (blast
+/// radius at/above the ceiling) stays in `pending` rather than being
+/// dropped, so a later tick sees the full diff since the last successful
+/// reindex — including a revert dropping the total back under threshold.
+#[cfg(feature = "watch")]
+fn run_watch_loop(
+    events: &std::sync::mpsc::Receiver<PathBuf>,
+    root: &Path,
+    weave_dir: &Path,
+    active_db: &Path,
+    cfg: &watch::WatchConfig,
+) {
+    let mut pending: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    watch::run(events, cfg.debounce_ms, |batch| {
+        for path in batch {
+            let Ok(rel) = path.strip_prefix(root) else {
+                continue;
+            };
+            let rel = rel.to_string_lossy().into_owned();
+            if !rel.is_empty() && is_indexable(Path::new(&rel)) {
+                pending.insert(rel);
+            }
+        }
+        if pending.is_empty() {
+            return;
+        }
+        match watch_tick(
+            root,
+            weave_dir,
+            active_db,
+            cfg.blast_radius_ceiling,
+            &pending,
+        ) {
+            Ok(true) => pending.clear(),
+            Ok(false) => {}
+            Err(e) => eprintln!("watch: {e}"),
+        }
+    });
+}
+
+/// One debounced, gated attempt at reindexing exactly `changed` (the
+/// notify-observed, indexable-filtered paths accumulated since the last
+/// successful reindex). Returns `Ok(true)` on a completed reindex (caller
+/// clears its accumulator), `Ok(false)` on a deferred-behind-the-marker
+/// batch (caller keeps accumulating). Deliberately not git-diff-based —
+/// that would silently never fire in a repo with no commit to diff
+/// against, where a raw filesystem event is still real, actionable
+/// information.
+#[cfg(feature = "watch")]
+fn watch_tick(
+    root: &Path,
+    weave_dir: &Path,
+    active_db: &Path,
+    ceiling: usize,
+    changed: &std::collections::BTreeSet<String>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let _lock = lock::acquire(weave_dir)?;
+    let changed: Vec<String> = changed.iter().cloned().collect();
+
+    let storage = SqliteStorage::open(active_db)?;
+    let csr = weave_graph_core::CsrGraph::load(&storage)?;
+    let radius = watch::blast_radius(&storage, &csr, &changed)?;
+    drop(storage);
+
+    if radius >= ceiling {
+        watch::write_pending_marker(
+            weave_dir,
+            &watch::PendingMarker {
+                files: changed.clone(),
+                blast_radius: radius,
+            },
+        )?;
+        println!(
+            "⚠️ {radius} symbols' worth of blast radius pending — run `weave index` to refresh ({} file(s))",
+            changed.len()
+        );
+        return Ok(false);
+    }
+
+    let files = discover_files(root);
+    let stats = index::incremental_reindex(root, weave_dir, active_db, &files, &changed)?;
+    // Best-effort only: a non-git repo simply never gets this cache entry,
+    // and `weave index`'s own fast-path already tolerates that.
+    if let Some(cur) = git::current_sha(root) {
+        let _ = cache::write_last_indexed_sha(weave_dir, &cur);
+    }
+    watch::clear_pending_marker(weave_dir);
+    println!(
+        "✓ auto-reindexed ({} files, {} symbols, {} edges)",
+        stats.files, stats.symbols, stats.edges
+    );
+    Ok(true)
 }
 
 fn cmd_status(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -661,6 +842,16 @@ fn cmd_status(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     println!("  Schema Version: {}", version);
     println!("  Total Symbols:  {}", nodes.len());
     println!("  Total Edges:    {}", edges.len());
+
+    #[cfg(feature = "watch")]
+    if let Some(marker) = watch::read_pending_marker(&data_dir.path) {
+        println!(
+            "  ⚠️ {} symbols' worth of blast radius pending — run `weave index` to refresh ({} file(s): {})",
+            marker.blast_radius,
+            marker.files.len(),
+            marker.files.join(", ")
+        );
+    }
 
     Ok(())
 }
@@ -807,6 +998,49 @@ fn cmd_serve(
     };
 
     let handler = McpHandler::new(&storage)?;
+
+    // Primary integration point (impl.md M2.11): auto-sync `graph.db` while
+    // the one long-running MCP process is up, gated by `[watch] enabled` so
+    // compiling the feature in never changes behavior by itself. Runs on its
+    // own thread against its own `SqliteStorage` handle — `McpHandler`'s
+    // already-resident `CsrGraph` doesn't hot-reload from this (that needs
+    // M2.15's external-reindex-detection work, not yet built); what this
+    // does guarantee is that `graph.db` itself never goes stale on disk, and
+    // `weave status`/the next `weave serve --mcp` restart see the update.
+    #[cfg(feature = "watch")]
+    if watch::enabled(root)
+        && let Ok(root) = root.canonicalize()
+    {
+        let weave_dir = data_dir.path.clone();
+        let active_db = db_path.clone();
+        std::thread::spawn(move || {
+            let cfg = watch::WatchConfig::load(&root);
+            let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
+            let weave_dir_filter = weave_dir.clone();
+            let mut watcher =
+                match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                    if let Ok(event) = res {
+                        for path in event.paths {
+                            if !path.starts_with(&weave_dir_filter) {
+                                let _ = tx.send(path);
+                            }
+                        }
+                    }
+                }) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        eprintln!("watch: failed to start file watcher: {e}");
+                        return;
+                    }
+                };
+            use notify::Watcher;
+            if let Err(e) = watcher.watch(&root, notify::RecursiveMode::Recursive) {
+                eprintln!("watch: failed to watch {}: {e}", root.display());
+                return;
+            }
+            run_watch_loop(&rx, &root, &weave_dir, &active_db, &cfg);
+        });
+    }
 
     match transport {
         "stdio" => {
