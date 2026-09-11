@@ -129,27 +129,76 @@ pub(crate) fn cmd_sync_push(root: &Path) -> Result<(), Box<dyn std::error::Error
     let base = cache::read_last_indexed_sha(&root.join(".weave"));
     let payload = fs::read(data_db_path(root)?)?;
 
-    let outcome = client.push(&target, base.as_deref(), retention(root), &payload)?;
+    let outcome = push_with_backoff(&client, &target, base.as_deref(), retention(root), &payload)?;
     match outcome {
-        PushOutcome::Published => println!("Published snapshot for {target}."),
+        PushOutcome::Published | PushOutcome::Accepted => {
+            println!("Published snapshot for {target}.")
+        }
         PushOutcome::Conflict => {
             // v1 always sends the full snapshot, so a conflict is resolved by
             // republishing it once more — the hub's head simply moved.
-            let retry = client.push(&target, None, retention(root), &payload)?;
-            if retry == weave_graph_hub::PushOutcome::Published {
-                println!("Hub head had moved; republished full snapshot for {target}.");
-            } else {
-                return Err("Hub still refuses the snapshot after republish".into());
+            let retry = push_with_backoff(&client, &target, None, retention(root), &payload)?;
+            match retry {
+                PushOutcome::Published | PushOutcome::Accepted => {
+                    println!("Hub head had moved; republished full snapshot for {target}.")
+                }
+                _ => return Err("Hub still refuses the snapshot after republish".into()),
             }
         }
         PushOutcome::RateLimited { retry_after_secs } => {
             let wait = retry_after_secs
                 .map(|s| format!("{s}s"))
                 .unwrap_or_else(|| "an unspecified interval".to_string());
-            return Err(format!("Hub rate-limited the publish; retry after {wait}").into());
+            return Err(format!(
+                "Hub rate-limited the publish; still limited after {MAX_PUSH_ATTEMPTS} \
+                 attempts with exponential backoff (last wait: {wait})"
+            )
+            .into());
         }
     }
     Ok(())
+}
+
+/// Runners back off exponentially with jitter on `429` (`impl.md` M3.1,
+/// `plan.md` §3.1) instead of failing on the first rate-limit response —
+/// the registry's watermark is expected to clear within a few seconds
+/// under ordinary load. Jitter avoids a thundering herd of CI runners all
+/// retrying at the exact same instant; it's derived from wall-clock
+/// nanoseconds rather than a `rand` dependency this crate doesn't need
+/// elsewhere.
+const MAX_PUSH_ATTEMPTS: u32 = 5;
+
+fn push_with_backoff(
+    client: &weave_graph_hub::HubClient,
+    target_sha: &str,
+    base_sha: Option<&str>,
+    retention: usize,
+    payload: &[u8],
+) -> Result<PushOutcome, Box<dyn std::error::Error>> {
+    for attempt in 0..MAX_PUSH_ATTEMPTS {
+        let outcome = client.push(target_sha, base_sha, retention, payload)?;
+        let PushOutcome::RateLimited { retry_after_secs } = outcome else {
+            return Ok(outcome);
+        };
+        if attempt + 1 == MAX_PUSH_ATTEMPTS {
+            return Ok(outcome);
+        }
+        let base_wait = retry_after_secs.unwrap_or(1);
+        let backoff = base_wait.saturating_mul(1u64 << attempt);
+        let jitter_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() % 1000)
+            .unwrap_or(0);
+        eprintln!(
+            "Hub rate-limited (attempt {}/{MAX_PUSH_ATTEMPTS}); backing off {backoff}s + {jitter_ms}ms jitter.",
+            attempt + 1
+        );
+        std::thread::sleep(
+            std::time::Duration::from_secs(backoff)
+                + std::time::Duration::from_millis(jitter_ms.into()),
+        );
+    }
+    unreachable!("loop always returns by the last attempt")
 }
 
 /// `git merge-base <ref> HEAD` — the merge-base anchor `weave sync pull`

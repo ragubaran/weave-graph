@@ -167,3 +167,62 @@ fn serve_with_status(status: u16, body: &[u8]) -> (String, std::thread::JoinHand
 fn serve_snapshot(body: &[u8]) -> (String, std::thread::JoinHandle<String>) {
     serve_with_status(200, body)
 }
+
+/// Serves each `(status, headers)` pair in order, one per accepted
+/// connection — for exercising `push_with_backoff`'s retry loop, where
+/// the client makes more than one request against the same address.
+fn serve_sequence(
+    responses: Vec<(u16, &'static str)>,
+) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        for (status, extra_headers) in responses {
+            let (mut stream, _) = listener.accept().unwrap();
+            requests.push(read_full_request(&mut stream));
+            let response = format!(
+                "HTTP/1.1 {status} S\r\nConnection: close\r\n{extra_headers}Content-Length: 0\r\n\r\n"
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+        requests
+    });
+    (format!("http://{addr}"), handle)
+}
+
+#[test]
+fn push_retries_with_backoff_after_a_rate_limit_and_then_succeeds() {
+    let repo = init_repo("ratelimited");
+    let (addr, requests) = serve_sequence(vec![(429, "Retry-After: 0\r\n"), (201, "")]);
+    write_config(repo.path(), &addr);
+    let git_ok = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(git_ok(&["init", "-b", "main"]));
+    assert!(git_ok(&["add", "."]));
+    assert!(git_ok(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-m",
+        "x"
+    ]));
+
+    cmd_sync_push(repo.path()).unwrap();
+
+    assert_eq!(
+        requests.join().unwrap().len(),
+        2,
+        "expected exactly one retry"
+    );
+}

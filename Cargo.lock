@@ -2219,6 +2219,7 @@ dependencies = [
 name = "weave-graph-hub"
 version = "1.0.0"
 dependencies = [
+ "tempfile",
  "thiserror 2.0.20",
  "weave-graph-core",
 ]

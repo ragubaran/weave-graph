@@ -112,6 +112,20 @@ fn push_201_publishes() {
 }
 
 #[test]
+fn push_202_accepted() {
+    let (addr, handle) = serve_once(FakeHub {
+        status: 202,
+        headers: &[],
+        body: b"",
+    });
+    let result = client_for(&addr)
+        .push("target", Some("base"), 20, b"payload")
+        .unwrap();
+    handle.join().unwrap();
+    assert_eq!(result, PushOutcome::Accepted);
+}
+
+#[test]
 fn push_409_conflict() {
     let (addr, handle) = serve_once(FakeHub {
         status: 409,

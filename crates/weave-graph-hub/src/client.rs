@@ -27,9 +27,17 @@ pub enum HubError {
 /// didn't match the envelope's `base_commit_sha` — the caller republishes a
 /// full snapshot rather than retrying the delta (`plan.md` §2.3: graphs are
 /// derived data, so recompute-and-overwrite is the correct resolution).
+///
+/// `Accepted` (`202`) is M3.1's Centralized Graph Registry: the base
+/// matched (or this is the repo's first push) and the hub's head has
+/// already advanced, but the actual write is queued — decoupled from the
+/// request per `plan.md` §3.1's "HTTP handlers never write directly to
+/// the graph." From the caller's perspective it means the same thing
+/// `Published` always has: the push succeeded, don't retry it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PushOutcome {
     Published,
+    Accepted,
     Conflict,
     RateLimited { retry_after_secs: Option<u64> },
 }
@@ -140,6 +148,7 @@ impl HubClient {
         let (status, headers, _body) = self.request("PUT", &path, &headers, payload)?;
         match status {
             200 | 201 | 204 => Ok(PushOutcome::Published),
+            202 => Ok(PushOutcome::Accepted),
             409 => Ok(PushOutcome::Conflict),
             429 => {
                 let retry_after = headers

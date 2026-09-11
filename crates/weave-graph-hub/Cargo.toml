@@ -9,3 +9,6 @@ description = "Optional delta ingestion/publish service for weave-graph. Never l
 [dependencies]
 thiserror = "2.0.20"
 weave-graph-core = { path = "../weave-graph-core" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
