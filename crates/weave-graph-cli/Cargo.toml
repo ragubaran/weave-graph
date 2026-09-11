@@ -9,6 +9,7 @@ description = "The `weave` binary; wires the other weave-graph crates together p
 [[bin]]
 name = "weave"
 path = "src/main.rs"
+bench = false
 
 [[bench]]
 name = "slm_routing"
