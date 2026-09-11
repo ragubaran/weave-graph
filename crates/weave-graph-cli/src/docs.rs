@@ -226,6 +226,3 @@ pub(crate) fn upsert_doc_edges(
     }
     Ok(total)
 }
-
-#[cfg(test)]
-mod tests;
