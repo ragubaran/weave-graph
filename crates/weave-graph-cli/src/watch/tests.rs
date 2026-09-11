@@ -84,6 +84,59 @@ fn pending_marker_round_trips_and_clears() {
 }
 
 #[test]
+fn in_flight_marker_round_trips_and_clears() {
+    let dir = tempfile::tempdir().unwrap();
+    let weave_dir = dir.path().join(".weave");
+    std::fs::create_dir_all(&weave_dir).unwrap();
+
+    assert!(read_in_flight(&weave_dir).is_empty());
+
+    let files: std::collections::BTreeSet<String> =
+        ["src/a.rs".to_string(), "src/b.rs".to_string()].into();
+    write_in_flight(&weave_dir, &files);
+    let read_back = read_in_flight(&weave_dir);
+    assert_eq!(read_back, vec!["src/a.rs", "src/b.rs"]);
+
+    clear_in_flight(&weave_dir);
+    assert!(read_in_flight(&weave_dir).is_empty());
+    // Clearing an already-clear marker must not error (no panic here).
+    clear_in_flight(&weave_dir);
+}
+
+#[test]
+fn on_event_fires_for_every_accumulated_path_before_on_batch() {
+    let (tx, rx) = mpsc::channel::<std::path::PathBuf>();
+    let seen_by_event = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_by_event_in_thread = seen_by_event.clone();
+    let batch_ran = std::sync::Arc::new(AtomicUsize::new(0));
+    let batch_ran_in_thread = batch_ran.clone();
+
+    let handle = std::thread::spawn(move || {
+        run(
+            &rx,
+            50,
+            move |path| seen_by_event_in_thread.lock().unwrap().push(path.clone()),
+            move |batch| {
+                // on_event must have already fired for every path in this
+                // batch by the time on_batch runs — that ordering is the
+                // entire point: it's the only way to tell "still inside the
+                // debounce window" apart from "batch resolved".
+                assert_eq!(seen_by_event.lock().unwrap().len(), batch.len());
+                batch_ran_in_thread.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+    });
+
+    tx.send(std::path::PathBuf::from("a.rs")).unwrap();
+    tx.send(std::path::PathBuf::from("b.rs")).unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    drop(tx);
+    handle.join().unwrap();
+
+    assert_eq!(batch_ran.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn blast_radius_counts_the_transitive_closure_from_changed_files() {
     let (_dir, weave_dir, active_db) = init_repo();
     let storage = weave_graph_store_sqlite::SqliteStorage::open(&active_db).unwrap();
@@ -107,9 +160,14 @@ fn debounce_storm_collapses_into_exactly_one_tick() {
     let calls_in_thread = calls.clone();
 
     let handle = std::thread::spawn(move || {
-        run(&rx, 50, |_batch| {
-            calls_in_thread.fetch_add(1, Ordering::SeqCst);
-        });
+        run(
+            &rx,
+            50,
+            |_path| {},
+            |_batch| {
+                calls_in_thread.fetch_add(1, Ordering::SeqCst);
+            },
+        );
     });
 
     // A thousand-event burst, all well within one 50ms debounce window.
@@ -137,20 +195,25 @@ fn events_arriving_mid_tick_are_coalesced_into_the_next_one() {
     let mut tx_for_tick = Some(tx.clone());
 
     let handle = std::thread::spawn(move || {
-        run(&rx, 30, move |_batch| {
-            let n = calls_in_thread.fetch_add(1, Ordering::SeqCst);
-            if n == 0 {
-                // Simulate a change arriving *during* the first tick's work,
-                // then drop this clone — an un-dropped Sender held forever
-                // by the closure would keep the channel open even after the
-                // test drops its own `tx`, and `run` would block in `recv()`
-                // forever waiting for an event nobody can ever send again.
-                if let Some(sender) = tx_for_tick.take() {
-                    let _ = sender.send(std::path::PathBuf::from("mid-tick.rs"));
+        run(
+            &rx,
+            30,
+            |_path| {},
+            move |_batch| {
+                let n = calls_in_thread.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    // Simulate a change arriving *during* the first tick's work,
+                    // then drop this clone — an un-dropped Sender held forever
+                    // by the closure would keep the channel open even after the
+                    // test drops its own `tx`, and `run` would block in `recv()`
+                    // forever waiting for an event nobody can ever send again.
+                    if let Some(sender) = tx_for_tick.take() {
+                        let _ = sender.send(std::path::PathBuf::from("mid-tick.rs"));
+                    }
+                    std::thread::sleep(Duration::from_millis(60));
                 }
-                std::thread::sleep(Duration::from_millis(60));
-            }
-        });
+            },
+        );
     });
 
     tx.send(std::path::PathBuf::from("first.rs")).unwrap();

@@ -8,10 +8,18 @@ description = "MCP transport adapter and tool surface for weave-graph (weave_rep
 
 [dependencies]
 weave-graph-core = { path = "../weave-graph-core" }
+weave-graph-store-sqlite = { path = "../weave-graph-store-sqlite" }
+weave-graph-parse = { path = "../weave-graph-parse", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0.20"
 
+[features]
+# M2.10's MCP pair (weave_pin_note / weave_recall_notes). blake3 enters
+# only through core's `notes` feature — never the default build.
+notes = ["weave-graph-core/notes", "dep:weave-graph-parse"]
+
 [dev-dependencies]
+tempfile = "3.27.0"
 weave-graph-store-sqlite = { path = "../weave-graph-store-sqlite" }
 

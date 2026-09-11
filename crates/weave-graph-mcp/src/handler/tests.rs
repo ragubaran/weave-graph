@@ -24,7 +24,7 @@ fn setup_storage() -> SqliteStorage {
 #[test]
 fn handle_parse_error() {
     let storage = setup_storage();
-    let handler = McpHandler::new(&storage).unwrap();
+    let handler = McpHandler::new(storage).unwrap();
     let res = handler.handle_message("invalid json").unwrap();
     assert!(res.error.is_some());
     assert_eq!(res.error.unwrap().code, -32700);
@@ -33,7 +33,7 @@ fn handle_parse_error() {
 #[test]
 fn handle_initialize() {
     let storage = setup_storage();
-    let handler = McpHandler::new(&storage).unwrap();
+    let handler = McpHandler::new(storage).unwrap();
     let msg = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -51,7 +51,7 @@ fn handle_initialize() {
 #[test]
 fn handle_notifications_and_ping() {
     let storage = setup_storage();
-    let handler = McpHandler::new(&storage).unwrap();
+    let handler = McpHandler::new(storage).unwrap();
 
     let notif = json!({
         "jsonrpc": "2.0",
@@ -73,7 +73,7 @@ fn handle_notifications_and_ping() {
 #[test]
 fn handle_tools_list() {
     let storage = setup_storage();
-    let handler = McpHandler::new(&storage).unwrap();
+    let handler = McpHandler::new(storage).unwrap();
     let msg = json!({
         "jsonrpc": "2.0",
         "id": 3,
@@ -83,7 +83,8 @@ fn handle_tools_list() {
 
     let res = handler.handle_message(&msg).unwrap();
     let tools = res.result.unwrap()["tools"].as_array().unwrap().clone();
-    assert_eq!(tools.len(), 4);
+    // 4 base tools, +2 with the `notes` feature (weave_pin_note/recall).
+    assert_eq!(tools.len(), if cfg!(feature = "notes") { 6 } else { 4 });
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"weave_repo_map"));
     assert!(names.contains(&"weave_file_api"));
@@ -94,7 +95,7 @@ fn handle_tools_list() {
 #[test]
 fn handle_tools_call_all_four_tools() {
     let storage = setup_storage();
-    let handler = McpHandler::new(&storage).unwrap();
+    let handler = McpHandler::new(storage).unwrap();
 
     // 1. repo_map
     let req = json!({
@@ -173,7 +174,7 @@ fn handle_tools_call_all_four_tools() {
 #[test]
 fn handle_unknown_tool_and_unknown_method() {
     let storage = setup_storage();
-    let handler = McpHandler::new(&storage).unwrap();
+    let handler = McpHandler::new(storage).unwrap();
 
     let req = json!({
         "jsonrpc": "2.0",
@@ -208,7 +209,7 @@ fn handle_unknown_tool_and_unknown_method() {
 #[test]
 fn handle_tools_call_missing_params() {
     let storage = setup_storage();
-    let handler = McpHandler::new(&storage).unwrap();
+    let handler = McpHandler::new(storage).unwrap();
 
     let req = json!({
         "jsonrpc": "2.0",
@@ -228,4 +229,204 @@ fn handle_tools_call_missing_params() {
     .to_string();
     let res2 = handler.handle_message(&req2).unwrap();
     assert_eq!(res2.error.unwrap().code, -32602);
+}
+
+fn call_repo_map_text(handler: &McpHandler) -> String {
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 40,
+        "method": "tools/call",
+        "params": {"name": "weave_repo_map", "arguments": {}}
+    })
+    .to_string();
+    let res = handler.handle_message(&req).unwrap();
+    let content = res.result.unwrap()["content"].clone();
+    content
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["text"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// impl.md M2.11: without `with_weave_dir`, tool responses are byte-for-byte
+/// unaffected — the watch feature's staleness surfacing must be opt-in.
+#[test]
+fn no_weave_dir_means_no_staleness_appended() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+    assert!(!call_repo_map_text(&handler).contains("blast radius"));
+    assert!(!call_repo_map_text(&handler).contains("debounce window"));
+}
+
+/// impl.md M2.11: `with_weave_dir` set but no marker files present — still
+/// unaffected (the common case: most repos are never mid-watch-cycle).
+#[test]
+fn weave_dir_set_but_no_marker_means_no_staleness_appended() {
+    let storage = setup_storage();
+    let dir = tempfile::tempdir().unwrap();
+    let handler = McpHandler::new(storage)
+        .unwrap()
+        .with_weave_dir(dir.path().to_path_buf());
+    assert!(!call_repo_map_text(&handler).contains("blast radius"));
+    assert!(!call_repo_map_text(&handler).contains("debounce window"));
+}
+
+/// impl.md M2.11's actual task: a pending-manual-reindex marker on disk
+/// shows up in every tool response's content, not just `weave status`.
+#[test]
+fn pending_reindex_marker_is_surfaced_in_tool_responses() {
+    let storage = setup_storage();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("pending-manual-reindex"),
+        r#"{"files":["src/big.rs"],"blast_radius":350}"#,
+    )
+    .unwrap();
+    let handler = McpHandler::new(storage)
+        .unwrap()
+        .with_weave_dir(dir.path().to_path_buf());
+    let text = call_repo_map_text(&handler);
+    assert!(text.contains("350 symbols"), "got: {text}");
+    assert!(text.contains("src/big.rs"), "got: {text}");
+}
+
+/// The debounce-window marker is distinct from the deferred one above —
+/// worded differently, and both can appear in the same response.
+#[test]
+fn in_flight_marker_is_surfaced_in_tool_responses() {
+    let storage = setup_storage();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("watch-in-flight"), r#"["src/edited.rs"]"#).unwrap();
+    let handler = McpHandler::new(storage)
+        .unwrap()
+        .with_weave_dir(dir.path().to_path_buf());
+    let text = call_repo_map_text(&handler);
+    assert!(text.contains("debounce window"), "got: {text}");
+    assert!(text.contains("src/edited.rs"), "got: {text}");
+}
+
+// ─── impl.md M2.15: live reload on external reindex ─────────────────────────
+
+fn seed_file_db(path: &std::path::Path, symbol: &str) {
+    let mut storage = SqliteStorage::open(path).unwrap();
+    storage
+        .upsert_node(&Node {
+            id: 1,
+            repo_id: "r".into(),
+            path: "a.rs".into(),
+            symbol: symbol.into(),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 3,
+            signature: String::new(),
+        })
+        .unwrap();
+}
+
+/// Simulates a second-process `weave index` against the same path: the
+/// real CLI writes a fresh `.rebuild` file and atomically renames it over
+/// the active path (Core Invariant 2) — exactly this.
+fn second_process_index(path: &std::path::Path, extra_symbol: Option<&str>) {
+    let extra = extra_symbol;
+    let rebuild = path.with_extension("db.rebuild");
+    let mut storage = SqliteStorage::open(&rebuild).unwrap();
+    storage
+        .upsert_node(&Node {
+            id: 1,
+            repo_id: "r".into(),
+            path: "a.rs".into(),
+            symbol: "first_sym".into(),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 3,
+            signature: String::new(),
+        })
+        .unwrap();
+    if let Some(extra) = extra {
+        storage
+            .upsert_node(&Node {
+                id: 2,
+                repo_id: "r".into(),
+                path: "b.rs".into(),
+                symbol: extra.into(),
+                kind: "function".into(),
+                line_start: 1,
+                line_end: 3,
+                signature: String::new(),
+            })
+            .unwrap();
+    }
+    drop(storage);
+    std::fs::rename(&rebuild, path).unwrap();
+}
+
+#[test]
+fn handler_detects_external_reindex_and_returns_fresh_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("graph.db");
+    seed_file_db(&db, "first_sym");
+
+    let handler = McpHandler::open(&db)
+        .unwrap()
+        .with_recheck_interval(Duration::ZERO);
+    let before = call_repo_map_text(&handler);
+    assert!(before.contains("a.rs"));
+    assert!(!before.contains("b.rs"));
+
+    // A different process reindexes; the open Connection is pinned to the
+    // old inode, so the handler must fully close and reopen.
+    second_process_index(&db, Some("brand_new"));
+
+    let after = call_repo_map_text(&handler);
+    assert!(
+        after.contains("b.rs"),
+        "next call must reflect the external reindex: {after}"
+    );
+}
+
+#[test]
+fn bounded_interval_defers_the_restat_between_reindexes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("graph.db");
+    seed_file_db(&db, "first_sym");
+
+    let handler = McpHandler::open(&db)
+        .unwrap()
+        .with_recheck_interval(std::time::Duration::from_secs(3600));
+    assert!(call_repo_map_text(&handler).contains("a.rs"));
+
+    second_process_index(&dir.path().join("graph.db"), Some("brand_new"));
+
+    // Inside the bound: no reopen — the (still-current) old data answers.
+    let text = call_repo_map_text(&handler);
+    assert!(text.contains("a.rs"), "{text}");
+    assert!(
+        !text.contains("b.rs"),
+        "must not reopen per-request: {text}"
+    );
+}
+
+/// The reload path never panics or loses the session — even when the
+/// database file vanishes mid-session (unclean state), the handler keeps
+/// answering from its last-known-good snapshot.
+#[test]
+fn vanished_database_never_panics_the_handler() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("graph.db");
+    seed_file_db(&db, "first_sym");
+
+    let handler = McpHandler::open(&db)
+        .unwrap()
+        .with_recheck_interval(std::time::Duration::ZERO);
+    assert!(call_repo_map_text(&handler).contains("a.rs"));
+
+    std::fs::remove_file(&db).unwrap();
+
+    let text = call_repo_map_text(&handler);
+    assert!(
+        text.contains("a.rs"),
+        "last-known-good snapshot kept: {text}"
+    );
 }

@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use weave_graph_core::{Edge, EdgeId, Node, NodeId, Storage, StorageError};
+use weave_graph_core::{Edge, EdgeId, Node, NodeId, Note, NoteTier, Storage, StorageError};
 
 use crate::schema::{ensure_not_newer_than_supported, migrate, schema_version};
 
@@ -201,6 +201,25 @@ fn row_to_edge(row: &rusqlite::Row) -> rusqlite::Result<Edge> {
     })
 }
 
+const NOTE_COLUMNS: &str = "id, target_node_id, moniker, kind, tier, author, content, \
+     content_hash, stale, expires_at, created_at";
+
+fn note_from_row(row: &rusqlite::Row) -> rusqlite::Result<Note> {
+    Ok(Note {
+        id: row.get(0)?,
+        target_node_id: row.get::<_, Option<i64>>(1)?.map(|v| v as NodeId),
+        moniker: row.get(2)?,
+        kind: row.get(3)?,
+        tier: NoteTier::parse(&row.get::<_, String>(4)?),
+        author: row.get(5)?,
+        content: row.get(6)?,
+        content_hash: row.get(7)?,
+        stale: row.get::<_, i64>(8)? != 0,
+        expires_at: row.get(9)?,
+        created_at: row.get(10)?,
+    })
+}
+
 impl Storage for SqliteStorage {
     fn get_node(&self, id: NodeId) -> Result<Option<Node>, StorageError> {
         self.conn
@@ -385,6 +404,86 @@ impl Storage for SqliteStorage {
             .execute(
                 "DELETE FROM nodes WHERE repo_id = ?1 AND path = ?2",
                 params![repo_id, path],
+            )
+            .map_err(backend_err)?;
+        Ok(rows as u64)
+    }
+
+    fn pin_note(&self, note: &Note) -> Result<i64, StorageError> {
+        self.conn
+            .query_row(
+                "INSERT INTO notes (target_node_id, moniker, kind, tier, author, content, \
+                 content_hash, stale, expires_at, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 RETURNING id",
+                params![
+                    note.target_node_id.map(|v| v as i64),
+                    note.moniker,
+                    note.kind,
+                    note.tier.as_str(),
+                    note.author,
+                    note.content,
+                    note.content_hash,
+                    note.stale as i64,
+                    note.expires_at,
+                    note.created_at,
+                ],
+                |row| row.get(0),
+            )
+            .map_err(backend_err)
+    }
+
+    fn all_notes(&self) -> Result<Vec<Note>, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {NOTE_COLUMNS} FROM notes ORDER BY created_at, id"
+            ))
+            .map_err(backend_err)?;
+        let rows = stmt.query_map([], note_from_row).map_err(backend_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend_err)
+    }
+
+    fn recall_notes(&self, now: i64) -> Result<Vec<Note>, StorageError> {
+        // Read-time TTL filter, not a background sweep (impl.md M2.10).
+        // Orphaned notes are included — reported, never silently dropped.
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {NOTE_COLUMNS} FROM notes
+                 WHERE tier = 'crystallized' OR expires_at > ?1
+                 ORDER BY created_at DESC, id"
+            ))
+            .map_err(backend_err)?;
+        let rows = stmt
+            .query_map(params![now], note_from_row)
+            .map_err(backend_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend_err)
+    }
+
+    fn reattach_note(
+        &self,
+        id: i64,
+        target_node_id: Option<NodeId>,
+        stale: bool,
+    ) -> Result<(), StorageError> {
+        self.conn
+            .execute(
+                "UPDATE notes SET target_node_id = ?1, stale = ?2 WHERE id = ?3",
+                params![target_node_id.map(|v| v as i64), stale as i64, id],
+            )
+            .map_err(backend_err)?;
+        Ok(())
+    }
+
+    fn delete_expired_notes(&self, now: i64) -> Result<u64, StorageError> {
+        let rows = self
+            .conn
+            .execute(
+                "DELETE FROM notes WHERE tier = 'ephemeral' AND expires_at <= ?1",
+                params![now],
             )
             .map_err(backend_err)?;
         Ok(rows as u64)

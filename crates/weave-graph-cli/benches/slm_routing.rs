@@ -1,9 +1,7 @@
-//! `benches/slm_routing.rs` (`suges-slm.md` §4.3): TTFT and end-to-end
-//! `weave ask` routing latency across the held-out set. The
-//! deterministic fallback is benched always — it is the no-model
-//! baseline and the graceful-degradation floor. The `llama-cli` model
-//! path is benched only when `WEAVE_SLM_BENCH_MODEL` names a downloaded
-//! model (weights are never fetched by a bench).
+//! `benches/slm_routing.rs` (`slm-spec.md` §4.3): TTFT and routing latency.
+//! Deterministic fallback router serves as graceful-degradation floor;
+//! `llama-cli` path is benched only if `WEAVE_SLM_BENCH_MODEL` is set,
+//! preserving zero-network offline execution invariants.
 //!
 //! `weave-graph-cli` is a bin-only package, so the module is included
 //! by path. `required-features = ["slm"]` in Cargo.toml skips building

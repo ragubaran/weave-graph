@@ -39,14 +39,51 @@ pub fn weave_repo_map(storage: &dyn Storage, csr: &CsrGraph, args: RepoMapArgs) 
         .collect();
     // Sort descending by degree (hub nodes first), then by path for stability.
     files.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-    files.truncate(args.max_files);
 
+    // M2.16: with `max_tokens` set, truncation is token-estimate-based —
+    // lines are added while the running estimate fits. Without it,
+    // `max_files` truncation is byte-identical to today.
     let mut lines = Vec::with_capacity(files.len() + 1);
     lines.push(format!(
         "repo map ({} files, {} total):",
-        files.len(),
+        files.len().min(args.max_files),
         file_symbol_count.len()
     ));
+    let mut rendered: Vec<String> = files
+        .iter()
+        .map(|(path, degree, symbols)| format!("  {path}  [{symbols} symbols, {degree} edges]"))
+        .collect();
+    if let Some(max) = args.max_tokens {
+        let mut kept: Vec<String> = Vec::new();
+        for line in rendered.drain(..) {
+            if kept.len() >= args.max_files {
+                break;
+            }
+            let mut candidate = kept.clone();
+            candidate.push(line.clone());
+            // The estimate covers the whole response, header included —
+            // the header alone already costs tokens.
+            let text = format!(
+                "repo map ({} files, {} total):\n{}",
+                candidate.len(),
+                file_symbol_count.len(),
+                candidate.join("\n")
+            );
+            if crate::tools::estimate_tokens(&text) > max {
+                break;
+            }
+            kept.push(line);
+        }
+        return RepoMapResult {
+            text: format!(
+                "repo map ({} files, {} total):\n{}",
+                kept.len(),
+                file_symbol_count.len(),
+                kept.join("\n")
+            ),
+        };
+    }
+    files.truncate(args.max_files);
     for (path, degree, symbols) in &files {
         lines.push(format!("  {path}  [{symbols} symbols, {degree} edges]"));
     }

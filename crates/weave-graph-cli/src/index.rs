@@ -23,7 +23,7 @@ pub(crate) fn indexed_file_count(active_db: &Path) -> Result<usize, StorageError
     Ok(paths.len())
 }
 
-fn rel_path(root: &Path, path: &Path) -> String {
+pub(crate) fn rel_path(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
         .to_string_lossy()
@@ -153,6 +153,18 @@ pub(crate) fn full_reindex(
         crate::docs::upsert_doc_nodes(&mut storage, root, &parsed_md)?;
         crate::docs::upsert_doc_edges(&mut storage, root, &parsed_md)?;
     }
+    #[cfg(feature = "notes")]
+    {
+        // Carry notes over from the old database the rebuild is replacing,
+        // re-attaching by moniker (M2.10) — inside the same transaction.
+        crate::notes::carry_over_and_prune(
+            &storage,
+            active_db,
+            root,
+            &parsed_files,
+            &moniker_to_id,
+        )?;
+    }
     storage.commit_bulk_write()?;
     drop(storage);
     fs::rename(&rebuild_db, active_db)?;
@@ -212,6 +224,14 @@ pub(crate) fn incremental_reindex(
             .collect();
         crate::docs::upsert_doc_nodes(&mut storage, root, &changed_md)?;
         crate::docs::upsert_doc_edges(&mut storage, root, &all_parsed_md)?;
+    }
+    #[cfg(feature = "notes")]
+    {
+        // Notes ride inside the copied database — the purge leaves their
+        // target_node_id dangling (no FK enforcement is enabled on this
+        // connection); reattach_and_prune re-resolves by moniker below,
+        // explicitly nulling out anything that no longer resolves (M2.10).
+        crate::notes::reattach_and_prune(&storage, root, &parsed_files, &moniker_to_id)?;
     }
     storage.commit_bulk_write()?;
     let total_symbols = storage.all_nodes()?.len();

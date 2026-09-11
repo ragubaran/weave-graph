@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use weave_graph_core::schema::LATEST_SCHEMA_VERSION;
 use weave_graph_core::{Edge, Node, Storage};
 
 /// Constructor injection point: every suite fn opens storage through
@@ -60,5 +61,5 @@ pub fn graph_survives_close_and_reopen(open: OpenFn) {
     assert_eq!(edges[0].target_id, node_b_id);
     assert_eq!(edges[0].kind, "CALLS_EXACT");
 
-    assert_eq!(reopened.schema_version().unwrap(), 3);
+    assert_eq!(reopened.schema_version().unwrap(), LATEST_SCHEMA_VERSION);
 }

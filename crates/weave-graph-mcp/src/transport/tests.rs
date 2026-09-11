@@ -58,7 +58,7 @@ impl Write for MockStream {
 #[test]
 fn stdio_transport_round_trip() {
     let storage = setup_storage();
-    let handler = McpHandler::new(&storage).unwrap();
+    let handler = McpHandler::new(storage).unwrap();
 
     let input = format!(
         "\n   \n{}\n{}\n{}\n",
@@ -104,7 +104,7 @@ fn stdio_transport_new_default_compiles() {
 #[test]
 fn http_transport_handles_get_health() {
     let storage = setup_storage();
-    let handler = McpHandler::new(&storage).unwrap();
+    let handler = McpHandler::new(storage).unwrap();
     let transport = HttpTransport::new("127.0.0.1", 8080, false);
 
     let req = b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n";
@@ -119,7 +119,7 @@ fn http_transport_handles_get_health() {
 #[test]
 fn http_transport_handles_post_jsonrpc() {
     let storage = setup_storage();
-    let handler = McpHandler::new(&storage).unwrap();
+    let handler = McpHandler::new(storage).unwrap();
     let transport = HttpTransport::new("127.0.0.1", 8080, false);
 
     let ping = json!({
@@ -146,7 +146,7 @@ fn http_transport_handles_post_jsonrpc() {
 #[test]
 fn http_transport_handle_empty_stream() {
     let storage = setup_storage();
-    let handler = McpHandler::new(&storage).unwrap();
+    let handler = McpHandler::new(storage).unwrap();
     let transport = HttpTransport::new("127.0.0.1", 8080, false);
 
     let mut stream = MockStream::new(b"");
@@ -157,7 +157,7 @@ fn http_transport_handle_empty_stream() {
 #[test]
 fn http_transport_run_security_check() {
     let storage = setup_storage();
-    let handler = McpHandler::new(&storage).unwrap();
+    let handler = McpHandler::new(storage).unwrap();
     let mut transport = HttpTransport::new("0.0.0.0", 8080, false);
     assert!(transport.run(&handler).is_err());
 }
@@ -165,7 +165,7 @@ fn http_transport_run_security_check() {
 #[test]
 fn http_transport_run_bind_error() {
     let storage = setup_storage();
-    let handler = McpHandler::new(&storage).unwrap();
+    let handler = McpHandler::new(storage).unwrap();
     // Port 1 usually requires root privileges or is unusable, giving Io error
     let mut transport = HttpTransport::new("127.0.0.1", 1, false);
     assert!(transport.run(&handler).is_err());

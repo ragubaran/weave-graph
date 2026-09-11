@@ -1,8 +1,7 @@
-//! `weave journal` (`impl.md` M2.4.5, `suges-slm.md` §2.4): combines the
-//! git diff with the graph delta into a structured changelog — what
-//! changed, which symbols were affected, the blast radius, and which
-//! docs reference the changed code. Every symbol/line figure comes from
-//! the index; there is no model in this path at all.
+//! `weave journal` (`impl.md` M2.4.5, `slm-spec.md` §2.4): structural changelogs.
+//! Combines git diff with graph delta to output symbols affected, blast radius,
+//! and linked docs. Every figure is derived deterministically from the index
+//! with zero model inference in this path.
 
 use std::collections::HashSet;
 use std::path::Path;

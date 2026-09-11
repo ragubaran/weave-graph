@@ -7,7 +7,7 @@
 
 /// Highest schema version any migration in `MIGRATIONS` brings a database
 /// to — round-trip tests assert against it.
-pub const LATEST_SCHEMA_VERSION: u32 = 3;
+pub const LATEST_SCHEMA_VERSION: u32 = 4;
 
 /// Base schema (`plan.md` §1.1): `nodes`, `edges`, `doc_links`, `contracts`,
 /// `schema_version`. Unique indices on each table's natural key make
@@ -81,10 +81,34 @@ ALTER TABLE doc_links ADD COLUMN provenance_hash TEXT;
 ALTER TABLE doc_links ADD COLUMN provenance_signature TEXT;
 ";
 
+/// M2.10 (`notes` feature): cross-agent memory graph. The *table* lands
+/// unconditionally — same reasoning as V3's own precedent: schema version
+/// must not depend on Cargo features, and a default binary must be able to
+/// open a notes-enabled repo's database without a SchemaTooNew refusal.
+/// Everything that writes/reads it (pin/list/recall, staleness, expiry) is
+/// feature-gated in the CLI and MCP crates.
+pub const V4_NOTES_TABLE: &str = "
+CREATE TABLE notes (
+    id INTEGER PRIMARY KEY,
+    target_node_id INTEGER REFERENCES nodes(id) ON DELETE SET NULL,
+    moniker TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    tier TEXT NOT NULL,
+    author TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_hash TEXT,
+    stale INTEGER NOT NULL DEFAULT 0,
+    expires_at INTEGER,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_notes_moniker ON notes(moniker);
+";
+
 /// Ordered migration history. Each backend replays every `(version, sql)`
 /// newer than the database's recorded version, in its own transaction.
 pub const MIGRATIONS: &[(u32, &str)] = &[
     (1, V1_CREATE_TABLES),
     (2, V2_TRAVERSAL_INDICES),
     (3, V3_DOC_LINK_PROVENANCE),
+    (4, V4_NOTES_TABLE),
 ];

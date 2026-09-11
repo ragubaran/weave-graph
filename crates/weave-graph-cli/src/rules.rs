@@ -1,9 +1,7 @@
-//! `weave slm review-rules` (`impl.md` M2.4.4, `suges-slm.md` §2.3):
-//! candidate ADR rules extracted deterministically from Markdown prose.
-//! This pass needs no model — it surfaces lines stating obligations
-//! ("must (not)…") as **candidates requiring confirmation**, never
-//! authoritative graph facts (§1.2). Confirmed rules persist in
-//! `.weave/rules.toml` for the `policy-lint` feature (M3.2) to consume.
+//! `weave slm review-rules` (`impl.md` M2.4.4, `slm-spec.md` §2.3):
+//! deterministic ADR rule candidate extraction from Markdown prose.
+//! Surfaces obligation statements as candidates requiring confirmation
+//! rather than authoritative facts, persisting approved rules to `.weave/rules.toml`.
 
 use std::collections::HashSet;
 use std::fs;

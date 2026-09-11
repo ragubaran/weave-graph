@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>__TITLE__ — weave report</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1e1e2e; color: #cdd6f4;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  #bar { padding: 8px 14px; font-size: 13px; color: #a6adc8; border-bottom: 1px solid #313244; }
+  svg { display: block; width: 100%; height: calc(100% - 36px); }
+  rect { fill: #313244; stroke: #89b4fa; stroke-width: 1.5; rx: 8; }
+  line { stroke: #585b70; stroke-width: 1.5; marker-end: url(#arrow); }
+  text { fill: #cdd6f4; font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
+  text.sub { fill: #9399b2; font-size: 10px; }
+</style>
+</head>
+<body>
+<div id="bar">__TITLE__ — rendered offline by `weave report`; no network requests.</div>
+<svg id="view" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#9399b2"></path>
+    </marker>
+  </defs>
+</svg>
+<script type="application/json" id="canvas-data">__DATA__</script>
+<script>
+(function () {
+  const canvas = JSON.parse(document.getElementById("canvas-data").textContent);
+  const svg = document.getElementById("view");
+  const NS = "http://www.w3.org/2000/svg";
+  const byId = {};
+  for (const n of canvas.nodes || []) byId[n.id] = n;
+  const center = (n) => [n.x + n.width / 2, n.y + n.height / 2];
+  const el = (tag, attrs) => {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    return e;
+  };
+  // Edges first so nodes render above them.
+  for (const e of canvas.edges || []) {
+    const a = byId[e.fromNode], b = byId[e.toNode];
+    if (!a || !b) continue; // never render a dangling endpoint
+    svg.appendChild(el("line", {
+      x1: a.x + a.width / 2, y1: a.y + a.height / 2,
+      x2: b.x + b.width / 2, y2: b.y + b.height / 2,
+    }));
+  }
+  for (const n of canvas.nodes || []) {
+    svg.appendChild(el("rect", { x: n.x, y: n.y, width: n.width, height: n.height, rx: 6 }));
+    const label = n.label || (n.text || "").split("\n")[0] || n.id;
+    const t = el("text", { x: n.x + 10, y: n.y + 20 });
+    t.textContent = label.length > 28 ? label.slice(0, 27) + "…" : label;
+    svg.appendChild(t);
+    if (n.file) {
+      const sub = el("text", { x: n.x + 10, y: n.y + 36 });
+      sub.setAttribute("class", "sub");
+      sub.textContent = n.file;
+      svg.appendChild(sub);
+    }
+  }
+  // Fit the drawing to the viewport.
+  let xs = [], ys = [], xe = [], ye = [];
+  for (const n of canvas.nodes || []) {
+    xs.push(n.x); ys.push(n.y); xe.push(n.x + n.width); ye.push(n.y + n.height);
+  }
+  if (xs.length) {
+    const pad = 30;
+    const minX = Math.min(...xs) - pad, minY = Math.min(...ys) - pad;
+    const w = Math.max(...xe) - minX + pad, h = Math.max(...ye) - minY + pad;
+    svg.setAttribute("viewBox", `${minX} ${minY} ${w} ${h}`);
+    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  }
+})();
+</script>
+</body>
+</html>

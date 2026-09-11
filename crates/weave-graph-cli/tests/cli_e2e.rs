@@ -240,6 +240,64 @@ fn test_cli_init_multiple_and_existing_config() {
         ));
 }
 
+/// impl.md M2.13: `weave report --html` renders standalone offline HTML
+/// viewer bundles next to the canvases; `weave viz` re-renders and prints
+/// the viewer path without launching a browser (`--open=false`).
+#[test]
+#[cfg(feature = "viz")]
+fn test_cli_report_html_and_viz_command() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("main.rs"), "fn a() { b(); }\nfn b() {}").unwrap();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init"])
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["report", "--html"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("weave-report.html"));
+
+    let report_html = root.join(".weave/report/weave-report.html");
+    let html = std::fs::read_to_string(&report_html).unwrap();
+    assert!(html.contains("<svg"));
+    assert!(html.contains("\"nodes\""));
+    assert!(root.join(".weave/report/weave-modules.html").exists());
+
+    // `weave viz` re-renders from the existing report without launching
+    // a browser (--open=false).
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["viz", "--open=false"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("weave-report.html"));
+
+    // Before any report, viz is a clear error, not a panic.
+    let dir2 = tempdir().unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(dir2.path())
+        .args(["viz", "--open=false"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("weave report"));
+}
+
 /// impl.md M2.6: `weave init --mode multiple` emits the L1 CI-cache snippet
 /// (exact-sha key + prefix-fallback restore-keys), prints it, and writes it
 /// to `.weave/ci-cache.yml`; single mode stays cache-free (plan.md §1.3).
@@ -694,4 +752,67 @@ fn test_cli_index_watch_defers_a_large_blast_radius_change() {
         .success()
         .stdout(predicate::str::contains("Total Symbols:  4"))
         .stdout(predicate::str::contains("blast radius pending").not());
+}
+
+/// impl.md M2.11's last open task, closed: a real `weave serve --mcp`
+/// process with `[watch] enabled` running in the background surfaces the
+/// in-flight (still-inside-the-debounce-window) staleness marker in a real
+/// `tools/call` response — not just `weave status`.
+#[test]
+#[cfg(feature = "watch")]
+fn test_cli_serve_mcp_surfaces_watch_staleness_in_tool_responses() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("lib.rs"), "fn only_fn() {}\n").unwrap();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--mode", "single"])
+        .assert()
+        .success();
+    std::fs::write(
+        root.join(".weave").join("config.toml"),
+        "mode = \"single\"\n\n[watch]\nenabled = true\ndebounce_ms = 300\n",
+    )
+    .unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_weave"))
+        .current_dir(root)
+        .args(["serve", "--mcp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+
+    // Let the background watcher thread actually start before editing.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    std::fs::write(root.join("lib.rs"), "fn only_fn() {}\nfn added_fn() {}\n").unwrap();
+    // Still well inside the 300ms debounce window.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"weave_repo_map","arguments":{{}}}}}}"#
+    )
+    .unwrap();
+    let response = lines.next().unwrap().unwrap();
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(response.contains("debounce window"), "got: {response}");
+    assert!(response.contains("lib.rs"), "got: {response}");
 }

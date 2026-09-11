@@ -88,6 +88,31 @@ pub(crate) fn clear_pending_marker(weave_dir: &Path) {
     let _ = std::fs::remove_file(marker_path(weave_dir));
 }
 
+/// Names files seen changed but still inside the current debounce window —
+/// distinct from [`PendingMarker`]: this is the transient "not reindexed
+/// *yet*" case (cleared the instant debounce fires, whether that leads to a
+/// real reindex or a deferral), not the "too large to auto-reindex" case.
+/// MCP tool responses surface both, worded differently, per M2.11's task.
+fn in_flight_path(weave_dir: &Path) -> PathBuf {
+    weave_dir.join("watch-in-flight")
+}
+
+pub(crate) fn write_in_flight(weave_dir: &Path, files: &std::collections::BTreeSet<String>) {
+    let content = serde_json::to_string(&files.iter().collect::<Vec<_>>()).unwrap_or_default();
+    let _ = std::fs::write(in_flight_path(weave_dir), content);
+}
+
+pub(crate) fn clear_in_flight(weave_dir: &Path) {
+    let _ = std::fs::remove_file(in_flight_path(weave_dir));
+}
+
+pub(crate) fn read_in_flight(weave_dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(in_flight_path(weave_dir))
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or_default()
+}
+
 /// Union of `reachable_within` (unbounded hop count, matching
 /// `weave_impact_radius`'s own "full BFS, no depth cap" convention) over
 /// every already-indexed symbol in `changed_files` — the "how much would
@@ -122,10 +147,14 @@ pub(crate) fn blast_radius(
 /// Each batch carries the real paths `notify` reported for that debounce
 /// window — deliberately not a git diff: that would silently never fire in
 /// a repo with no commit to diff against, where a raw filesystem event is
-/// still real, actionable information. Returns once `events` disconnects.
+/// still real, actionable information. `on_event` fires once per accumulated
+/// path *before* the batch is complete — the only way to surface "still
+/// inside the debounce window" staleness, since that state doesn't exist
+/// once `on_batch` runs. Returns once `events` disconnects.
 pub(crate) fn run(
     events: &Receiver<PathBuf>,
     debounce_ms: u64,
+    mut on_event: impl FnMut(&PathBuf),
     mut on_batch: impl FnMut(&std::collections::BTreeSet<PathBuf>),
 ) {
     let debounce = Duration::from_millis(debounce_ms);
@@ -133,6 +162,7 @@ pub(crate) fn run(
         let mut batch = std::collections::BTreeSet::new();
         match events.recv() {
             Ok(p) => {
+                on_event(&p);
                 batch.insert(p);
             }
             Err(_) => return,
@@ -140,6 +170,7 @@ pub(crate) fn run(
         loop {
             match events.recv_timeout(debounce) {
                 Ok(p) => {
+                    on_event(&p);
                     batch.insert(p);
                 }
                 Err(RecvTimeoutError::Timeout) => break,

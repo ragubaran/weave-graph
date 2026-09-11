@@ -27,15 +27,36 @@ pub fn weave_trace_calls(
     let outgoing = outgoing_chain(csr, &nodes, root_id, args.depth);
     let incoming = incoming_chain(storage, &nodes, root_id, args.depth);
 
-    let mut lines = vec![format!("trace_calls: {}", args.symbol)];
-    lines.push(format!("  outgoing ({}):", outgoing.len()));
-    lines.extend(outgoing.iter().map(|s| format!("    → {s}")));
-    lines.push(format!("  incoming ({}):", incoming.len()));
-    lines.extend(incoming.iter().map(|s| format!("    ← {s}")));
+    let render = |per_chain: usize| -> String {
+        let mut out = vec![format!("trace_calls: {}", args.symbol)];
+        for (label, chain) in [("outgoing", &outgoing), ("incoming", &incoming)] {
+            out.push(format!("  {} ({}):", label, chain.len()));
+            out.extend(chain.iter().take(per_chain).map(|s| format!("    → {s}")));
+            let hidden = chain.len().saturating_sub(per_chain);
+            if hidden > 0 {
+                out.push(format!("    … and {hidden} more"));
+            }
+        }
+        out.join("\n")
+    };
 
-    TraceCallsResult {
-        text: lines.join("\n"),
+    let full = render(usize::MAX);
+    // M2.16: no budget → byte-identical to today. Over budget → truncate
+    // the chain lines (hops closest to the root survive) with explicit
+    // "... and N more" markers — the totals never go silent.
+    if crate::tools::under_budget(&full, args.max_tokens) {
+        return TraceCallsResult { text: full };
     }
+    let max = args.max_tokens.unwrap_or(0);
+    let mut per_chain = outgoing.len().max(incoming.len());
+    while per_chain > 0 {
+        per_chain -= 1;
+        let text = render(per_chain);
+        if crate::tools::estimate_tokens(&text) <= max {
+            return TraceCallsResult { text };
+        }
+    }
+    TraceCallsResult { text: render(0) }
 }
 
 /// BFS outgoing hops up to `depth` via CSR (RoaringBitmap visited set).

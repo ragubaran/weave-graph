@@ -1,4 +1,5 @@
 use super::*;
+use weave_graph_core::schema::LATEST_SCHEMA_VERSION;
 
 fn node(repo: &str, path: &str, symbol: &str, line_start: u32) -> Node {
     Node {
@@ -144,7 +145,7 @@ fn contract_expectations_is_empty_when_nothing_was_recorded() {
 #[test]
 fn schema_version_reports_latest_after_open() {
     let storage = SqliteStorage::open_in_memory().unwrap();
-    assert_eq!(storage.schema_version().unwrap(), 3);
+    assert_eq!(storage.schema_version().unwrap(), LATEST_SCHEMA_VERSION);
 }
 
 #[test]
@@ -279,4 +280,101 @@ fn open_read_only_refuses_a_schema_newer_than_this_binary_supports() {
         Err(other) => panic!("expected SchemaTooNew{{found: 999}}, got {other:?}"),
         Ok(_) => panic!("expected SchemaTooNew{{found: 999}}, got Ok"),
     }
+}
+
+fn sample_note(target: Option<NodeId>, tier: NoteTier, expires_at: Option<i64>) -> Note {
+    Note {
+        id: 0,
+        target_node_id: target,
+        moniker: "a.rs#fn_a".into(),
+        kind: "note".into(),
+        tier,
+        author: "agent".into(),
+        content: "why this exists".into(),
+        content_hash: Some("abc".into()),
+        stale: false,
+        expires_at,
+        created_at: 1_000,
+    }
+}
+
+#[test]
+fn pinned_note_round_trips_through_recall() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    let id = storage
+        .pin_note(&sample_note(Some(a), NoteTier::Crystallized, None))
+        .unwrap();
+    let recalled = storage.recall_notes(2_000).unwrap();
+    assert_eq!(recalled.len(), 1);
+    assert_eq!(recalled[0].id, id);
+    assert_eq!(recalled[0].tier, NoteTier::Crystallized);
+    assert_eq!(recalled[0].target_node_id, Some(a));
+}
+
+#[test]
+fn recall_filters_expired_ephemerals_but_keeps_crystallized() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    // Ephemeral expired 100s before "now".
+    storage
+        .pin_note(&sample_note(Some(a), NoteTier::Ephemeral, Some(900)))
+        .unwrap();
+    // Ephemeral still live.
+    storage
+        .pin_note(&sample_note(Some(a), NoteTier::Ephemeral, Some(2_000)))
+        .unwrap();
+    // Crystallized never expires on its own.
+    storage
+        .pin_note(&sample_note(Some(a), NoteTier::Crystallized, None))
+        .unwrap();
+
+    assert_eq!(storage.recall_notes(1_000).unwrap().len(), 2);
+    assert_eq!(
+        storage.all_notes().unwrap().len(),
+        3,
+        "all_notes is the unfiltered view"
+    );
+}
+
+#[test]
+fn expired_ephemerals_are_deleted_only_on_demand() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    storage
+        .pin_note(&sample_note(Some(a), NoteTier::Ephemeral, Some(900)))
+        .unwrap();
+    storage
+        .pin_note(&sample_note(Some(a), NoteTier::Crystallized, None))
+        .unwrap();
+    // A crystallized note that somehow carries an expiry must not be
+    // deleted by the sweep either — the tier, not the column, decides.
+    storage
+        .pin_note(&sample_note(Some(a), NoteTier::Crystallized, Some(100)))
+        .unwrap();
+
+    let deleted = storage.delete_expired_notes(1_000).unwrap();
+    assert_eq!(deleted, 1);
+    assert_eq!(storage.all_notes().unwrap().len(), 2);
+}
+
+#[test]
+fn reattach_moves_the_target_and_sets_staleness() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    let b = storage.upsert_node(&node("r", "b.rs", "b", 1)).unwrap();
+    let id = storage
+        .pin_note(&sample_note(Some(a), NoteTier::Crystallized, None))
+        .unwrap();
+    // Purge-and-reinsert: same symbol, new node id, stale content.
+    storage.reattach_note(id, Some(b), true).unwrap();
+    let recalled = storage.recall_notes(1_000).unwrap();
+    assert_eq!(recalled[0].target_node_id, Some(b));
+    assert!(recalled[0].stale);
+
+    // None target = orphaned, and recall still reports it.
+    storage.reattach_note(id, None, false).unwrap();
+    let recalled = storage.recall_notes(1_000).unwrap();
+    assert_eq!(recalled[0].target_node_id, None);
+    assert!(!recalled[0].stale);
 }

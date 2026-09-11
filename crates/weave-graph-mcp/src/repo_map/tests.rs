@@ -41,6 +41,7 @@ fn repo_map_ranks_by_degree_and_respects_max_files() {
         RepoMapArgs {
             max_files: 10,
             module: None,
+            max_tokens: None,
         },
     );
     assert!(result.text.contains("hub.rs"), "hub.rs must appear");
@@ -65,6 +66,7 @@ fn repo_map_truncates_to_max_files() {
         RepoMapArgs {
             max_files: 2,
             module: None,
+            max_tokens: None,
         },
     );
     let file_lines = result
@@ -119,6 +121,7 @@ fn module_args() -> RepoMapArgs {
     RepoMapArgs {
         max_files: 50,
         module: Some(true),
+        max_tokens: None,
     }
 }
 
@@ -176,6 +179,7 @@ fn file_level_default_is_byte_identical_without_module_flag() {
         RepoMapArgs {
             max_files: 50,
             module: None,
+            max_tokens: None,
         },
     );
     let some_false = weave_repo_map(
@@ -184,6 +188,7 @@ fn file_level_default_is_byte_identical_without_module_flag() {
         RepoMapArgs {
             max_files: 50,
             module: Some(false),
+            max_tokens: None,
         },
     );
     assert_eq!(none.text, some_false.text);
@@ -231,9 +236,16 @@ fn module_drill_down_reaches_the_same_wiring_cards_as_the_file_level_path() {
         &fx.storage,
         FileApiArgs {
             paths: &module_files,
+            max_tokens: None,
         },
     );
-    let direct = weave_file_api(&fx.storage, FileApiArgs { paths: &all_paths });
+    let direct = weave_file_api(
+        &fx.storage,
+        FileApiArgs {
+            paths: &all_paths,
+            max_tokens: None,
+        },
+    );
     assert_wiring_cards_equal(&drill, &direct);
 }
 
@@ -243,4 +255,56 @@ fn assert_wiring_cards_equal(a: &FileApiResult, b: &FileApiResult) {
         assert_eq!(ca.path, cb.path);
         assert_eq!(ca.symbols, cb.symbols);
     }
+}
+
+// ─── impl.md M2.16: token-budgeted truncation ───────────────────────────────
+
+#[test]
+fn max_tokens_replaces_max_files_truncation_when_set() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    for i in 1..=10 {
+        storage
+            .upsert_node(&node(&format!("f{i}.rs"), &format!("s{i}")))
+            .unwrap();
+    }
+    let csr = CsrGraph::load(&storage).unwrap();
+
+    // max_files=10 alone would list all 10 files; a tight token budget sheds.
+    let result = weave_repo_map(
+        &storage,
+        &csr,
+        RepoMapArgs {
+            max_files: 10,
+            module: None,
+            max_tokens: Some(20),
+        },
+    );
+    assert!(
+        crate::tools::estimate_tokens(&result.text) <= 20,
+        "{}",
+        result.text
+    );
+    assert!(
+        result.text.lines().count() > 1,
+        "at least one file line: {}",
+        result.text
+    );
+
+    // Omitting max_tokens: max_files behavior unchanged (byte-identical
+    // to the M1.7-era format).
+    let default_result = weave_repo_map(
+        &storage,
+        &csr,
+        RepoMapArgs {
+            max_files: 3,
+            module: None,
+            max_tokens: None,
+        },
+    );
+    let file_lines = default_result
+        .text
+        .lines()
+        .filter(|l| l.trim_start().starts_with('f'))
+        .count();
+    assert_eq!(file_lines, 3);
 }

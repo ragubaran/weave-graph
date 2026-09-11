@@ -47,5 +47,49 @@ pub(crate) fn changed_since(root: &Path, sha: &str) -> Option<Vec<String>> {
     Some(paths)
 }
 
+/// Files changed on the PR side of `<ref>...HEAD` — a **three-dot**
+/// (merge-base) diff, distinct from `changed_since`'s two-dot diff: a PR
+/// blast-radius comment must not blame the PR for `main`'s own commits
+/// landed after the branch point (impl.md M2.12).
+///
+/// Shallow checkouts (`fetch-depth: 1`) are refused with a clear message
+/// naming the fix — `git merge-base` silently has no common ancestor
+/// there, and a raw `git` error would confuse exactly the CI user this
+/// exists for. `Err` (not `None`) because the caller should surface it,
+/// never silently fall back to a full diff.
+pub(crate) fn blast_since(root: &Path, base: &str) -> Result<Vec<String>, String> {
+    if run(root, &["rev-parse", "--is-shallow-repository"])
+        .as_deref()
+        .map(str::trim)
+        == Some("true")
+    {
+        return Err(
+            "shallow checkout: `git merge-base` has no common ancestor to diff against — \
+             set `fetch-depth: 0` (or deep enough to reach the merge-base) in your CI \
+             checkout; `weave init --mode multiple` emits a CI snippet that already does"
+                .to_string(),
+        );
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["diff", "--name-only", &format!("{base}...HEAD")])
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git diff {base}...HEAD failed: {} (is `{base}` a valid ref in this repo?)",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let mut paths: Vec<String> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
 #[cfg(test)]
 mod tests;

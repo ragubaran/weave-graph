@@ -7,6 +7,8 @@ mod error;
 mod file_api;
 mod handler;
 mod impact_radius;
+#[cfg(feature = "notes")]
+mod notes;
 pub mod protocol;
 mod repo_map;
 mod tools;

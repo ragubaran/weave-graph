@@ -1,9 +1,7 @@
-//! `slm` feature (`impl.md` M2.4, `suges-slm.md`): local intent routing
-//! for a human at a terminal. The model only translates intent into an
-//! exact graph query — it never authors graph facts. Inference runs
-//! behind a subprocess boundary (llama.cpp `llama-cli`), so the CLI
-//! process never links model code: the 0 MB idle-RSS budget holds by
-//! construction and every deterministic path stays untouched.
+//! `slm` feature (`impl.md` M2.4, `slm-spec.md`): local intent routing.
+//! Subprocess-isolated inference ensures 0 MB idle-RSS budget by construction;
+//! model translates intent into exact graph queries without authoring facts,
+//! preserving deterministic execution invariants across all base paths.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,8 +9,8 @@ use std::time::{Duration, Instant};
 
 pub(crate) const TOOLS: [&str; 4] = ["callers", "callees", "impact", "path"];
 
-/// Hard kill for a misbehaving inference subprocess — graceful
-/// degradation (`suges-slm.md` §4.2) means the CLI never hangs.
+/// Hard kill for an inference subprocess: ensures CLI never hangs
+/// under graceful degradation rules (`slm-spec.md` §4.2).
 const ROUTE_DEADLINE: Duration = Duration::from_secs(120);
 
 /// One routed intent: the tool plus parameters. `second` is only set
@@ -25,8 +23,8 @@ pub(crate) struct RoutedCall {
 }
 
 impl RoutedCall {
-    /// The exact `weave query` expression this call executes — routing
-    /// transparency (`suges-slm.md` §2.1) means always showing this.
+    /// Exact query executed: transparency (`slm-spec.md` §2.1) requires
+    /// displaying resolved tool call before execution.
     pub(crate) fn expression(&self) -> String {
         match &self.second {
             Some(b) => format!("{}({},{})", self.tool, self.symbol, b),
@@ -54,9 +52,8 @@ impl std::fmt::Display for RouterError {
 }
 
 pub(crate) trait IntentRouter {
-    /// `symbols` is the index's symbol table: injected into the model
-    /// prompt so it picks real names, and used by the deterministic
-    /// router for near-miss correction (`suges-slm.md` §5.4).
+    /// Symbol table is injected to ground models on real names and
+    /// enables fallback near-miss correction (`slm-spec.md` §5.4).
     fn route(&self, question: &str, symbols: &[String]) -> Result<RoutedCall, RouterError>;
     fn name(&self) -> &'static str;
 }
@@ -68,11 +65,9 @@ pub(crate) struct ModelSpec {
     pub(crate) role: &'static str,
 }
 
-/// `suges-slm.md` §2.2's model spectrum. Deliberately no checksums
-/// hardcoded here: they must come from the publisher's manifest at
-/// pull time (`--sha256`), because a stale constant in this binary and
-/// a silently swapped upstream file would cancel out instead of
-/// failing — the exact silent-model-swap §2.2 forbids.
+/// Model spectrum from `slm-spec.md` §2.2. Checksums must be provided
+/// explicitly via `--sha256` at pull time rather than hardcoded,
+/// preventing silent upstream model substitution.
 pub(crate) const MODEL_REGISTRY: [ModelSpec; 4] = [
     ModelSpec {
         name: "qwen2.5-coder-0.5b",
@@ -104,9 +99,8 @@ pub(crate) fn model_spec(name: &str) -> Option<&'static ModelSpec> {
     MODEL_REGISTRY.iter().find(|m| m.name == name)
 }
 
-/// `$XDG_CACHE_HOME/weave/models/` (`suges-slm.md` §2.2), falling back
-/// to `$HOME/.cache/weave/models/`, then the temp dir when neither env
-/// var exists (never a CWD-relative path a stray `cd` would fork).
+/// Model cache path: checks `$XDG_CACHE_HOME` then `$HOME/.cache`
+/// per `slm-spec.md` §2.2, avoiding CWD-relative path ambiguity.
 pub(crate) fn models_dir() -> PathBuf {
     let base = std::env::var("XDG_CACHE_HOME")
         .map(PathBuf::from)
@@ -119,8 +113,8 @@ pub(crate) fn model_path(name: &str) -> PathBuf {
     models_dir().join(format!("{name}.gguf"))
 }
 
-/// A model is "loaded" only when a real file exists — weights are never
-/// bundled and never fetched at startup (`suges-slm.md` §4.2).
+/// Models are loaded lazily from disk; weights are never bundled or
+/// automatically fetched at startup per `slm-spec.md` §4.2.
 pub(crate) fn model_available(name: &str) -> bool {
     let path = model_path(name);
     path.is_file()
@@ -177,10 +171,9 @@ pub(crate) fn pull_model(
     std::fs::rename(&partial, dest).map_err(|e| format!("install failed: {e}"))
 }
 
-/// The deterministic fallback router (`suges-slm.md` §4.2): keyword
-/// mapping to one of the four query tools plus symbol-table-aware
-/// near-miss correction. Always available, microseconds fast, and the
-/// baseline `weave slm doctor` measures the model against.
+/// Deterministic fallback router (`slm-spec.md` §4.2): keyword mapping
+/// and symbol near-miss correction. Fast, offline baseline that
+/// `weave slm doctor` measures candidate models against.
 pub(crate) struct FuzzyRouter;
 
 impl IntentRouter for FuzzyRouter {
@@ -476,9 +469,8 @@ fn parse_route(output: &str) -> Result<RoutedCall, RouterError> {
     })
 }
 
-/// Router selection (`suges-slm.md` §4.2 graceful degradation): the
-/// model router when its weights are present, the deterministic router
-/// otherwise. Never a hang, never a hard error for a missing model.
+/// Router selection (`slm-spec.md` §4.2 graceful degradation): selects
+/// model router if weights exist, falling back to deterministic router.
 pub(crate) fn select_router(model_name: &str) -> Box<dyn IntentRouter> {
     if model_available(model_name) {
         Box::new(LlamaCliRouter::new(model_name))
@@ -487,9 +479,8 @@ pub(crate) fn select_router(model_name: &str) -> Box<dyn IntentRouter> {
     }
 }
 
-/// One held-out prompt (`suges-slm.md` §2.5): fixed question, expected
-/// tool, a `symbol_table` that must contain the expected symbol, and
-/// the expected exact symbol the held-out set pins as correct.
+/// Held-out prompt (`slm-spec.md` §2.5): fixed question, expected tool,
+/// symbol table, and expected exact symbol for automated accuracy checks.
 pub(crate) struct HeldOutPrompt {
     pub(crate) question: &'static str,
     pub(crate) expected_tool: &'static str,
@@ -565,9 +556,8 @@ impl DoctorOutcome {
         (ok as f64 / total as f64) * 100.0
     }
 
-    /// `suges-slm.md` §2.5's targets: >95% tool selection, >98% param
-    /// grounding, <100ms TTFT p50. With 8 held-out prompts the rate
-    /// targets mean all 8 — the strictest reading, applied honestly.
+    /// Evaluates targets from `slm-spec.md` §2.5: requires 100% pass rate
+    /// across the held-out prompt suite to confirm grounding and selection.
     pub(crate) fn pass(&self) -> bool {
         self.failures.is_empty()
     }

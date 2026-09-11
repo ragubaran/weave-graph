@@ -44,6 +44,26 @@ impl Storage for FakeStorage {
     fn purge_file_nodes(&mut self, _: &str, _: &str) -> Result<u64, StorageError> {
         unimplemented!("not needed for these tests")
     }
+
+    fn pin_note(&self, _: &crate::notes::Note) -> Result<i64, StorageError> {
+        unimplemented!("not needed for these tests")
+    }
+
+    fn all_notes(&self) -> Result<Vec<crate::notes::Note>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    fn recall_notes(&self, _: i64) -> Result<Vec<crate::notes::Note>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    fn reattach_note(&self, _: i64, _: Option<NodeId>, _: bool) -> Result<(), StorageError> {
+        unimplemented!("not needed for these tests")
+    }
+
+    fn delete_expired_notes(&self, _: i64) -> Result<u64, StorageError> {
+        Ok(0)
+    }
 }
 
 fn node(id: NodeId) -> crate::model::Node {

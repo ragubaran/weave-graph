@@ -2,9 +2,28 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::Path;
 
-use weave_graph_core::{Edge, EdgeId, Node, NodeId, Storage, StorageError};
+use weave_graph_core::{Edge, EdgeId, Node, NodeId, Note, NoteTier, Storage, StorageError};
 
 use crate::schema::{migrate, schema_version};
+
+const NOTE_COLUMNS: &str = "id, target_node_id, moniker, kind, tier, author, content, \
+     content_hash, stale, expires_at, created_at";
+
+fn note_from_row(row: &libsql::Row) -> libsql::Result<Note> {
+    Ok(Note {
+        id: row.get(0)?,
+        target_node_id: row.get::<Option<i64>>(1)?.map(|v| v as NodeId),
+        moniker: row.get(2)?,
+        kind: row.get(3)?,
+        tier: NoteTier::parse(&row.get::<String>(4)?),
+        author: row.get(5)?,
+        content: row.get(6)?,
+        content_hash: row.get(7)?,
+        stale: row.get::<i64>(8)? != 0,
+        expires_at: row.get(9)?,
+        created_at: row.get(10)?,
+    })
+}
 
 /// libSQL-backed `Storage` implementation (`impl.md` M2.7), embedded
 /// (`Builder::new_local` — no network, no server). Same schema and
@@ -318,6 +337,105 @@ impl Storage for TursoStorage {
                 .execute(
                     "DELETE FROM nodes WHERE repo_id = ?1 AND path = ?2",
                     (repo_id, path),
+                )
+                .await?;
+            Ok(rows)
+        })
+    }
+
+    fn pin_note(&self, note: &Note) -> Result<i64, StorageError> {
+        block_on(async {
+            let mut rows = self
+                .conn
+                .query(
+                    "INSERT INTO notes (target_node_id, moniker, kind, tier, author, content, \
+                     content_hash, stale, expires_at, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                     RETURNING id",
+                    (
+                        note.target_node_id.map(|v| v as i64),
+                        note.moniker.as_str(),
+                        note.kind.as_str(),
+                        note.tier.as_str(),
+                        note.author.as_str(),
+                        note.content.as_str(),
+                        note.content_hash.clone(),
+                        note.stale,
+                        note.expires_at,
+                        note.created_at,
+                    ),
+                )
+                .await?;
+            match rows.next().await? {
+                Some(row) => Ok(row.get::<i64>(0)?),
+                None => Err(libsql::Error::QueryReturnedNoRows),
+            }
+        })
+    }
+
+    fn all_notes(&self) -> Result<Vec<Note>, StorageError> {
+        block_on(async {
+            let mut rows = self
+                .conn
+                .query(
+                    &format!("SELECT {NOTE_COLUMNS} FROM notes ORDER BY created_at, id"),
+                    (),
+                )
+                .await?;
+            let mut notes = Vec::new();
+            while let Some(row) = rows.next().await? {
+                notes.push(note_from_row(&row)?);
+            }
+            Ok(notes)
+        })
+    }
+
+    fn recall_notes(&self, now: i64) -> Result<Vec<Note>, StorageError> {
+        // Read-time TTL filter, not a background sweep (impl.md M2.10).
+        block_on(async {
+            let mut rows = self
+                .conn
+                .query(
+                    &format!(
+                        "SELECT {NOTE_COLUMNS} FROM notes
+                         WHERE tier = 'crystallized' OR expires_at > ?1
+                         ORDER BY created_at DESC, id"
+                    ),
+                    libsql::params![now],
+                )
+                .await?;
+            let mut notes = Vec::new();
+            while let Some(row) = rows.next().await? {
+                notes.push(note_from_row(&row)?);
+            }
+            Ok(notes)
+        })
+    }
+
+    fn reattach_note(
+        &self,
+        id: i64,
+        target_node_id: Option<NodeId>,
+        stale: bool,
+    ) -> Result<(), StorageError> {
+        block_on(async {
+            self.conn
+                .execute(
+                    "UPDATE notes SET target_node_id = ?1, stale = ?2 WHERE id = ?3",
+                    (target_node_id.map(|v| v as i64), stale, id),
+                )
+                .await?;
+            Ok(())
+        })
+    }
+
+    fn delete_expired_notes(&self, now: i64) -> Result<u64, StorageError> {
+        block_on(async {
+            let rows = self
+                .conn
+                .execute(
+                    "DELETE FROM notes WHERE tier = 'ephemeral' AND expires_at <= ?1",
+                    libsql::params![now],
                 )
                 .await?;
             Ok(rows)

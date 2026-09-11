@@ -1,11 +1,13 @@
 use super::*;
-use weave_graph_core::schema::{V1_CREATE_TABLES, V2_TRAVERSAL_INDICES};
+use weave_graph_core::schema::{
+    LATEST_SCHEMA_VERSION, V1_CREATE_TABLES, V2_TRAVERSAL_INDICES, V3_DOC_LINK_PROVENANCE,
+};
 
 #[test]
 fn fresh_db_migrates_to_latest_version() {
     let conn = Connection::open_in_memory().unwrap();
     migrate(&conn).unwrap();
-    assert_eq!(schema_version(&conn).unwrap(), 3);
+    assert_eq!(schema_version(&conn).unwrap(), LATEST_SCHEMA_VERSION);
 }
 
 #[test]
@@ -13,7 +15,7 @@ fn migrate_is_idempotent_once_current() {
     let conn = Connection::open_in_memory().unwrap();
     migrate(&conn).unwrap();
     migrate(&conn).unwrap();
-    assert_eq!(schema_version(&conn).unwrap(), 3);
+    assert_eq!(schema_version(&conn).unwrap(), LATEST_SCHEMA_VERSION);
 }
 
 #[test]
@@ -27,7 +29,7 @@ fn legacy_v1_db_upgrades_to_latest() {
     assert_eq!(schema_version(&conn).unwrap(), 1);
 
     migrate(&conn).unwrap();
-    assert_eq!(schema_version(&conn).unwrap(), 3);
+    assert_eq!(schema_version(&conn).unwrap(), LATEST_SCHEMA_VERSION);
 
     // The v2 indices must actually exist now, not just the version row.
     let index_exists: bool = conn
@@ -50,7 +52,7 @@ fn legacy_v2_db_upgrades_to_v3_doc_link_provenance_columns() {
     assert_eq!(schema_version(&conn).unwrap(), 2);
 
     migrate(&conn).unwrap();
-    assert_eq!(schema_version(&conn).unwrap(), 3);
+    assert_eq!(schema_version(&conn).unwrap(), LATEST_SCHEMA_VERSION);
 
     for column in [
         "provenance_commit",
@@ -82,6 +84,31 @@ fn refuses_to_open_a_schema_newer_than_this_binary_supports() {
     let err = migrate(&conn).unwrap_err();
     assert!(matches!(
         err,
-        StorageError::SchemaTooNew { found: 999, max: 3 }
+        StorageError::SchemaTooNew {
+            found: 999,
+            max: LATEST_SCHEMA_VERSION
+        }
     ));
+}
+
+#[test]
+fn legacy_v3_db_upgrades_to_v4_notes_table() {
+    let conn = Connection::open_in_memory().unwrap();
+    let v3_only = format!(
+        "BEGIN;\n{V1_CREATE_TABLES}\n{V2_TRAVERSAL_INDICES}\n{V3_DOC_LINK_PROVENANCE}\nINSERT INTO schema_version (version, applied_at) VALUES (3, strftime('%s', 'now'));\nCOMMIT;"
+    );
+    conn.execute_batch(&v3_only).unwrap();
+    assert_eq!(schema_version(&conn).unwrap(), 3);
+
+    migrate(&conn).unwrap();
+    assert_eq!(schema_version(&conn).unwrap(), LATEST_SCHEMA_VERSION);
+
+    let notes_table: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'notes')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(notes_table, "notes table must exist after v4");
 }

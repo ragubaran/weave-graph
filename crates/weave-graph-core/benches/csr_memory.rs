@@ -90,6 +90,26 @@ impl Storage for ChainStorage {
     fn purge_file_nodes(&mut self, _: &str, _: &str) -> Result<u64, StorageError> {
         unimplemented!("bench only reads")
     }
+
+    fn pin_note(&self, _: &weave_graph_core::notes::Note) -> Result<i64, StorageError> {
+        unimplemented!("bench only reads")
+    }
+
+    fn all_notes(&self) -> Result<Vec<weave_graph_core::notes::Note>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    fn recall_notes(&self, _: i64) -> Result<Vec<weave_graph_core::notes::Note>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    fn reattach_note(&self, _: i64, _: Option<NodeId>, _: bool) -> Result<(), StorageError> {
+        unimplemented!("bench only reads")
+    }
+
+    fn delete_expired_notes(&self, _: i64) -> Result<u64, StorageError> {
+        Ok(0)
+    }
 }
 
 fn csr_memory(c: &mut Criterion) {

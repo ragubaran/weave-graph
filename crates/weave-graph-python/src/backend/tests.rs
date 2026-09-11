@@ -135,7 +135,7 @@ fn unknown_symbol_is_a_clear_error() {
     seed_db(&path);
     let graph = open_graph(&path);
 
-    Python::with_gil(|py| {
+    Python::with_gil(|_py| {
         assert!(graph.impact_radius("nope").is_err());
         assert!(graph.trace_calls("nope", 2).is_err());
     });
@@ -147,5 +147,8 @@ fn schema_version_helper_reports_latest() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("graph.db");
     seed_db(&path);
-    assert_eq!(schema_version(path.to_str().unwrap()).unwrap(), 3);
+    assert_eq!(
+        schema_version(path.to_str().unwrap()).unwrap(),
+        weave_graph_core::schema::LATEST_SCHEMA_VERSION
+    );
 }

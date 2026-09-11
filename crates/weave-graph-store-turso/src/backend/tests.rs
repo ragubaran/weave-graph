@@ -1,4 +1,5 @@
 use super::*;
+use weave_graph_core::schema::LATEST_SCHEMA_VERSION;
 
 fn node(repo: &str, path: &str, symbol: &str, line_start: u32) -> Node {
     Node {
@@ -63,7 +64,7 @@ fn file_backed_storage_survives_close_and_reopen() {
     let id = {
         let mut storage = TursoStorage::open(&path).unwrap();
         let id = storage.upsert_node(&node("r", "a.rs", "f", 1)).unwrap();
-        assert_eq!(storage.schema_version().unwrap(), 3);
+        assert_eq!(storage.schema_version().unwrap(), LATEST_SCHEMA_VERSION);
         id
     };
     let reopened = TursoStorage::open(&path).unwrap();
@@ -87,7 +88,7 @@ fn open_refuses_a_schema_newer_than_supported() {
 
     match TursoStorage::open(&path) {
         Err(StorageError::SchemaTooNew { found, max }) => {
-            assert_eq!((found, max), (99, 3));
+            assert_eq!((found, max), (99, LATEST_SCHEMA_VERSION));
         }
         Err(e) => panic!("expected SchemaTooNew, got {e:?}"),
         Ok(_) => panic!("expected SchemaTooNew, got Ok"),

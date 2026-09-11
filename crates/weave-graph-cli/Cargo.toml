@@ -44,6 +44,7 @@ tempfile = "3.27.0"
 criterion = "0.8.2"
 
 [features]
+notes = ["weave-graph-core/notes", "weave-graph-mcp/notes"]
 default = []
 turso = ["dep:weave-graph-store-turso"]
 hub = ["dep:weave-graph-hub"]
@@ -54,6 +55,7 @@ slm = ["dep:sha2"]
 # Convenience bundles (plan.md §0.2), matching the two distributed release
 # variants (docs/deploy.md §1): no new code, just a named shorthand for the
 # feature list a `weave`/`weave-custom` build actually needs.
+viz = []
 team = ["docs", "federation"]
 # rbac/otel/policy-lint are unimplemented (no code, no feature flag yet) —
 # join this list once they land; `hub`/`provenance` are what "custom" adds

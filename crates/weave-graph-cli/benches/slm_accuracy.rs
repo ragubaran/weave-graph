@@ -1,10 +1,7 @@
-//! `benches/slm_accuracy.rs` (`suges-slm.md` §4.3): tool-selection and
-//! parameter-grounding rates of a router against the held-out prompt
-//! set. This file measures the deterministic fallback (the baseline any
-//! model router must match); `weave slm doctor` is the runnable gate
-//! for the model router. Held-out routing is fast, so criterion's
-//! number is suite wall-clock — the rates are asserted in the
-//! accompanying `weave-graph-cli` unit tests, never published unmeasured.
+//! `benches/slm_accuracy.rs` (`slm-spec.md` §4.3): router accuracy verification.
+//! Measures fallback tool-selection and grounding rates against the held-out set;
+//! establishes the deterministic baseline that any candidate model must match
+//! to ensure zero invented symbols and predictable routing behavior.
 //!
 //! `weave-graph-cli` is a bin-only package, so the module is included
 //! by path. `required-features = ["slm"]` in Cargo.toml skips building

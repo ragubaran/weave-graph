@@ -2,6 +2,7 @@
 
 #[cfg(feature = "slm")]
 mod ask;
+mod blast;
 mod cache;
 mod config;
 #[cfg(feature = "federation")]
@@ -18,6 +19,8 @@ mod index;
 #[cfg(feature = "slm")]
 mod journal;
 mod lock;
+#[cfg(feature = "notes")]
+mod notes;
 mod provenance;
 mod query;
 mod report;
@@ -28,6 +31,8 @@ mod slm;
 mod storage_location;
 #[cfg(feature = "hub")]
 mod sync;
+#[cfg(feature = "viz")]
+mod viz;
 #[cfg(feature = "watch")]
 mod watch;
 
@@ -109,6 +114,26 @@ enum Commands {
     Report {
         #[arg(long, default_value = ".")]
         path: PathBuf,
+        /// Also render the offline HTML viewer bundles (feature: viz)
+        #[cfg(feature = "viz")]
+        #[arg(long)]
+        html: bool,
+        /// Open the report in the system browser after writing (feature: viz)
+        #[cfg(feature = "viz")]
+        #[arg(long)]
+        open: bool,
+    },
+    /// Open the report in the browser viewer (feature: viz)
+    #[cfg(feature = "viz")]
+    Viz {
+        /// Open a browser window (default: per `[viz] mode`, yes for static)
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        open: bool,
+        /// Port for `[viz] mode = "server"` (loopback only)
+        #[arg(long, default_value_t = 8080)]
+        port: u16,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
     },
     /// Export a symbol's N-hop neighborhood as JSON
     Export {
@@ -116,6 +141,20 @@ enum Commands {
         symbol: String,
         #[arg(long, default_value_t = 2)]
         depth: u32,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// PR blast-radius comment mode: what does this PR's diff touch? (no GitHub networking)
+    Blast {
+        /// Ref to diff against (three-dot merge-base, e.g. `main`)
+        #[arg(long)]
+        base: String,
+        /// Output format: `md` (default) or `json`
+        #[arg(long, default_value = "md")]
+        format: String,
+        /// Write to this file instead of stdout (pipe into `gh pr comment`)
+        #[arg(long)]
+        out: Option<PathBuf>,
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
@@ -161,6 +200,38 @@ enum Commands {
     Journal {
         #[arg(long)]
         since: Option<String>,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Pin structured knowledge onto a graph symbol (feature: notes)
+    Note {
+        #[command(subcommand)]
+        action: NoteAction,
+    },
+}
+
+// Unconditional, like `SlmAction`/`SyncAction` above: clap needs the shape
+// to exist regardless of the feature so `weave note pin` parses cleanly and
+// fails with `feature_not_compiled`'s clear message, never a raw clap
+// "unrecognized subcommand" — only the dispatch arm below is feature-gated.
+#[derive(Subcommand)]
+enum NoteAction {
+    /// Pin a note to a symbol; ephemeral by default (24h TTL)
+    Pin {
+        /// Crystallize: never expires on its own, gets staleness tracking
+        #[arg(long)]
+        keep: bool,
+        /// Note category (e.g. "arch_decision", "test_failure")
+        #[arg(long, default_value = "note")]
+        kind: String,
+        symbol: String,
+        /// The note text
+        text: String,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// List live notes (expired ephemerals hidden, orphans reported)
+    List {
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
@@ -263,12 +334,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             allow_remote,
         } => cmd_serve(mcp, &transport, &host, port, allow_remote)?,
         Commands::Query { expression, path } => cmd_query(&path, &expression)?,
-        Commands::Report { path } => cmd_report(&path)?,
+        #[cfg(not(feature = "viz"))]
+        Commands::Report { path } => cmd_report(&path, false, false)?,
+        #[cfg(feature = "viz")]
+        Commands::Report { path, html, open } => cmd_report(&path, html, open)?,
+        #[cfg(feature = "viz")]
+        Commands::Viz { open, port, path } => viz::cmd_viz(&path, open, port)?,
         Commands::Export {
             symbol,
             depth,
             path,
         } => cmd_export(&path, &symbol, depth)?,
+        Commands::Blast {
+            base,
+            format,
+            out,
+            path,
+        } => blast::cmd_blast(&path, &base, &format, out.as_deref())?,
         Commands::Config { action } => match action {
             ConfigAction::Set { key, value, path } => cmd_config_set(&path, &key, &value)?,
             ConfigAction::Get { key, path } => cmd_config_get(&path, &key)?,
@@ -327,6 +409,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Journal { since, path } => journal::cmd_journal(&path, since.as_deref())?,
         #[cfg(not(feature = "slm"))]
         Commands::Journal { .. } => feature_not_compiled("weave journal", "slm"),
+        #[cfg(feature = "notes")]
+        Commands::Note { action } => match action {
+            NoteAction::Pin {
+                keep,
+                kind,
+                symbol,
+                text,
+                path,
+            } => notes::cmd_note_pin(&path, &symbol, &text, keep, &kind)?,
+            NoteAction::List { path } => notes::cmd_note_list(&path)?,
+        },
+        #[cfg(not(feature = "notes"))]
+        Commands::Note { .. } => feature_not_compiled("weave note", "notes"),
     }
 
     Ok(())
@@ -725,31 +820,64 @@ fn run_watch_loop(
     cfg: &watch::WatchConfig,
 ) {
     let mut pending: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    watch::run(events, cfg.debounce_ms, |batch| {
-        for path in batch {
-            let Ok(rel) = path.strip_prefix(root) else {
-                continue;
-            };
-            let rel = rel.to_string_lossy().into_owned();
-            if !rel.is_empty() && is_indexable(Path::new(&rel)) {
-                pending.insert(rel);
+    // RefCell, not a second `mut` local: `on_event` and `on_batch` both need
+    // mutable access to the same set, and the borrow checker can't see that
+    // `watch::run` only ever calls one of them at a time — interior
+    // mutability defers that to runtime, which is sound here since both
+    // closures run on this one thread, never concurrently.
+    let in_flight = std::cell::RefCell::new(std::collections::BTreeSet::<String>::new());
+    watch::run(
+        events,
+        cfg.debounce_ms,
+        |path| {
+            // Fires as each raw event lands, *before* debounce completes —
+            // the only place "still inside the debounce window" can be
+            // told apart from "deferred" (that's `pending`, updated below).
+            if let Some(rel) = relative_indexable_path(root, path) {
+                let mut in_flight = in_flight.borrow_mut();
+                in_flight.insert(rel);
+                watch::write_in_flight(weave_dir, &in_flight);
             }
-        }
-        if pending.is_empty() {
-            return;
-        }
-        match watch_tick(
-            root,
-            weave_dir,
-            active_db,
-            cfg.blast_radius_ceiling,
-            &pending,
-        ) {
-            Ok(true) => pending.clear(),
-            Ok(false) => {}
-            Err(e) => eprintln!("watch: {e}"),
-        }
-    });
+        },
+        |batch| {
+            // This debounce window is over: whatever it resolves to (a
+            // real reindex or a deferral), these files are no longer
+            // merely "in flight" — one of the two markers below now owns
+            // signaling their staleness, not this one.
+            in_flight.borrow_mut().clear();
+            watch::clear_in_flight(weave_dir);
+            for path in batch {
+                if let Some(rel) = relative_indexable_path(root, path) {
+                    pending.insert(rel);
+                }
+            }
+            if pending.is_empty() {
+                return;
+            }
+            match watch_tick(
+                root,
+                weave_dir,
+                active_db,
+                cfg.blast_radius_ceiling,
+                &pending,
+            ) {
+                Ok(true) => pending.clear(),
+                Ok(false) => {}
+                Err(e) => eprintln!("watch: {e}"),
+            }
+        },
+    );
+}
+
+/// `path` relative to `root` and indexable, or `None` for anything outside
+/// `root` (shouldn't happen — `notify` was only ever asked to watch `root`)
+/// or a non-indexable path (`.weave/` itself is already filtered upstream,
+/// at the notify-callback level, before events reach this loop at all).
+#[cfg(feature = "watch")]
+fn relative_indexable_path(root: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(root).ok()?;
+    let rel = rel.to_string_lossy().into_owned();
+    (!rel.is_empty() && is_indexable(Path::new(&rel))).then_some(rel)
 }
 
 /// One debounced, gated attempt at reindexing exactly `changed` (the
@@ -852,6 +980,17 @@ fn cmd_status(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
             marker.files.join(", ")
         );
     }
+    #[cfg(feature = "watch")]
+    {
+        let in_flight = watch::read_in_flight(&data_dir.path);
+        if !in_flight.is_empty() {
+            println!(
+                "  ℹ️ {} file(s) just changed, not yet reindexed (still inside the debounce window): {}",
+                in_flight.len(),
+                in_flight.join(", ")
+            );
+        }
+    }
 
     Ok(())
 }
@@ -897,7 +1036,7 @@ fn cmd_query(root: &Path, expression: &str) -> Result<(), Box<dyn std::error::Er
 /// `weave report` (`plan.md` §1.3a): LOD 0/1/2 `.canvas` files plus
 /// `WEAVE_REPORT.md`, written under `<root>/.weave/report/`. LOD 3 stays
 /// `weave export`'s job (M1.6), on demand only.
-fn cmd_report(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_report(root: &Path, html: bool, open: bool) -> Result<(), Box<dyn std::error::Error>> {
     let (storage, db_path) = open_storage_for_read(root)?;
     // Signed doc links come from a host-wired provider; without any,
     // the section is absent and the report matches a default build.
@@ -918,6 +1057,13 @@ fn cmd_report(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     for canvas in &paths.canvas_files {
         println!("✓ Wrote {}", canvas.display());
     }
+    #[cfg(feature = "viz")]
+    {
+        viz::maybe_emit_html(root, &out_dir, html)?;
+        viz::open_report(root, &out_dir, open);
+    }
+    #[cfg(not(feature = "viz"))]
+    let _ = (html, open);
     Ok(())
 }
 
@@ -991,13 +1137,13 @@ fn cmd_serve(
 
     // A network-mounted DB never has WAL's shared memory available — read
     // it in the non-WAL shared-snapshot mode instead of the normal path.
-    let storage = if data_dir.on_network_fs {
-        SqliteStorage::open_read_only(&db_path)?
-    } else {
-        SqliteStorage::open(&db_path)?
-    };
-
-    let handler = McpHandler::new(&storage)?;
+    // The handler owns its storage and reopens it on external reindexes
+    // (impl.md M2.15), remembering this mode for the reopen.
+    #[cfg(feature = "watch")]
+    let handler = McpHandler::open_with_mode(&db_path, data_dir.on_network_fs)?
+        .with_weave_dir(data_dir.path.clone());
+    #[cfg(not(feature = "watch"))]
+    let handler = McpHandler::open_with_mode(&db_path, data_dir.on_network_fs)?;
 
     // Primary integration point (impl.md M2.11): auto-sync `graph.db` while
     // the one long-running MCP process is up, gated by `[watch] enabled` so

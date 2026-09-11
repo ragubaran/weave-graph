@@ -1,9 +1,7 @@
-//! `weave ask` (`impl.md` M2.4.2, `suges-slm.md` §2.1): natural-language
-//! query routing for a human at a terminal. The grounding invariant
-//! (§1.2, non-negotiable): the router only selects tools and
-//! parameters; every symbol is validated against the index before
-//! dispatch — an invented name is reported not-found, corrected on a
-//! near-miss, never passed through as though the graph confirmed it.
+//! `weave ask` (`impl.md` M2.4.2, `slm-spec.md` §2.1): NL terminal routing.
+//! Grounding invariant: router selects tools and parameters, but every symbol
+//! is validated against the index pre-dispatch; hallucinated names are
+//! reported as not found and never passed through as graph facts.
 
 use std::path::Path;
 use std::time::Instant;

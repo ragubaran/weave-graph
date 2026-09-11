@@ -1,5 +1,6 @@
 use crate::error::StorageError;
 use crate::model::{Edge, Node, NodeId};
+use crate::notes::Note;
 
 /// Backend-agnostic persistence trait (`plan.md` §0.4, §1.1). No core logic
 /// references a concrete backend — `weave-graph-store-sqlite` is the
@@ -67,6 +68,34 @@ pub trait Storage {
 
     /// Purge all nodes for the given file. Call only after `purge_file_edges`.
     fn purge_file_nodes(&mut self, repo_id: &str, path: &str) -> Result<u64, StorageError>;
+
+    /// Persist one pinned note (M2.10); returns its id. Writes through
+    /// `&self` — both backends' connections allow SQL writes on a shared
+    /// reference, and the MCP pin tool only holds `&dyn Storage`.
+    fn pin_note(&self, note: &Note) -> Result<i64, StorageError>;
+
+    /// Every note row, including expired and orphaned ones — the reindex
+    /// hook's input. Recall (`recall_notes`) is the filtered view.
+    fn all_notes(&self) -> Result<Vec<Note>, StorageError>;
+
+    /// The recall view: TTL filter applied at read time
+    /// (`tier = 'crystallized' OR expires_at > now`) — no background
+    /// sweep. Orphaned notes are included (reported, not dropped).
+    fn recall_notes(&self, now: i64) -> Result<Vec<Note>, StorageError>;
+
+    /// Moniker reattachment after a reindex: point the note at the
+    /// symbol's new node id, or `None` to orphan it. `stale` replaces the
+    /// stored staleness flag (recomputed from the content hash).
+    fn reattach_note(
+        &self,
+        id: i64,
+        target_node_id: Option<NodeId>,
+        stale: bool,
+    ) -> Result<(), StorageError>;
+
+    /// Opportunistic cleanup of expired ephemeral notes — piggybacks on
+    /// the reindex's own bulk-write transaction, never a separate pass.
+    fn delete_expired_notes(&self, now: i64) -> Result<u64, StorageError>;
 }
 
 #[cfg(test)]

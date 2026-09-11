@@ -11,6 +11,7 @@ pub mod federation;
 pub mod indexer;
 mod model;
 pub mod modules;
+pub mod notes;
 #[cfg(feature = "provenance")]
 pub mod provenance;
 pub mod schema;
@@ -21,4 +22,5 @@ pub use csr::CsrGraph;
 pub use error::StorageError;
 pub use indexer::{ReindexConfig, should_bail_out};
 pub use model::{Edge, EdgeId, Node, NodeId};
+pub use notes::{Note, NoteTier};
 pub use storage::Storage;

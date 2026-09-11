@@ -2,20 +2,24 @@
 
 Ultra-lightweight, memory-safe code intelligence and knowledge-federation engine, built in pure Rust. Deterministic core — no LLM, no network, no cloud — with an embedded SQL store, CSR graph model, Tree-sitter AST extraction, and a local MCP server for AI agents.
 
-Target envelope for the default build: <15MB binary, <80MB RAM at 500k+ symbols. RAM is **met** (~40.7MB measured at 500k symbols, real margin under the 80MB ceiling — the Core Invariant); binary size is **not yet met** (~43MB stripped release, root-caused to 29 languages' tree-sitter grammar tables, a documented target rather than a Core Invariant — see `docs/performance_compare.md` §5.4).
+Target envelope for the default build: <15MB binary, <80MB RAM at 500k+ symbols. RAM is **met** (~40.7MB measured at 500k symbols, real margin under the 80MB ceiling — the Core Invariant); binary size is **not yet met** (~43MB stripped release, root-caused to 29 languages' tree-sitter grammar tables — a documented target rather than a Core Invariant; see [Release Notes](docs/product/release-notes.md#known-limitations)).
 
-All workspace tests pass, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` clean, line coverage ≥90% across the workspace. Full milestone-by-milestone status and acceptance criteria live in `docs/impl.md`.
+All workspace tests pass, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` clean, line coverage ≥90% across the workspace.
+
+**Documentation**: this file covers architecture and building from source. For day-to-day usage — install, quickstart, the full CLI/configuration reference, per-feature guides, and MCP integration — see **[`docs/product/`](docs/product/README.md)**.
 
 ## Architecture
 
 - **`weave-graph-core`** — domain types (`Node`, `Edge`), the `Storage` trait (backend-agnostic persistence), and `CsrGraph` (integer-compacted CSR adjacency, `roaring` bitmap traversal). No I/O, no network — every other crate depends on this one, never the reverse.
 - **`weave-graph-parse`** — tree-sitter grammars behind per-language extractors producing `WiringCard` symbols and raw call/structural references. A `ProjectIndex` resolves those references to edges by short symbol name. Monikers are a deterministic per-repo key (`path#qualified.symbol`).
 - **`weave-graph-store-sqlite`** — the default `Storage` implementation (`rusqlite`, bundled SQLite, WAL mode). Schema versioning via a migration runner that refuses to open a database newer than the binary understands.
-- **`weave-graph-mcp`** — Model Context Protocol server exposing deterministic tools (`weave_repo_map`, `weave_file_api`, `weave_trace_calls`, `weave_impact_radius`) over stdio and loopback HTTP.
-- **`weave-graph-cli`** — main `weave` executable binary providing CLI commands and query interfaces.
-- **`weave-graph-store-turso`**, **`weave-graph-hub`** — stubbed, unimplemented until their features are scheduled.
+- **`weave-graph-store-turso`** — an alternate `Storage` implementation on embedded libSQL, same trait, same schema/migrations (feature: `turso`). Both backends can link into one binary at once; not yet wired into the CLI's own storage selection.
+- **`weave-graph-mcp`** — Model Context Protocol server exposing deterministic tools (`weave_repo_map`, `weave_file_api`, `weave_trace_calls`, `weave_impact_radius`, plus `weave_pin_note`/`weave_recall_notes` under `notes`) over stdio and loopback HTTP, with live reload on external reindex and optional per-tool token budgeting.
+- **`weave-graph-cli`** — main `weave` executable binary: CLI commands, query engine, and every Phase 2 feature module (`docs`, `federation`, `notes`, `watch`, `viz`, `blast`, `slm`, `hub`'s client).
+- **`weave-graph-hub`** — a from-scratch, dependency-free HTTP/1.1 client for an optional, self-hosted snapshot service (`weave sync pull|push`, feature: `hub`). Client only; no bundled server.
+- **`weave-graph-python`** — PyO3 bindings packaged as a separate `pip install`-able wheel (feature: `python`); zero dependency from the native `weave` binary.
 
-The SQL store is authoritative; the CSR graph is a derived read structure rebuilt from it on every load — there is no path to sync a CSR mutation back to SQL. Everything beyond the deterministic core (docs, federation, hub, provenance, rbac, otel, policy-lint, slm, python, turso) is a Cargo feature, off by default.
+The SQL store is authoritative; the CSR graph is a derived read structure rebuilt from it on every load — there is no path to sync a CSR mutation back to SQL. Everything beyond the deterministic core (`docs`, `federation`, `hub`, `provenance`, `notes`, `watch`, `viz`, `slm`, `python`, `turso`, and the not-yet-started `rbac`/`otel`/`policy-lint`) is a Cargo feature, off by default.
 
 ## Features
 
@@ -23,26 +27,31 @@ Everything beyond the deterministic core is an off-by-default Cargo feature. Ena
 
 | Feature       | Mode              | Required Flag            | Enables                                                                                                                                                                                         | Status      |
 | :------------ | :---------------- | :----------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------- |
-| _(none)_      | Any               | Not Required             | Local AST & config indexing (25 languages), CSR graph, incremental reindexing with dangling-edge purge, storage safety, query engine, MCP server (stdio & loopback HTTP), and CLI configuration | **Done**    |
+| _(none)_      | Any               | Not Required             | Local AST & config indexing (29 languages), CSR graph, incremental reindexing with dangling-edge purge, storage safety, query engine, MCP server (stdio & loopback HTTP, live reload, token-budgeted responses), and CLI configuration | **Done**    |
 | `storage`     | Any               | Not Required             | Custom data directory (`[storage] home` / `WEAVE_HOME`), central multi-repo knowledge store with isolated updates, network filesystem detection                                                 | **Done**    |
 | `docs`        | Any               | `--features docs`        | Markdown/Obsidian ingestion (`pulldown-cmark`), wikilinks, `EXPLAINS_RATIONALE` code-reference links, `.canvas` export                                                                          | **Done**    |
 | `federation`  | Any               | `--features federation`  | Multi-repo subgraph composition, composite keys, boundary contract hashing, Tarjan's-SCC cycle handling, `weave check-contracts` — **local-only, no network**                                   | **Done**    |
-| `hub`         | Multiple / Custom | `--features hub`         | Snapshot hydration + delta publish over the network (`weave sync pull/push`)                                                                                                                    | Not started |
 | `provenance`  | Multiple          | `--features provenance`  | `ProvenanceProvider` trait + Merkle-signed note linking                                                                                                                                         | **Done**    |
-| `slm`         | Any               | `--features slm`         | Local NL→query intent router for a human at a terminal (`weave ask`, `weave journal`) — never on the MCP/agent path                                                                             | Not started |
-| `python`      | Any               | `--features python`      | PyO3 bindings for the `pip install weave-graph` wheel                                                                                                                                           | Not started |
-| `turso`       | Any               | `--features turso`       | Swaps the storage backend to `libSQL`/Turso                                                                                                                                                     | Not started |
+| `notes`       | Any               | `--features notes`       | Pinned agent/human notes on graph symbols (`weave note pin/list`, MCP `weave_pin_note`/`weave_recall_notes`), content-hash staleness tracking, moniker-based reattachment on reindex             | **Done**    |
+| `watch`       | Any               | `--features watch`       | Debounced auto-reindex on file change (`weave index --watch`, background thread in `weave serve --mcp`) with a blast-radius safety gate                                                         | **Done**    |
+| `viz`         | Any               | `--features viz`         | Offline HTML report viewer (`weave report --html`, `weave viz`), zero new dependencies                                                                                                          | **Done**    |
+| `hub`         | Multiple / Custom | `--features hub`         | Snapshot hydration + delta publish over the network (`weave sync pull/push`) — **client only**, no bundled hub server                                                                          | **Done**    |
+| `slm`         | Any               | `--features slm`         | Local NL→query intent router for a human at a terminal (`weave ask`, `weave journal`) — never on the MCP/agent path                                                                             | **Done**    |
+| `python`      | Any               | `--features python`      | PyO3 bindings for the `pip install weave-graph` wheel — a genuinely separate build artifact, zero cost to the native binary                                                                    | **Done**    |
+| `turso`       | Any               | `--features turso`       | Alternate `Storage` backend on embedded libSQL — same schema/trait as the default; not yet wired into CLI storage selection                                                                    | **Done**    |
 | `rbac`        | Custom            | `--features rbac`        | `AuthProvider` trait + **query-layer** node masking (never export-only)                                                                                                                         | Not started |
 | `otel`        | Custom            | `--features otel`        | OpenTelemetry/APM trace overlay on graph nodes                                                                                                                                                  | Not started |
 | `policy-lint` | Custom            | `--features policy-lint` | YAML architectural boundary rules + CI gate                                                                                                                                                     | Not started |
 
-Convenience bundles (wired in `weave-graph-cli/Cargo.toml`): `team = [docs, federation]`, `custom = [team, hub, provenance]` — `rbac`/`otel`/`policy-lint` join `custom` once they're implemented (`docs/plan.md` §0.2 has the target design; none of the three exist as code or a feature flag yet).
+`weave blast --base <ref>` (PR blast-radius comments) needs no feature flag — it's part of the base CLI.
+
+Convenience bundles (wired in `weave-graph-cli/Cargo.toml`): `team = [docs, federation]`, `custom = [team, hub, provenance]` — `rbac`/`otel`/`policy-lint` join `custom` once they're implemented; none of the three exist as code or a feature flag yet. See [`docs/product/features.md`](docs/product/features.md) for a full usage guide to every feature above.
 
 ## Usage
 
 ### Install
 
-`weave` isn't published to a package registry yet (see `docs/deploy.md` for the planned distribution channels) — build it from source. Two release variants cover every mode:
+`weave` isn't published to a package registry yet — build it from source. Two release variants cover every mode:
 
 | Variant               | Build Command                                                | Covers                                                                             |
 | :-------------------- | :----------------------------------------------------------- | :--------------------------------------------------------------------------------- |
@@ -96,11 +105,11 @@ cd repo-a && weave check-contracts   # CI gate on divergent public-API boundarie
 
 ### Custom mode — enterprise add-ons (in development)
 
-Layers additional opt-in Cargo features on top of Multiple mode for larger or regulated orgs: query-layer RBAC masking (`--features rbac`), an architectural-boundary policy linter (`--features policy-lint`), and an OpenTelemetry trace overlay (`--features otel`). All are off by default and none is implemented yet — see `AGENTS.md` and `docs/plan.md` if you're planning around them.
+Layers additional opt-in Cargo features on top of Multiple mode for larger or regulated orgs: query-layer RBAC masking (`--features rbac`), an architectural-boundary policy linter (`--features policy-lint`), and an OpenTelemetry trace overlay (`--features otel`). All are off by default and none is implemented yet — see `AGENTS.md` for the invariants they'll need to hold (masking enforced at the query layer, never export-only) and [Release Notes](docs/product/release-notes.md#not-in-this-release-planned-for-a-later-phase) for what's planned.
 
 ## Configuration
 
-Everything lives in `<repo>/.weave/config.toml`, written by `weave init`. Every section besides `mode` is optional — an absent section means that capability is off, never a pending setup step:
+Everything lives in `<repo>/.weave/config.toml`, written by `weave init`. Every section besides `mode` is optional — an absent section means that capability is off, never a pending setup step. This is a summary; see [`docs/product/configuration.md`](docs/product/configuration.md) for the full reference, including `[watch]`/`[viz]`/`[report]`:
 
 ```toml
 mode = "single"                     # single | multiple
@@ -119,9 +128,6 @@ staleness_policy = "warn"           # warn | strict | ignore
 
 [hub]                               # requires feature = hub; expected to be rare
 url = ""                            # unset is a fully supported permanent state
-
-[auth]                              # requires feature = rbac
-provider = ""                       # okta | azure-ad | saml | oidc
 
 [slm]                               # requires feature = slm
 model = "qwen2.5-coder-0.5b-q4_k_m" # never auto-upgraded; weights not bundled

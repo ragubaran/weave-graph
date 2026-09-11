@@ -2,7 +2,8 @@ use weave_graph_core::{Node, NodeId};
 
 /// Arguments for `weave_repo_map`. Caps output to stay within ~200 tokens.
 pub struct RepoMapArgs {
-    /// Max number of files to surface (default: 50).
+    /// Max number of files to surface (default: 50). Ignored when
+    /// `max_tokens` is set — token-estimate truncation takes over.
     pub max_files: usize,
     /// `Some(true)` = module-level orientation (one line per Louvain
     /// module: label, file count, symbol count, cross-edges, member
@@ -10,6 +11,10 @@ pub struct RepoMapArgs {
     /// (M2.9's recorded decision): the default stays byte-identical
     /// until module coverage is proven in real agent use.
     pub module: Option<bool>,
+    /// Token-estimate ceiling (M2.16): when set, `max_files` truncation
+    /// is replaced by shedding lines until the output fits. Omitting it
+    /// keeps today's exact behavior.
+    pub max_tokens: Option<usize>,
 }
 
 impl Default for RepoMapArgs {
@@ -17,6 +22,7 @@ impl Default for RepoMapArgs {
         Self {
             max_files: 50,
             module: None,
+            max_tokens: None,
         }
     }
 }
@@ -24,6 +30,10 @@ impl Default for RepoMapArgs {
 /// Arguments for `weave_file_api`.
 pub struct FileApiArgs<'a> {
     pub paths: &'a [&'a str],
+    /// Token-estimate ceiling (M2.16): sheds detail in tiers (full wiring
+    /// cards → per-file symbol names → per-file counts) instead of
+    /// returning an unbounded blob. `None` = today's behavior.
+    pub max_tokens: Option<usize>,
 }
 
 /// Arguments for `weave_trace_calls`.
@@ -31,15 +41,37 @@ pub struct TraceCallsArgs<'a> {
     pub symbol: &'a str,
     /// Max hop depth for both incoming and outgoing traversal.
     pub depth: u32,
+    /// Token-estimate ceiling (M2.16): truncates the chains with explicit
+    /// "... and N more" markers when the full trace would exceed it.
+    pub max_tokens: Option<usize>,
 }
 
 /// Arguments for `weave_impact_radius`.
 pub struct ImpactRadiusArgs<'a> {
     pub symbol: &'a str,
+    /// Token-estimate ceiling (M2.16): sheds to a file-level, then
+    /// module-level summary on a synthetic hub's large blast radius.
+    pub max_tokens: Option<usize>,
+}
+
+/// Word-count token estimate (M2.16): a whitespace-split count — the same
+/// class of estimate the project's own token-reduction claims already
+/// rely on elsewhere. Deliberately NOT a real tokenizer and never claimed
+/// to be one; it only needs to bound output size roughly.
+pub(crate) fn estimate_tokens(text: &str) -> usize {
+    text.split_whitespace().count()
+}
+
+/// A rendered response fits its budget (or there is no budget).
+pub(crate) fn under_budget(text: &str, max_tokens: Option<usize>) -> bool {
+    match max_tokens {
+        Some(max) => estimate_tokens(text) <= max,
+        None => true,
+    }
 }
 
 /// One symbol entry in a wiring card — the ~60-token building block.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SymbolEntry {
     pub kind: String,
     pub symbol: String,
@@ -60,7 +92,7 @@ impl SymbolEntry {
 }
 
 /// Per-file wiring card returned by `weave_file_api`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WiringCard {
     pub path: String,
     pub symbols: Vec<SymbolEntry>,
