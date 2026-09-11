@@ -84,6 +84,10 @@ fn raw_is_network_filesystem(path: &Path) -> bool {
     }
     // Safety: `ret == 0` means the kernel fully populated `stat`.
     let stat = unsafe { stat.assume_init() };
+    // `f_type`'s type varies by libc: signed `i64` on glibc x86_64/aarch64,
+    // unsigned `c_ulong` (u64) on musl — `as i64` is required on musl and a
+    // same-type no-op on glibc, so clippy's lint is a false positive here.
+    #[allow(clippy::unnecessary_cast)]
     let f_type = stat.f_type as i64;
     matches!(
         f_type,
