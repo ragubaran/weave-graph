@@ -44,6 +44,7 @@ fn impact_radius_finds_all_downstream_nodes() {
             symbol: "root",
             max_tokens: None,
         },
+        None,
     );
     assert_eq!(result.symbol_count, 3, "b, c, d all impacted");
     assert!(result.text.contains("3 symbols affected"));
@@ -65,6 +66,7 @@ fn impact_radius_terminates_on_cycle() {
             symbol: "a",
             max_tokens: None,
         },
+        None,
     );
     assert_eq!(result.symbol_count, 1, "only b is impacted, no duplicate a");
 }
@@ -80,6 +82,7 @@ fn unknown_symbol_returns_not_found() {
             symbol: "ghost",
             max_tokens: None,
         },
+        None,
     );
     assert!(result.text.contains("not found"));
     assert_eq!(result.symbol_count, 0);
@@ -101,6 +104,7 @@ fn large_radius_truncates_display_to_20() {
             symbol: "s1",
             max_tokens: None,
         },
+        None,
     );
     assert_eq!(result.symbol_count, 21);
     assert!(result.text.contains("... and 1 more"));
@@ -160,6 +164,7 @@ fn small_max_tokens_sheds_a_hub_to_a_summary_not_an_unbounded_list() {
             symbol: "root",
             max_tokens: Some(40),
         },
+        None,
     );
     assert!(
         result.text.contains("shed to"),
@@ -195,6 +200,7 @@ fn omitted_max_tokens_returns_the_legacy_full_format() {
             symbol: "root",
             max_tokens: None,
         },
+        None,
     );
     // Byte-identical to the M1.7-era format: 20 symbols + "and N more".
     assert!(

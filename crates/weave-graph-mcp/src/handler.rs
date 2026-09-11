@@ -2,7 +2,9 @@ use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
-use weave_graph_core::{CsrGraph, StorageError};
+#[cfg(feature = "rbac")]
+use weave_graph_core::rbac::RbacGuard;
+use weave_graph_core::{CsrGraph, Node, StorageError};
 
 use crate::file_api::weave_file_api;
 use crate::impact_radius::weave_impact_radius;
@@ -54,6 +56,12 @@ pub struct McpHandler {
     last_mtime: RefCell<Option<SystemTime>>,
     last_checked: Cell<Option<Instant>>,
     recheck_interval: Duration,
+    /// M3.0: the same `RbacGuard` `weave query`/`report`/`export` use,
+    /// bound once per server session (`with_identity`) rather than
+    /// per-call — this handler already models one session as one
+    /// identity (`plan.md` §3.1).
+    #[cfg(feature = "rbac")]
+    rbac_guard: Option<RbacGuard>,
 }
 
 impl McpHandler {
@@ -70,6 +78,8 @@ impl McpHandler {
             last_mtime: RefCell::new(None),
             last_checked: std::cell::Cell::new(None),
             recheck_interval: Duration::from_millis(500),
+            #[cfg(feature = "rbac")]
+            rbac_guard: None,
         })
     }
 
@@ -104,7 +114,21 @@ impl McpHandler {
             last_mtime: RefCell::new(last_mtime),
             last_checked: std::cell::Cell::new(None),
             recheck_interval: Duration::from_millis(500),
+            #[cfg(feature = "rbac")]
+            rbac_guard: None,
         })
+    }
+
+    /// Binds this session to one `RbacGuard` (M3.0, `plan.md` §3.1) — the
+    /// same guard `weave query`/`report`/`export` build from `--as
+    /// <subject>`, so a `weave serve --mcp --as <subject>` session masks
+    /// consistently with the CLI. A no-op builder when never called (the
+    /// default `new`/`open` path stays unmasked, matching every other
+    /// feature's "compiled in but unused = unchanged" isolation).
+    #[cfg(feature = "rbac")]
+    pub fn with_identity(mut self, guard: RbacGuard) -> Self {
+        self.rbac_guard = Some(guard);
+        self
     }
 
     /// Opts into surfacing `watch`'s (impl.md M2.11) staleness markers —
@@ -427,6 +451,16 @@ impl McpHandler {
             .get("max_tokens")
             .and_then(|v| v.as_u64())
             .map(|d| d as usize);
+        #[cfg(feature = "rbac")]
+        let masker = self
+            .rbac_guard
+            .as_ref()
+            .map(|g| move |n: &Node| g.mask_node(n));
+        #[cfg(feature = "rbac")]
+        let mask: Option<&dyn Fn(&Node) -> Node> =
+            masker.as_ref().map(|c| c as &dyn Fn(&Node) -> Node);
+        #[cfg(not(feature = "rbac"))]
+        let mask: Option<&dyn Fn(&Node) -> Node> = None;
         let res = weave_trace_calls(
             &*self.storage.borrow(),
             &self.csr.borrow(),
@@ -435,6 +469,7 @@ impl McpHandler {
                 depth,
                 max_tokens,
             },
+            mask,
         );
         CallToolResult::ok(res.text)
     }
@@ -448,10 +483,21 @@ impl McpHandler {
             .get("max_tokens")
             .and_then(|v| v.as_u64())
             .map(|d| d as usize);
+        #[cfg(feature = "rbac")]
+        let masker = self
+            .rbac_guard
+            .as_ref()
+            .map(|g| move |n: &Node| g.mask_node(n));
+        #[cfg(feature = "rbac")]
+        let mask: Option<&dyn Fn(&Node) -> Node> =
+            masker.as_ref().map(|c| c as &dyn Fn(&Node) -> Node);
+        #[cfg(not(feature = "rbac"))]
+        let mask: Option<&dyn Fn(&Node) -> Node> = None;
         let res = weave_impact_radius(
             &*self.storage.borrow(),
             &self.csr.borrow(),
             ImpactRadiusArgs { symbol, max_tokens },
+            mask,
         );
         CallToolResult::ok(res.text)
     }

@@ -68,6 +68,42 @@ pub(crate) fn read_linked_repos(config_path: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+/// `[rbac.users]` (`impl.md` M3.0): a static subject -> roles map, e.g.
+/// `alice = ["internal"]`. Missing file, missing section, or a malformed
+/// entry all read as "no configured users" — every subject then resolves
+/// to the anonymous (no-roles) identity, the safe default.
+#[cfg(any(test, feature = "rbac"))]
+pub(crate) fn read_rbac_users(
+    config_path: &Path,
+) -> std::collections::HashMap<String, Vec<String>> {
+    let content = match fs::read_to_string(config_path) {
+        Ok(content) => content,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    let table: toml::Table = match content.parse() {
+        Ok(table) => table,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    let Some(users) = table
+        .get("rbac")
+        .and_then(|v| v.get("users"))
+        .and_then(|v| v.as_table())
+    else {
+        return std::collections::HashMap::new();
+    };
+    users
+        .iter()
+        .filter_map(|(subject, roles)| {
+            let roles: Vec<String> = roles
+                .as_array()?
+                .iter()
+                .filter_map(|r| r.as_str().map(String::from))
+                .collect();
+            Some((subject.clone(), roles))
+        })
+        .collect()
+}
+
 fn get_dotted<'a>(table: &'a toml::Table, key: &str) -> Option<&'a toml::Value> {
     let mut parts = key.splitn(2, '.');
     let head = parts.next()?;

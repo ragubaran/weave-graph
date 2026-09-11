@@ -23,6 +23,8 @@ mod lock;
 mod notes;
 mod provenance;
 mod query;
+#[cfg(feature = "rbac")]
+mod rbac;
 mod report;
 #[cfg(feature = "slm")]
 mod rules;
@@ -42,7 +44,7 @@ use std::time::Instant;
 
 use clap::{Parser, Subcommand};
 use walkdir::WalkDir;
-use weave_graph_core::{ReindexConfig, Storage, should_bail_out};
+use weave_graph_core::{Node, ReindexConfig, Storage, should_bail_out};
 use weave_graph_mcp::{
     HttpTransport, McpHandler, McpTransport, StdioTransport, validate_loopback_bind,
 };
@@ -56,6 +58,14 @@ use index::IndexStats;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+    /// Query/report/export/serve as this identity, masked per
+    /// `.weave/config.toml`'s `[rbac.users]` (feature: rbac); omitted =
+    /// anonymous (no roles). Global rather than per-subcommand so `query`,
+    /// `report`, `export`, and `serve --mcp` share one flag instead of
+    /// four independently cfg-gated struct fields (`impl.md` M3.0).
+    #[cfg(feature = "rbac")]
+    #[arg(long = "as", global = true)]
+    r#as: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -304,6 +314,10 @@ enum SlmAction {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    #[cfg(feature = "rbac")]
+    let as_subject = cli.r#as.clone();
+    #[cfg(not(feature = "rbac"))]
+    let as_subject: Option<String> = None;
 
     match cli.command {
         Commands::Init { mode } => cmd_init(&mode)?,
@@ -332,19 +346,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             host,
             port,
             allow_remote,
-        } => cmd_serve(mcp, &transport, &host, port, allow_remote)?,
-        Commands::Query { expression, path } => cmd_query(&path, &expression)?,
+        } => cmd_serve(
+            mcp,
+            &transport,
+            &host,
+            port,
+            allow_remote,
+            as_subject.as_deref(),
+        )?,
+        Commands::Query { expression, path } => {
+            cmd_query(&path, &expression, as_subject.as_deref())?
+        }
         #[cfg(not(feature = "viz"))]
-        Commands::Report { path } => cmd_report(&path, false, false)?,
+        Commands::Report { path } => cmd_report(&path, false, false, as_subject.as_deref())?,
         #[cfg(feature = "viz")]
-        Commands::Report { path, html, open } => cmd_report(&path, html, open)?,
+        Commands::Report { path, html, open } => {
+            cmd_report(&path, html, open, as_subject.as_deref())?
+        }
         #[cfg(feature = "viz")]
         Commands::Viz { open, port, path } => viz::cmd_viz(&path, open, port)?,
         Commands::Export {
             symbol,
             depth,
             path,
-        } => cmd_export(&path, &symbol, depth)?,
+        } => cmd_export(&path, &symbol, depth, as_subject.as_deref())?,
         Commands::Blast {
             base,
             format,
@@ -1019,9 +1044,25 @@ pub(crate) fn open_storage_for_read(
     Ok((storage, db_path))
 }
 
-fn cmd_query(root: &Path, expression: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_query(
+    root: &Path,
+    expression: &str,
+    as_subject: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let (storage, _db_path) = open_storage_for_read(root)?;
-    match query::run(&storage, expression) {
+    // Masking only engages when `--as <subject>` is actually given —
+    // compiling `rbac` in must not change `weave query`'s default output
+    // (Feature Isolation, `AGENTS.md` §1.8): an omitted `--as` runs exactly
+    // like a `not(feature = "rbac")` build, not as an unmasked "anonymous".
+    #[cfg(feature = "rbac")]
+    let guard = as_subject.map(|s| rbac::guard_for(root, Some(s)));
+    #[cfg(feature = "rbac")]
+    let masker = guard.as_ref().map(|g| |n: &Node| g.mask_node(n));
+    #[cfg(feature = "rbac")]
+    let mask: Option<&dyn Fn(&Node) -> Node> = masker.as_ref().map(|c| c as &dyn Fn(&Node) -> Node);
+    #[cfg(not(feature = "rbac"))]
+    let (mask, _) = (None::<&dyn Fn(&Node) -> Node>, as_subject);
+    match query::run(&storage, expression, mask) {
         Ok(text) => {
             println!("{text}");
             Ok(())
@@ -1036,7 +1077,12 @@ fn cmd_query(root: &Path, expression: &str) -> Result<(), Box<dyn std::error::Er
 /// `weave report` (`plan.md` §1.3a): LOD 0/1/2 `.canvas` files plus
 /// `WEAVE_REPORT.md`, written under `<root>/.weave/report/`. LOD 3 stays
 /// `weave export`'s job (M1.6), on demand only.
-fn cmd_report(root: &Path, html: bool, open: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_report(
+    root: &Path,
+    html: bool,
+    open: bool,
+    as_subject: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let (storage, db_path) = open_storage_for_read(root)?;
     // Signed doc links come from a host-wired provider; without any,
     // the section is absent and the report matches a default build.
@@ -1045,12 +1091,25 @@ fn cmd_report(root: &Path, html: bool, open: bool) -> Result<(), Box<dyn std::er
     #[cfg(not(feature = "provenance"))]
     let doc_provenance_section: Option<String> = None;
     let out_dir = root.join(".weave").join("report");
+    // See `cmd_query`'s comment: masking only engages with an explicit
+    // `--as <subject>`, never merely because `rbac` is compiled in.
+    #[cfg(feature = "rbac")]
+    let guard = as_subject.map(|s| rbac::guard_for(root, Some(s)));
+    #[cfg(feature = "rbac")]
+    let visibility_check = guard.as_ref().map(|g| |n: &Node| g.visible(n));
+    #[cfg(feature = "rbac")]
+    let visible: Option<&dyn Fn(&Node) -> bool> = visibility_check
+        .as_ref()
+        .map(|c| c as &dyn Fn(&Node) -> bool);
+    #[cfg(not(feature = "rbac"))]
+    let (visible, _) = (None::<&dyn Fn(&Node) -> bool>, as_subject);
     let paths = report::generate(
         root,
         &out_dir,
         &db_path,
         &storage,
         doc_provenance_section.as_deref(),
+        visible,
     )?;
 
     println!("✓ Wrote {}", paths.report_md.display());
@@ -1067,9 +1126,24 @@ fn cmd_report(root: &Path, html: bool, open: bool) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
-fn cmd_export(root: &Path, symbol: &str, depth: u32) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_export(
+    root: &Path,
+    symbol: &str,
+    depth: u32,
+    as_subject: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let (storage, db_path) = open_storage_for_read(root)?;
-    match export::neighborhood(&storage, symbol, depth) {
+    // See `cmd_query`'s comment: masking only engages with an explicit
+    // `--as <subject>`, never merely because `rbac` is compiled in.
+    #[cfg(feature = "rbac")]
+    let guard = as_subject.map(|s| rbac::guard_for(root, Some(s)));
+    #[cfg(feature = "rbac")]
+    let masker = guard.as_ref().map(|g| |n: &Node| g.mask_node(n));
+    #[cfg(feature = "rbac")]
+    let mask: Option<&dyn Fn(&Node) -> Node> = masker.as_ref().map(|c| c as &dyn Fn(&Node) -> Node);
+    #[cfg(not(feature = "rbac"))]
+    let (mask, _) = (None::<&dyn Fn(&Node) -> Node>, as_subject);
+    match export::neighborhood(&storage, symbol, depth, mask) {
         Ok(mut neighborhood) => {
             neighborhood.provenance = Some(provenance::current(root, &db_path));
             #[cfg(feature = "provenance")]
@@ -1116,6 +1190,7 @@ fn cmd_serve(
     host: &str,
     port: u16,
     allow_remote: bool,
+    as_subject: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !mcp {
         eprintln!("Error: specify --mcp to start the Model Context Protocol server.");
@@ -1144,6 +1219,18 @@ fn cmd_serve(
         .with_weave_dir(data_dir.path.clone());
     #[cfg(not(feature = "watch"))]
     let handler = McpHandler::open_with_mode(&db_path, data_dir.on_network_fs)?;
+    // M3.0: one identity per server session, matching this handler's
+    // existing "one long-lived process, one config" model — the same
+    // guard `weave query`/`report`/`export` build from `--as <subject>`.
+    // Only bound when `--as` is actually given — see `cmd_query`'s
+    // comment on why an omitted `--as` must stay unmasked.
+    #[cfg(feature = "rbac")]
+    let handler = match as_subject {
+        Some(subject) => handler.with_identity(rbac::guard_for(root, Some(subject))),
+        None => handler,
+    };
+    #[cfg(not(feature = "rbac"))]
+    let _ = as_subject;
 
     // Primary integration point (impl.md M2.11): auto-sync `graph.db` while
     // the one long-running MCP process is up, gated by `[watch] enabled` so

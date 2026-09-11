@@ -43,6 +43,7 @@ fn trace_calls_finds_outgoing_and_incoming() {
             depth: 2,
             max_tokens: None,
         },
+        None,
     );
     assert!(
         result.text.contains("callee"),
@@ -66,6 +67,7 @@ fn unknown_symbol_returns_not_found_message() {
             depth: 3,
             max_tokens: None,
         },
+        None,
     );
     assert!(result.text.contains("not found"));
 }
@@ -87,6 +89,7 @@ fn trace_calls_terminates_on_cycle() {
             depth: 10,
             max_tokens: None,
         },
+        None,
     );
     assert!(result.text.contains("trace_calls: a"));
 }
@@ -142,6 +145,7 @@ fn small_max_tokens_truncates_chains_with_explicit_counts() {
             depth: 1,
             max_tokens: Some(20),
         },
+        None,
     );
     assert!(
         crate::tools::estimate_tokens(&shed.text) <= 20,
@@ -168,6 +172,7 @@ fn small_max_tokens_truncates_chains_with_explicit_counts() {
             depth: 1,
             max_tokens: None,
         },
+        None,
     );
     assert!(
         full.text

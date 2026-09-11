@@ -44,7 +44,7 @@ fn chain_storage() -> (SqliteStorage, Vec<weave_graph_core::NodeId>) {
 #[test]
 fn depth_1_includes_direct_neighbors_in_both_directions() {
     let (storage, ids) = chain_storage();
-    let n = neighborhood(&storage, "a", 1).unwrap();
+    let n = neighborhood(&storage, "a", 1, None).unwrap();
     let symbols: Vec<&str> = n.nodes.iter().map(|x| x.symbol.as_str()).collect();
     assert!(symbols.contains(&"a"));
     assert!(
@@ -62,7 +62,7 @@ fn depth_1_includes_direct_neighbors_in_both_directions() {
 #[test]
 fn depth_2_reaches_two_hops_out() {
     let (storage, _) = chain_storage();
-    let n = neighborhood(&storage, "a", 2).unwrap();
+    let n = neighborhood(&storage, "a", 2, None).unwrap();
     let symbols: Vec<&str> = n.nodes.iter().map(|x| x.symbol.as_str()).collect();
     assert!(
         symbols.contains(&"c"),
@@ -77,7 +77,7 @@ fn depth_2_reaches_two_hops_out() {
 #[test]
 fn edges_are_limited_to_the_selected_node_set() {
     let (storage, _) = chain_storage();
-    let n = neighborhood(&storage, "a", 1).unwrap();
+    let n = neighborhood(&storage, "a", 1, None).unwrap();
     for e in &n.edges {
         let ids: Vec<_> = n.nodes.iter().map(|node| node.id).collect();
         assert!(ids.contains(&e.source_id));
@@ -97,13 +97,13 @@ fn edges_are_limited_to_the_selected_node_set() {
 #[test]
 fn unknown_symbol_is_an_error() {
     let (storage, _) = chain_storage();
-    assert!(neighborhood(&storage, "does_not_exist", 2).is_err());
+    assert!(neighborhood(&storage, "does_not_exist", 2, None).is_err());
 }
 
 #[test]
 fn serializes_to_valid_json_with_expected_shape() {
     let (storage, _) = chain_storage();
-    let n = neighborhood(&storage, "a", 1).unwrap();
+    let n = neighborhood(&storage, "a", 1, None).unwrap();
     let json = serde_json::to_string(&n).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["root"], "a");
@@ -116,7 +116,7 @@ fn serializes_to_valid_json_with_expected_shape() {
 #[test]
 fn node_ids_matches_the_exported_node_set() {
     let (storage, _) = chain_storage();
-    let n = neighborhood(&storage, "a", 1).unwrap();
+    let n = neighborhood(&storage, "a", 1, None).unwrap();
     let ids = n.node_ids();
     let expected: Vec<_> = n.nodes.iter().map(|node| node.id).collect();
     assert_eq!(ids.len(), expected.len());

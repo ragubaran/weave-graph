@@ -136,7 +136,7 @@ fn generate_writes_a_report_and_canvases_that_are_all_valid_json() {
     let out_dir = dir.path().join("out");
     let db_path = dir.path().join("graph.db");
 
-    let paths = generate(dir.path(), &out_dir, &db_path, &storage, None).unwrap();
+    let paths = generate(dir.path(), &out_dir, &db_path, &storage, None, None).unwrap();
 
     assert!(paths.report_md.exists());
     let report = fs::read_to_string(&paths.report_md).unwrap();
@@ -159,7 +159,7 @@ fn generate_appends_the_doc_provenance_section_only_when_given_one() {
     let out_dir = dir.path().join("out");
     let db_path = dir.path().join("graph.db");
 
-    let without = generate(dir.path(), &out_dir, &db_path, &storage, None).unwrap();
+    let without = generate(dir.path(), &out_dir, &db_path, &storage, None, None).unwrap();
     let report = fs::read_to_string(&without.report_md).unwrap();
     assert!(!report.contains("Document Provenance"));
 
@@ -169,6 +169,7 @@ fn generate_appends_the_doc_provenance_section_only_when_given_one() {
         &db_path,
         &storage,
         Some("## Document Provenance\n\n- signed link"),
+        None,
     )
     .unwrap();
     let report = fs::read_to_string(&with.report_md).unwrap();

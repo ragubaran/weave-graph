@@ -816,3 +816,130 @@ fn test_cli_serve_mcp_surfaces_watch_staleness_in_tool_responses() {
     assert!(response.contains("debounce window"), "got: {response}");
     assert!(response.contains("lib.rs"), "got: {response}");
 }
+
+/// M3.0's own required verify criterion (`impl.md`): one test asserting
+/// CLI `query`, `report`, `.canvas` `export`, and an MCP tool call from
+/// four different simulated identities all return consistently masked
+/// results for the same underlying graph — proving one guard, not four
+/// that could drift. `secret_helper` is a private fn only `public_entry`
+/// calls; `"internal"` is the one role that bypasses masking.
+#[test]
+#[cfg(feature = "rbac")]
+fn test_cli_rbac_masks_consistently_across_query_report_export_and_mcp() {
+    const HIDDEN: &str = "<rbac: hidden>";
+
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(
+        root.join("main.rs"),
+        "pub fn public_entry() { secret_helper(); }\nfn secret_helper() {}\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("init")
+        .assert()
+        .success();
+    // `alice` is internal (unmasked); `bob`/`carol` are configured but
+    // non-internal; `dave` isn't configured at all — all three of the
+    // latter must resolve to the same masked (anonymous) view.
+    std::fs::write(
+        root.join(".weave/config.toml"),
+        "mode = \"single\"\n\n[rbac.users]\nalice = [\"internal\"]\nbob = []\ncarol = [\"contractor\"]\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    let identities: [(&str, bool); 4] = [
+        ("alice", true),
+        ("bob", false),
+        ("carol", false),
+        ("dave", false),
+    ];
+
+    for (subject, sees_private) in identities {
+        let query_out = Command::cargo_bin("weave")
+            .unwrap()
+            .current_dir(root)
+            .args(["query", "callees(public_entry)", "--as", subject])
+            .output()
+            .unwrap();
+        assert!(query_out.status.success(), "query failed for {subject}");
+        let query_text = String::from_utf8_lossy(&query_out.stdout);
+        assert_eq!(
+            query_text.contains("secret_helper"),
+            sees_private,
+            "query for {subject}: {query_text}"
+        );
+        assert_eq!(
+            query_text.contains(HIDDEN),
+            !sees_private,
+            "query for {subject}: {query_text}"
+        );
+
+        let export_out = Command::cargo_bin("weave")
+            .unwrap()
+            .current_dir(root)
+            .args([
+                "export",
+                "--symbol",
+                "public_entry",
+                "--depth",
+                "1",
+                "--as",
+                subject,
+            ])
+            .output()
+            .unwrap();
+        assert!(export_out.status.success(), "export failed for {subject}");
+        let export_text = String::from_utf8_lossy(&export_out.stdout);
+        assert_eq!(
+            export_text.contains("secret_helper"),
+            sees_private,
+            "export for {subject}: {export_text}"
+        );
+
+        Command::cargo_bin("weave")
+            .unwrap()
+            .current_dir(root)
+            .args(["report", "--as", subject])
+            .assert()
+            .success();
+        let report_md =
+            std::fs::read_to_string(root.join(".weave/report/WEAVE_REPORT.md")).unwrap();
+        let expected_total = if sees_private {
+            "Total symbols: 2"
+        } else {
+            "Total symbols: 1"
+        };
+        assert!(
+            report_md.contains(expected_total),
+            "report for {subject}: {report_md}"
+        );
+
+        let mcp_input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n\
+             {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"weave_trace_calls\",\"arguments\":{\"symbol\":\"public_entry\",\"depth\":1}}}\n";
+        let mcp_out = Command::cargo_bin("weave")
+            .unwrap()
+            .current_dir(root)
+            .args(["serve", "--mcp", "--as", subject])
+            .write_stdin(mcp_input)
+            .output()
+            .unwrap();
+        assert!(mcp_out.status.success(), "mcp failed for {subject}");
+        let mcp_text = String::from_utf8_lossy(&mcp_out.stdout);
+        assert_eq!(
+            mcp_text.contains("secret_helper"),
+            sees_private,
+            "mcp for {subject}: {mcp_text}"
+        );
+    }
+}

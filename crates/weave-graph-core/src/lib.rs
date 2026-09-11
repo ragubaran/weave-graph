@@ -14,6 +14,8 @@ pub mod modules;
 pub mod notes;
 #[cfg(feature = "provenance")]
 pub mod provenance;
+#[cfg(feature = "rbac")]
+pub mod rbac;
 pub mod schema;
 mod storage;
 

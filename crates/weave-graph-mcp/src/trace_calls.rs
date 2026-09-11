@@ -4,10 +4,16 @@ use crate::tools::{TraceCallsArgs, TraceCallsResult, resolve_symbol};
 
 /// Call chain traversal — both outgoing (calls) and incoming (callers).
 /// Visited sets on both BFS walks prevent infinite loops on cyclic graphs.
+///
+/// `mask` is M3.0's query-layer RBAC hook (`weave_graph_core::rbac`),
+/// applied once here to the whole node list — see
+/// `weave-graph-cli::query::run`'s doc comment for why (never drops or
+/// reorders entries, so `csr`'s compact indices stay valid).
 pub fn weave_trace_calls(
     storage: &dyn Storage,
     csr: &CsrGraph,
     args: TraceCallsArgs<'_>,
+    mask: Option<&dyn Fn(&Node) -> Node>,
 ) -> TraceCallsResult {
     let nodes = match storage.all_nodes() {
         Ok(n) => n,
@@ -16,6 +22,10 @@ pub fn weave_trace_calls(
                 text: format!("error: {e}"),
             };
         }
+    };
+    let nodes: Vec<Node> = match mask {
+        Some(m) => nodes.iter().map(m).collect(),
+        None => nodes,
     };
 
     let Some(root_id) = resolve_symbol(&nodes, args.symbol) else {

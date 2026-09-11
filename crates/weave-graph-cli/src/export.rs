@@ -70,12 +70,20 @@ impl From<&Edge> for EdgeView {
 /// walks outbound) and callees (via `CsrGraph::reachable_within`). This is
 /// the raw subgraph data, not the `.canvas` visual format with LOD 0-2
 /// clustering — that's M1.8's job; this milestone only wires the command.
+/// `mask` is M3.0's query-layer RBAC hook (`weave_graph_core::rbac`) —
+/// see `query::run`'s doc comment for why it's applied once here, to the
+/// whole node list, rather than threaded through every helper below.
 pub(crate) fn neighborhood(
     storage: &dyn Storage,
     symbol: &str,
     depth: u32,
+    mask: Option<&dyn Fn(&Node) -> Node>,
 ) -> Result<Neighborhood, String> {
     let nodes = storage.all_nodes().map_err(|e| e.to_string())?;
+    let nodes: Vec<Node> = match mask {
+        Some(m) => nodes.iter().map(m).collect(),
+        None => nodes,
+    };
     let root = nodes
         .iter()
         .find(|n| n.symbol == symbol)

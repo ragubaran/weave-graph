@@ -151,3 +151,24 @@ fn read_linked_repos_tolerates_an_empty_array() {
     fs::write(&path, "[federation]\nlinked_repos = []\n").unwrap();
     assert!(read_linked_repos(&path).is_empty());
 }
+
+#[test]
+fn read_rbac_users_returns_empty_map_when_file_or_section_is_absent() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(read_rbac_users(&dir.path().join("nope.toml")).is_empty());
+
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "mode = \"single\"\n").unwrap();
+    assert!(read_rbac_users(&path).is_empty());
+}
+
+#[test]
+fn read_rbac_users_parses_the_configured_map() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[rbac.users]\nalice = [\"internal\"]\nbob = []\n").unwrap();
+    let users = read_rbac_users(&path);
+    assert_eq!(users.get("alice"), Some(&vec!["internal".to_string()]));
+    assert_eq!(users.get("bob"), Some(&vec![]));
+    assert_eq!(users.get("carol"), None);
+}

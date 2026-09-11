@@ -16,6 +16,7 @@ thiserror = "2.0.20"
 notes = ["dep:blake3"]
 federation = []
 provenance = []
+rbac = []
 
 [dev-dependencies]
 criterion = "0.8.2"

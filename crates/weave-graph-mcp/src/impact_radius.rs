@@ -5,10 +5,15 @@ use crate::tools::{ImpactRadiusArgs, ImpactRadiusResult, resolve_symbol};
 /// Topological blast radius for a proposed change to `symbol`.
 /// Returns every outbound-reachable node (full BFS, no depth cap).
 /// CSR `reachable_within` uses a RoaringBitmap visited set — cycle-safe.
+///
+/// `mask` is M3.0's query-layer RBAC hook (`weave_graph_core::rbac`),
+/// applied once here to the whole node list — see
+/// `weave-graph-cli::query::run`'s doc comment for why.
 pub fn weave_impact_radius(
     storage: &dyn Storage,
     csr: &CsrGraph,
     args: ImpactRadiusArgs<'_>,
+    mask: Option<&dyn Fn(&Node) -> Node>,
 ) -> ImpactRadiusResult {
     let nodes = match storage.all_nodes() {
         Ok(n) => n,
@@ -18,6 +23,10 @@ pub fn weave_impact_radius(
                 text: format!("error: {e}"),
             };
         }
+    };
+    let nodes: Vec<Node> = match mask {
+        Some(m) => nodes.iter().map(m).collect(),
+        None => nodes,
     };
 
     let Some(root_id) = resolve_symbol(&nodes, args.symbol) else {

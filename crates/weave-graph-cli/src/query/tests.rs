@@ -42,7 +42,7 @@ fn chain_storage() -> SqliteStorage {
 #[test]
 fn callers_finds_transitive_callers() {
     let storage = chain_storage();
-    let result = run(&storage, "callers(b)").unwrap();
+    let result = run(&storage, "callers(b)", None).unwrap();
     assert!(result.contains("a ("));
     assert!(result.contains("caller ("));
     assert!(!result.contains("c ("));
@@ -51,7 +51,7 @@ fn callers_finds_transitive_callers() {
 #[test]
 fn callees_is_bounded_to_direct_neighbors_only() {
     let storage = chain_storage();
-    let result = run(&storage, "callees(a)").unwrap();
+    let result = run(&storage, "callees(a)", None).unwrap();
     assert!(result.contains("b ("));
     assert!(
         !result.contains("c ("),
@@ -62,7 +62,7 @@ fn callees_is_bounded_to_direct_neighbors_only() {
 #[test]
 fn impact_is_unbounded_transitively() {
     let storage = chain_storage();
-    let result = run(&storage, "impact(a)").unwrap();
+    let result = run(&storage, "impact(a)", None).unwrap();
     assert!(result.contains("b ("));
     assert!(
         result.contains("c ("),
@@ -73,40 +73,40 @@ fn impact_is_unbounded_transitively() {
 #[test]
 fn path_finds_the_shortest_chain() {
     let storage = chain_storage();
-    let result = run(&storage, "path(caller,c)").unwrap();
+    let result = run(&storage, "path(caller,c)", None).unwrap();
     assert_eq!(result, "caller → a → b → c");
 }
 
 #[test]
 fn path_reports_no_path_found_when_unreachable() {
     let storage = chain_storage();
-    let result = run(&storage, "path(c,caller)").unwrap();
+    let result = run(&storage, "path(c,caller)", None).unwrap();
     assert_eq!(result, "no path found");
 }
 
 #[test]
 fn unresolvable_symbol_is_a_clear_error() {
     let storage = chain_storage();
-    let err = run(&storage, "callers(nope)").unwrap_err();
+    let err = run(&storage, "callers(nope)", None).unwrap_err();
     assert!(err.contains("symbol not found: nope"));
 }
 
 #[test]
 fn malformed_expression_is_a_clear_error() {
     let storage = chain_storage();
-    assert!(run(&storage, "not a call").is_err());
+    assert!(run(&storage, "not a call", None).is_err());
 }
 
 #[test]
 fn wrong_argument_count_is_a_clear_error() {
     let storage = chain_storage();
-    assert!(run(&storage, "callers(a,b)").is_err());
-    assert!(run(&storage, "path(a)").is_err());
+    assert!(run(&storage, "callers(a,b)", None).is_err());
+    assert!(run(&storage, "path(a)", None).is_err());
 }
 
 #[test]
 fn unknown_function_is_a_clear_error() {
     let storage = chain_storage();
-    let err = run(&storage, "bogus(a)").unwrap_err();
+    let err = run(&storage, "bogus(a)", None).unwrap_err();
     assert!(err.contains("unknown query function"));
 }

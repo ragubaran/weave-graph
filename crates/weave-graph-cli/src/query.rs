@@ -48,11 +48,26 @@ fn pair_args<'a>(args: &[&'a str]) -> Result<(&'a str, &'a str), String> {
 /// "callers(AuthService.verify)"`): a small, deterministic query language
 /// over the already-indexed graph — no LLM, no network, same guarantee as
 /// the MCP tools this mirrors (`weave_trace_calls`, `weave_impact_radius`).
-pub(crate) fn run(storage: &dyn Storage, expression: &str) -> Result<String, String> {
+///
+/// `mask` is M3.0's query-layer RBAC hook (`weave_graph_core::rbac`):
+/// applied once, here, to every fetched node before any lookup below
+/// touches it — `Node::clone`s a visible node untouched, replaces a
+/// hidden one's content with an opaque stand-in. Never drops or reorders
+/// entries: `reachable_text`'s `nodes.get(idx)` assumes the same length
+/// and order `CsrGraph::load` compacted its own indices from.
+pub(crate) fn run(
+    storage: &dyn Storage,
+    expression: &str,
+    mask: Option<&dyn Fn(&Node) -> Node>,
+) -> Result<String, String> {
     let expr = expression.trim();
     let (name, args) =
         parse_call(expr).ok_or_else(|| format!("unrecognized query: {expr}. {USAGE}"))?;
     let nodes = storage.all_nodes().map_err(|e| e.to_string())?;
+    let nodes: Vec<Node> = match mask {
+        Some(m) => nodes.iter().map(m).collect(),
+        None => nodes,
+    };
 
     match name {
         "callers" => {

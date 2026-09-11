@@ -63,15 +63,37 @@ pub(crate) struct ReportPaths {
 /// and LOD 2 (one sub-canvas per module, file-level) — LOD 3 is
 /// `weave export`, already wired in M1.6. Every artifact carries the same
 /// provenance badge.
+/// `visible` is M3.0's query-layer RBAC hook (`weave_graph_core::rbac`).
+/// Unlike `query`/`export`'s content-masking `mask` closure, `report`
+/// never resolves a `CsrGraph`'s compact indices back through this list
+/// (it has no `CsrGraph` at all), so dropping hidden nodes/edges outright
+/// is safe here and gives a real signal: fewer visible symbols, no
+/// internal-only call edges feeding the module graph.
 pub(crate) fn generate(
     root: &Path,
     out_dir: &Path,
     db_path: &Path,
     storage: &dyn Storage,
     doc_provenance_section: Option<&str>,
+    visible: Option<&dyn Fn(&weave_graph_core::Node) -> bool>,
 ) -> Result<ReportPaths, Box<dyn std::error::Error>> {
     let nodes = storage.all_nodes()?;
     let edges = storage.all_edges()?;
+    let (nodes, edges) = match visible {
+        Some(is_visible) => {
+            let nodes: Vec<_> = nodes.into_iter().filter(|n| is_visible(n)).collect();
+            let visible_ids: std::collections::HashSet<NodeId> =
+                nodes.iter().map(|n| n.id).collect();
+            let edges: Vec<_> = edges
+                .into_iter()
+                .filter(|e| {
+                    visible_ids.contains(&e.source_id) && visible_ids.contains(&e.target_id)
+                })
+                .collect();
+            (nodes, edges)
+        }
+        None => (nodes, edges),
+    };
     let provenance = provenance::current(root, db_path);
 
     let file_of: HashMap<NodeId, String> = nodes.iter().map(|n| (n.id, n.path.clone())).collect();

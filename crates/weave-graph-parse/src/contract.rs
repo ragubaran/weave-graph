@@ -22,13 +22,17 @@ fn canonical_line(symbol: &str, kind: &str, signature: &str) -> String {
     format!("{kind} {symbol} :: {}", signature.trim())
 }
 
-fn short_name(qualified: &str) -> &str {
+/// `pub` beyond this module: `weave-graph-cli`'s `rbac` feature (`impl.md`
+/// M3.0) reuses this instead of re-deriving its own "is this exported"
+/// heuristic, so contract-divergence and RBAC visibility never disagree.
+pub fn short_name(qualified: &str) -> &str {
     qualified.rsplit([':', '.']).next().unwrap_or(qualified)
 }
 
-type VisibilityRule = fn(signature: &str, name: &str) -> bool;
+pub type VisibilityRule = fn(signature: &str, name: &str) -> bool;
 
-fn visibility_rule(language: Language) -> VisibilityRule {
+/// `pub` beyond this module for the same reason as [`short_name`].
+pub fn visibility_rule(language: Language) -> VisibilityRule {
     match language {
         Language::Rust => |sig, _| sig.starts_with("pub") && !sig.starts_with("pub("),
         Language::Python | Language::Dart => |_, name| !name.starts_with('_'),

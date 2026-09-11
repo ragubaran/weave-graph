@@ -167,7 +167,7 @@ fn finish(
             },
         });
         if !dry_run {
-            let result = query::run(storage, &grounded.expression())
+            let result = query::run(storage, &grounded.expression(), None)
                 .map_err(|e| format!("grounded call failed: {e}"))?;
             value["result"] = serde_json::Value::String(result);
         }
@@ -184,7 +184,7 @@ fn finish(
     if dry_run {
         return Ok(());
     }
-    let result = query::run(storage, &grounded.expression())
+    let result = query::run(storage, &grounded.expression(), None)
         .map_err(|e| format!("grounded call failed: {e}"))?;
     println!("{result}");
     Ok(())

@@ -18,6 +18,9 @@ thiserror = "2.0.20"
 # M2.10's MCP pair (weave_pin_note / weave_recall_notes). blake3 enters
 # only through core's `notes` feature — never the default build.
 notes = ["weave-graph-core/notes", "dep:weave-graph-parse"]
+# M3.0: masks trace_calls/impact_radius through the same RbacGuard the CLI
+# uses (weave-graph-cli builds it; this crate only receives the guard).
+rbac = ["weave-graph-core/rbac"]
 
 [dev-dependencies]
 tempfile = "3.27.0"
