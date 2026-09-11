@@ -176,10 +176,23 @@ jobs:
       # review. Turning that into an automatic pass/fail needs a script
       # parsing `target/criterion/**/estimates.json` (or `critcmp`) — not
       # implemented yet; tracked as an M1.9 follow-up, not silently claimed.
+      #
+      # Named --bench targets only: --benches (and --workspace's default
+      # target set) also matches lib/bin targets, which default bench=true
+      # and run their #[test] fns through libtest, which rejects criterion's
+      # --save-baseline/--baseline args.
       - name: Run benchmarks (save baseline on main)
         if: github.ref == 'refs/heads/main'
-        run: cargo bench --workspace --benches -- --save-baseline main
+        run: >
+          cargo bench --workspace --all-features --exclude weave-graph-python
+          --bench csr_memory --bench parser_throughput --bench sqlite_latency
+          --bench turso_latency --bench slm_routing --bench slm_accuracy
+          -- --save-baseline main
 
       - name: Run benchmarks (compare against main)
         if: github.ref != 'refs/heads/main'
-        run: cargo bench --workspace --benches -- --baseline main || true
+        run: >
+          cargo bench --workspace --all-features --exclude weave-graph-python
+          --bench csr_memory --bench parser_throughput --bench sqlite_latency
+          --bench turso_latency --bench slm_routing --bench slm_accuracy
+          -- --baseline main || true
