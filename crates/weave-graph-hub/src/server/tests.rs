@@ -83,17 +83,75 @@ fn raw_request(
 }
 
 #[test]
-fn parse_snapshot_path_extracts_repo_and_filename_ignoring_any_prefix() {
+fn parse_snapshot_path_extracts_repo_and_sha_ignoring_any_prefix() {
     assert_eq!(
         parse_snapshot_path("/snapshots/my-repo/abc123.tar.zst"),
-        Some(("my-repo".to_string(), "abc123.tar.zst".to_string()))
+        Some(("my-repo".to_string(), "abc123".to_string()))
     );
     assert_eq!(
         parse_snapshot_path("/weave/snapshots/my-repo/abc123.tar.zst"),
-        Some(("my-repo".to_string(), "abc123.tar.zst".to_string()))
+        Some(("my-repo".to_string(), "abc123".to_string()))
     );
     assert_eq!(parse_snapshot_path("/health"), None);
     assert_eq!(parse_snapshot_path("/snapshots/"), None);
+}
+
+/// Security regression: a crafted `repo_id`/sha carrying `..`/`/` must
+/// never reach `Registry` as a usable path component — the specific
+/// path-traversal vector a malicious `PUT`/`GET` could otherwise use to
+/// read or write arbitrary files on the host.
+#[test]
+fn parse_snapshot_path_rejects_path_traversal_attempts() {
+    assert_eq!(
+        parse_snapshot_path("/snapshots/../../etc/sha1.tar.zst"),
+        None
+    );
+    assert_eq!(
+        parse_snapshot_path("/snapshots/my-repo/../../../etc/passwd.tar.zst"),
+        None
+    );
+    assert_eq!(
+        parse_snapshot_path("/snapshots/my-repo/..%2f..%2fetc%2fpasswd.tar.zst"),
+        None,
+        "a raw percent-encoded traversal string must still fail the charset check"
+    );
+    assert_eq!(
+        parse_snapshot_path("/snapshots/./my-repo/sha1.tar.zst"),
+        None
+    );
+    assert_eq!(
+        parse_snapshot_path("/snapshots/my..repo/sha1.tar.zst"),
+        Some(("my..repo".to_string(), "sha1".to_string())),
+        "a dot-containing but non-'..'-exact component is fine"
+    );
+}
+
+#[test]
+fn push_and_pull_with_a_traversal_repo_id_are_refused_end_to_end() {
+    let (base, _guard) = spawn_server(generous_config());
+    let (status, _headers, _body) = raw_request(
+        &base,
+        "PUT",
+        "/snapshots/../../etc/sha1.tar.zst",
+        &[],
+        b"malicious payload",
+    );
+    assert_eq!(
+        status, 404,
+        "a traversal path must never be routed to a push"
+    );
+
+    let (status, _headers, _body) = raw_request(
+        &base,
+        "GET",
+        "/snapshots/../../etc/passwd.tar.zst",
+        &[],
+        b"",
+    );
+    assert_eq!(
+        status, 404,
+        "a traversal path must never be routed to a pull"
+    );
 }
 
 #[test]

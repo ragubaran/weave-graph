@@ -12,7 +12,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
 
-use crate::registry::{PullResult, PushDecision, Registry};
+use crate::registry::{PullResult, PushDecision, Registry, is_safe_path_component};
 
 pub struct RegistryServer {
     listener: TcpListener,
@@ -116,19 +116,22 @@ fn header<'a>(req: &'a Request, name: &str) -> Option<&'a str> {
         .map(|(_, v)| v.as_str())
 }
 
-/// Parses `.../snapshots/{repo_id}/{filename}` out of a request path,
+/// Parses `.../snapshots/{repo_id}/{sha}.tar.zst` out of a request path,
 /// tolerant of any mount prefix before `snapshots/` — a reverse proxy or
-/// a non-root `[hub] url` path both land here the same way.
+/// a non-root `[hub] url` path both land here the same way. Returns
+/// `None` for anything that fails [`is_safe_path_component`], including a
+/// `filename` that smuggles extra `/`s past `splitn`'s single split.
 fn parse_snapshot_path(path: &str) -> Option<(String, String)> {
     let idx = path.find("/snapshots/")?;
     let rest = &path[idx + "/snapshots/".len()..];
     let mut segments = rest.splitn(2, '/');
     let repo_id = segments.next()?.to_string();
     let filename = segments.next()?.to_string();
-    if repo_id.is_empty() || filename.is_empty() {
+    let sha = filename.strip_suffix(".tar.zst").unwrap_or(&filename);
+    if !is_safe_path_component(&repo_id) || !is_safe_path_component(sha) {
         return None;
     }
-    Some((repo_id, filename))
+    Some((repo_id, sha.to_string()))
 }
 
 fn write_response(
@@ -152,11 +155,11 @@ fn handle_connection(mut stream: TcpStream, registry: &Registry) -> std::io::Res
     let Some(req) = read_request(&mut stream)? else {
         return Ok(());
     };
-    let Some((repo_id, filename)) = parse_snapshot_path(&req.path) else {
+    let Some((repo_id, sha)) = parse_snapshot_path(&req.path) else {
         write_response(&mut stream, 404, "Not Found", &[], b"unknown path");
         return Ok(());
     };
-    let sha = filename.strip_suffix(".tar.zst").unwrap_or(&filename);
+    let sha = sha.as_str();
 
     match req.method.as_str() {
         "GET" => match registry.pull(&repo_id, sha) {

@@ -21,6 +21,23 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// `repo_id` and every sha this module handles become filesystem path
+/// components (`store_dir.join(repo_id)`, `format!("{sha}.tar.zst")`) —
+/// rejecting anything but a conservative charset is what stops a crafted
+/// `repo_id`/sha containing `..` or `/` from escaping the data directory
+/// (path traversal: arbitrary file read via `pull`, arbitrary file write
+/// via `push`). Enforced here at the sink, not only at the HTTP layer
+/// that's `Registry`'s one caller today — a future caller that invokes
+/// this directly gets the same guarantee.
+pub(crate) fn is_safe_path_component(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s != "."
+        && s != ".."
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
 /// Operator-supplied limits — deliberately no `Default`: `plan.md` §3.1
 /// requires these calibrated against observed merge rates, not shipped as
 /// an arbitrary constant nobody actually measured.
@@ -182,6 +199,12 @@ impl Registry {
         retention: usize,
         payload: &[u8],
     ) -> std::io::Result<PushDecision> {
+        if !is_safe_path_component(repo_id) || !is_safe_path_component(target_sha) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unsafe repo_id or target_sha: {repo_id:?}/{target_sha:?}"),
+            ));
+        }
         let state = self.repo_state(repo_id);
 
         {
@@ -231,6 +254,11 @@ impl Registry {
     /// `commit_sha == "latest"` resolves against the persisted head —
     /// mirrors the client's own `pull("latest")` fallback (M2.5).
     pub fn pull(&self, repo_id: &str, commit_sha: &str) -> PullResult {
+        if !is_safe_path_component(repo_id)
+            || (commit_sha != "latest" && !is_safe_path_component(commit_sha))
+        {
+            return PullResult::NotFound;
+        }
         let sha = if commit_sha == "latest" {
             match self.read_persisted_head(repo_id) {
                 Some(sha) => sha,

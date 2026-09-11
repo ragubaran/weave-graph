@@ -29,6 +29,44 @@ fn wait_for_commit(registry: &Registry, repo_id: &str, sha: &str) -> Vec<u8> {
 }
 
 #[test]
+fn is_safe_path_component_rejects_traversal_and_accepts_ordinary_names() {
+    assert!(is_safe_path_component("my-repo"));
+    assert!(is_safe_path_component("abc123"));
+    assert!(
+        is_safe_path_component("my..repo"),
+        "dots are fine unless the whole component is '..'"
+    );
+    assert!(!is_safe_path_component(""));
+    assert!(!is_safe_path_component("."));
+    assert!(!is_safe_path_component(".."));
+    assert!(!is_safe_path_component("../etc/passwd"));
+    assert!(!is_safe_path_component("a/b"));
+    assert!(!is_safe_path_component("a\\b"));
+    assert!(!is_safe_path_component(&"a".repeat(129)));
+}
+
+#[test]
+fn push_and_pull_refuse_a_traversal_repo_id_or_sha_at_the_sink() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(dir.path(), generous_config()).unwrap();
+
+    let err = registry
+        .push("../../etc", "sha1", None, 20, b"payload")
+        .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    let err = registry
+        .push("repo", "../../etc/passwd", None, 20, b"payload")
+        .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+    assert_eq!(registry.pull("../../etc", "sha1"), PullResult::NotFound);
+    assert_eq!(
+        registry.pull("repo", "../../etc/passwd"),
+        PullResult::NotFound
+    );
+}
+
+#[test]
 fn first_push_succeeds_regardless_of_base_sha() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(dir.path(), generous_config()).unwrap();
