@@ -10,8 +10,10 @@ mod error;
 pub mod federation;
 pub mod indexer;
 mod model;
+pub mod modules;
 #[cfg(feature = "provenance")]
 pub mod provenance;
+pub mod schema;
 mod storage;
 
 pub use cluster::{CommunityId, louvain_communities};

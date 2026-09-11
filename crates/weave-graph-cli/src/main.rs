@@ -26,6 +26,8 @@ mod rules;
 #[cfg(feature = "slm")]
 mod slm;
 mod storage_location;
+#[cfg(feature = "hub")]
+mod sync;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -176,8 +178,22 @@ enum ConfigAction {
 
 #[derive(Subcommand)]
 enum SyncAction {
-    Pull,
-    Push,
+    /// Hydrate the graph snapshot for the merge-base commit (or --commit)
+    Pull {
+        /// Explicit commit sha; defaults to `git merge-base origin/main HEAD`
+        #[arg(long)]
+        commit: Option<String>,
+        /// Fall back to the hub's latest snapshot when the commit has none
+        #[arg(long)]
+        fallback_latest: bool,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Publish the current graph snapshot (default branch only)
+    Push {
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -246,6 +262,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::CheckContracts { .. } => {
             feature_not_compiled("weave check-contracts", "federation")
         }
+        #[cfg(feature = "hub")]
+        Commands::Sync {
+            action:
+                SyncAction::Pull {
+                    commit,
+                    fallback_latest,
+                    path,
+                },
+        } => sync::cmd_sync_pull(&path, commit.as_deref(), fallback_latest)?,
+        #[cfg(feature = "hub")]
+        Commands::Sync {
+            action: SyncAction::Push { path },
+        } => sync::cmd_sync_push(&path)?,
+        #[cfg(not(feature = "hub"))]
         Commands::Sync { .. } => feature_not_compiled("weave sync", "hub"),
         #[cfg(feature = "slm")]
         Commands::Ask {
@@ -325,10 +355,14 @@ fn slm_cmd_doctor() -> Result<(), Box<dyn std::error::Error>> {
 /// Phase-2-only command on a Phase-1-only binary (`plan.md` §0.2a): fail
 /// clearly and immediately, never a silent no-op and never a bare clap
 /// "unrecognized subcommand" — the command is real, just not compiled in.
+/// Every call site is `#[cfg(not(feature = "..."))]`-gated, so `--all-features`
+/// (which compiles every one of those features in) leaves this genuinely
+/// unreferenced — a build config no real release variant uses.
+#[allow(dead_code)]
 fn feature_not_compiled(command: &str, feature: &str) -> ! {
     eprintln!(
         "Error: `{command}` requires the `{feature}` feature, which is not compiled into this binary.\n\
-         Rebuild with `--features {feature}`, or install the prebuilt `weave-team`/`weave-custom` variant."
+         Rebuild with `--features {feature}`, or install the prebuilt `weave`/`weave-custom` variant."
     );
     std::process::exit(1);
 }
@@ -369,11 +403,47 @@ staleness_policy = "warn"
         };
         fs::write(&config_path, content)?;
         println!("Initialized weave graph in .weave/ (mode: {mode})");
+        if mode == "multiple" {
+            // CI cold-indexes on every run without a cache primitive; emit
+            // the L1 snippet (plan.md §1.3) alongside the config so the
+            // setup step is self-contained.
+            fs::write(weave_dir.join("ci-cache.yml"), ci_cache_snippet())?;
+            println!(
+                "\nL1 CI cache snippet written to .weave/ci-cache.yml — copy this step into your GitHub workflow:\n"
+            );
+            println!("{}", ci_cache_snippet());
+        }
     } else {
         println!("Existing .weave/config.toml found");
     }
     ensure_gitignored(Path::new("."))?;
     Ok(())
+}
+
+/// L1 CI-cache snippet (`plan.md` §1.3). An exact-sha key alone never hits —
+/// prefix-fallback restore-keys land a recent-but-stale graph that
+/// `weave index --incremental` then pays only the delta on.
+fn ci_cache_snippet() -> &'static str {
+    r#"# Weave L1 CI cache — copy this step into .github/workflows/ci.yml and run
+# `weave index --incremental` after it. The restore lands a recent-but-stale
+# graph; incremental indexing pays only the delta since it was built.
+#
+# `fetch-depth: 0` on actions/checkout is required: the default
+# `fetch-depth: 1` gives `git merge-base` no common ancestor, so
+# incremental diffs fail silently on shallow checkouts.
+#
+# L1 crossover caveat: the cache stores a zstd-compressed .weave/. If cache
+# restore + decompress ever costs more than a cold index, skip caching for
+# that repo.
+- name: Restore weave graph cache
+  uses: actions/cache@v4
+  with:
+    path: .weave/
+    key: weave-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+    restore-keys: |
+      weave-${{ runner.os }}-${{ github.ref_name }}-
+      weave-${{ runner.os }}-main-
+"#
 }
 
 /// Auto-adds `.weave/` to `.gitignore` if it isn't already covered — the

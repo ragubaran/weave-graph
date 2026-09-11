@@ -82,7 +82,8 @@ impl<'a> McpHandler<'a> {
                 input_schema: json!({
                     "type": "object",
                     "properties": {
-                        "max_files": { "type": "integer", "description": "Max number of files to surface" }
+                        "max_files": { "type": "integer", "description": "Max number of files to surface" },
+                        "module": { "type": "boolean", "description": "Module-level orientation: one line per Louvain module (label, file count, symbol count, cross-edges, member files)" }
                     }
                 }),
             },
@@ -169,7 +170,8 @@ impl<'a> McpHandler<'a> {
             .and_then(|v| v.as_u64())
             .map(|d| d as usize)
             .unwrap_or(50);
-        let res = weave_repo_map(self.storage, &self.csr, RepoMapArgs { max_files });
+        let module = args.get("module").and_then(|v| v.as_bool());
+        let res = weave_repo_map(self.storage, &self.csr, RepoMapArgs { max_files, module });
         CallToolResult::ok(res.text)
     }
 

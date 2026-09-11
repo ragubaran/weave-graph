@@ -1,4 +1,10 @@
 #![deny(unsafe_code)]
-//! Stub crate. `Storage` trait implementation backed by libSQL/Turso —
-//! not implemented until the `turso` feature is scheduled (Phase 2+).
-//! Exists now so the workspace dependency graph is stable from day one.
+//! Optional `Storage` trait implementation backed by embedded libSQL
+//! (`impl.md` M2.7) — same schema and migrations as
+//! `weave-graph-store-sqlite`, replayed verbatim. Never linked into the
+//! default build; consumers opt in via the `turso` feature.
+
+mod backend;
+mod schema;
+
+pub use backend::TursoStorage;

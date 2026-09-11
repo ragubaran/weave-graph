@@ -33,8 +33,13 @@ jobs:
       - name: Verify Formatting (cargo fmt)
         run: cargo fmt --all -- --check
 
+      # weave-graph-python is excluded: PyO3's `extension-module` build needs
+      # maturin's own linker setup, not a plain `cargo` invocation — every
+      # --all-features sweep across the workspace fails to link it otherwise,
+      # regardless of whether a Python interpreter is present. Built and
+      # tested by a dedicated maturin-based step, not this blanket sweep.
       - name: Run Clippy Linter
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --exclude weave-graph-python -- -D warnings
 
   # ---------------------------------------------------------------------------
   # 2. Unit Tests & Code Coverage (> 90% Line Threshold)
@@ -93,11 +98,12 @@ jobs:
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      # weave-graph-python excluded here too — see the lint job's comment.
       - name: Build Test Binaries
-        run: cargo build --workspace --tests --all-features
+        run: cargo build --workspace --tests --all-features --exclude weave-graph-python
 
       - name: Run Integration Tests
-        run: cargo test --test '*' --all-features -- --nocapture
+        run: cargo test --workspace --all-features --exclude weave-graph-python --test '*' -- --nocapture
 
   # ---------------------------------------------------------------------------
   # 4. Proactive N+1 Stable Forward-Compatibility
@@ -118,8 +124,9 @@ jobs:
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      # weave-graph-python excluded here too — see the lint job's comment.
       - name: Test Against N+1 Compiler
-        run: cargo check --workspace --all-targets --all-features
+        run: cargo check --workspace --all-targets --all-features --exclude weave-graph-python
 
   # ---------------------------------------------------------------------------
   # 5. Benchmark Regression Gate (performance_compare.md §5.3)

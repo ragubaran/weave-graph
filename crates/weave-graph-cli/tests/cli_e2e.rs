@@ -240,6 +240,110 @@ fn test_cli_init_multiple_and_existing_config() {
         ));
 }
 
+/// impl.md M2.6: `weave init --mode multiple` emits the L1 CI-cache snippet
+/// (exact-sha key + prefix-fallback restore-keys), prints it, and writes it
+/// to `.weave/ci-cache.yml`; single mode stays cache-free (plan.md §1.3).
+#[test]
+fn test_cli_init_multiple_emits_ci_cache_snippet() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--mode", "multiple"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("actions/cache"));
+
+    let snippet = std::fs::read_to_string(root.join(".weave/ci-cache.yml")).unwrap();
+    assert!(
+        snippet.contains("key: weave-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}")
+    );
+    assert!(snippet.contains("weave-${{ runner.os }}-${{ github.ref_name }}-"));
+    assert!(snippet.contains("weave-${{ runner.os }}-main-"));
+    assert!(snippet.contains("fetch-depth: 0"));
+    assert!(snippet.contains("zstd"));
+}
+
+#[test]
+fn test_cli_init_single_does_not_emit_ci_cache_snippet() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--mode", "single"])
+        .assert()
+        .success();
+
+    assert!(!root.join(".weave/ci-cache.yml").exists());
+}
+
+/// impl.md M2.6 acceptance: a scripted two-run CI simulation over the
+/// snippet the real binary generated — run 1 saves under its exact sha,
+/// run 2 misses the sha but takes the restore path via restore-keys.
+#[test]
+fn test_cli_init_multiple_snippet_restores_cache_on_second_run() {
+    fn cache_restore(
+        caches: &[(String, String)],
+        key: &str,
+        restore_keys: &[&str],
+    ) -> Option<String> {
+        if let Some((_, content)) = caches.iter().find(|(k, _)| k == key) {
+            return Some(content.clone());
+        }
+        for prefix in restore_keys {
+            if let Some((_, content)) = caches.iter().rev().find(|(k, _)| k.starts_with(prefix)) {
+                return Some(content.clone());
+            }
+        }
+        None
+    }
+
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--mode", "multiple"])
+        .assert()
+        .success();
+
+    let snippet = std::fs::read_to_string(root.join(".weave/ci-cache.yml")).unwrap();
+    let key = snippet
+        .lines()
+        .map(str::trim_start)
+        .find(|l| l.starts_with("key:"))
+        .unwrap()
+        .trim_start_matches("key:")
+        .trim()
+        .to_string();
+    let restore_keys = ["weave-Linux-feature-", "weave-Linux-main-"];
+
+    // Run 1: cold — no exact match, no prefix match, nothing to restore.
+    let mut caches: Vec<(String, String)> = Vec::new();
+    let run1_key = key
+        .replace("${{ runner.os }}", "Linux")
+        .replace("${{ github.ref_name }}", "feature")
+        .replace("${{ github.sha }}", "aaa");
+    assert!(cache_restore(&caches, &run1_key, &restore_keys).is_none());
+    caches.push((run1_key, "graph-aaa".to_string()));
+
+    // Run 2: exact sha miss, prefix fallback restores run 1's cache.
+    let run2_key = key
+        .replace("${{ runner.os }}", "Linux")
+        .replace("${{ github.ref_name }}", "feature")
+        .replace("${{ github.sha }}", "bbb");
+    assert_eq!(
+        cache_restore(&caches, &run2_key, &restore_keys).as_deref(),
+        Some("graph-aaa"),
+        "second run must take the restore path, not cold-index"
+    );
+}
+
 #[test]
 fn test_cli_query_export_report_and_reindex_fast_path() {
     let dir = tempdir().unwrap();
@@ -332,13 +436,11 @@ fn test_cli_uncompiled_features_fail_with_clear_message() {
     let dir = tempdir().unwrap();
     let root = dir.path();
 
-    // The `hub`/`slm` commands have no implementation yet regardless of
-    // build — always stubbed. `link` (M2.1) and `check-contracts` (M2.2)
-    // are real commands once `federation` is compiled, so they're only
-    // still stubs in a build that leaves that feature out.
-    // mut is only exercised when `federation` is compiled out (below).
+    // Every one of these is a real command once its gating feature is
+    // compiled in, so it's only still a stub in a build that leaves that
+    // feature out. mut is only exercised when at least one push below runs.
     #[allow(unused_mut)]
-    let mut uncompiled_commands = vec![vec!["sync", "pull"]];
+    let mut uncompiled_commands: Vec<Vec<&str>> = Vec::new();
     #[cfg(not(feature = "federation"))]
     uncompiled_commands.push(vec!["link", "a", "b"]);
     #[cfg(not(feature = "federation"))]
@@ -350,6 +452,9 @@ fn test_cli_uncompiled_features_fail_with_clear_message() {
     uncompiled_commands.push(vec!["slm", "list"]);
     #[cfg(not(feature = "slm"))]
     uncompiled_commands.push(vec!["journal"]);
+    // `sync pull`/`push` (M2.5) are real commands once `hub` is compiled.
+    #[cfg(not(feature = "hub"))]
+    uncompiled_commands.push(vec!["sync", "pull"]);
 
     for args in uncompiled_commands {
         let mut cmd = Command::cargo_bin("weave").unwrap();

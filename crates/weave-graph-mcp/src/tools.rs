@@ -4,11 +4,20 @@ use weave_graph_core::{Node, NodeId};
 pub struct RepoMapArgs {
     /// Max number of files to surface (default: 50).
     pub max_files: usize,
+    /// `Some(true)` = module-level orientation (one line per Louvain
+    /// module: label, file count, symbol count, cross-edges, member
+    /// files); `None`/`Some(false)` = the file-level default. Opt-in
+    /// (M2.9's recorded decision): the default stays byte-identical
+    /// until module coverage is proven in real agent use.
+    pub module: Option<bool>,
 }
 
 impl Default for RepoMapArgs {
     fn default() -> Self {
-        Self { max_files: 50 }
+        Self {
+            max_files: 50,
+            module: None,
+        }
     }
 }
 

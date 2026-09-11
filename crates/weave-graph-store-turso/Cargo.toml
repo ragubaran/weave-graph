@@ -4,7 +4,17 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Optional Storage trait implementation for weave-graph, backed by libSQL/Turso. Stubbed until the `turso` feature is scheduled."
+description = "Optional Storage trait implementation for weave-graph, backed by embedded libSQL. Feature: `turso` (plan.md §0.2)."
 
 [dependencies]
+futures = { version = "0.3", default-features = false, features = ["executor"] }
+libsql = { version = "0.9", default-features = false, features = ["core"] }
 weave-graph-core = { path = "../weave-graph-core" }
+
+[dev-dependencies]
+criterion = "0.5"
+tempfile = "3.27.0"
+
+[[bench]]
+name = "turso_latency"
+harness = false

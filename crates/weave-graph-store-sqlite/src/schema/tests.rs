@@ -1,4 +1,5 @@
 use super::*;
+use weave_graph_core::schema::{V1_CREATE_TABLES, V2_TRAVERSAL_INDICES};
 
 #[test]
 fn fresh_db_migrates_to_latest_version() {

@@ -40,28 +40,12 @@ fn aggregate_file_edges_ignores_self_file_edges_and_sums_cross_file_ones() {
         edge(ids[0], ids[2]), // a.rs -> b.rs
         edge(ids[2], ids[0]), // b.rs -> a.rs, same unordered pair
     ];
-    let weights = aggregate_file_edges(&nodes, &edges, &file_of);
+    let weights = aggregate_file_edges(&edges, &file_of);
     assert_eq!(weights.len(), 1);
     assert_eq!(
         weights.get(&("a.rs".to_string(), "b.rs".to_string())),
         Some(&2.0)
     );
-}
-
-#[test]
-fn module_label_picks_the_most_common_directory() {
-    let files = vec![
-        "src/foo.rs".to_string(),
-        "src/bar.rs".to_string(),
-        "other/baz.rs".to_string(),
-    ];
-    assert_eq!(module_label(&files), "src");
-}
-
-#[test]
-fn module_label_falls_back_to_root_for_top_level_files() {
-    let files = vec!["main.rs".to_string()];
-    assert_eq!(module_label(&files), "(root)");
 }
 
 #[test]

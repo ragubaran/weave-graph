@@ -7,4 +7,5 @@ license.workspace = true
 description = "Optional delta ingestion/publish service for weave-graph. Never linked into the default binary. Stubbed until the `hub` feature is scheduled."
 
 [dependencies]
+thiserror = "2.0.20"
 weave-graph-core = { path = "../weave-graph-core" }

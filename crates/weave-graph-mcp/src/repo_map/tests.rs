@@ -1,5 +1,5 @@
 use super::*;
-use crate::tools::RepoMapArgs;
+use crate::tools::{FileApiResult, RepoMapArgs};
 use weave_graph_core::{Edge, Node, Storage};
 use weave_graph_store_sqlite::SqliteStorage;
 
@@ -35,7 +35,14 @@ fn repo_map_ranks_by_degree_and_respects_max_files() {
     storage.upsert_edge(&edge(id3, id2)).unwrap();
 
     let csr = CsrGraph::load(&storage).unwrap();
-    let result = weave_repo_map(&storage, &csr, RepoMapArgs { max_files: 10 });
+    let result = weave_repo_map(
+        &storage,
+        &csr,
+        RepoMapArgs {
+            max_files: 10,
+            module: None,
+        },
+    );
     assert!(result.text.contains("hub.rs"), "hub.rs must appear");
     assert!(
         result.text.find("hub.rs") < result.text.find("leaf.rs"),
@@ -52,11 +59,188 @@ fn repo_map_truncates_to_max_files() {
             .unwrap();
     }
     let csr = CsrGraph::load(&storage).unwrap();
-    let result = weave_repo_map(&storage, &csr, RepoMapArgs { max_files: 2 });
+    let result = weave_repo_map(
+        &storage,
+        &csr,
+        RepoMapArgs {
+            max_files: 2,
+            module: None,
+        },
+    );
     let file_lines = result
         .text
         .lines()
         .filter(|l| l.trim_start().starts_with('f'))
         .count();
     assert_eq!(file_lines, 2);
+}
+
+/// M2.9 fixture: two dense modules (src/parser: a/b/c.rs wired together;
+/// src/render: x/y.rs wired together) plus one isolated file. Used by the
+/// budget/coverage, byte-identical-default, and drill-down tests below.
+struct ModuleFixture {
+    storage: SqliteStorage,
+    csr: CsrGraph,
+}
+
+fn module_fixture() -> ModuleFixture {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    // src/parser module: a -> b -> c, plus a -> c (dense).
+    let a = storage
+        .upsert_node(&node("src/parser/a.rs", "parse_a"))
+        .unwrap();
+    let b = storage
+        .upsert_node(&node("src/parser/b.rs", "parse_b"))
+        .unwrap();
+    let c = storage
+        .upsert_node(&node("src/parser/c.rs", "parse_c"))
+        .unwrap();
+    storage.upsert_edge(&edge(a, b)).unwrap();
+    storage.upsert_edge(&edge(b, c)).unwrap();
+    storage.upsert_edge(&edge(a, c)).unwrap();
+    // src/render module: x -> y.
+    let x = storage
+        .upsert_node(&node("src/render/x.rs", "render_x"))
+        .unwrap();
+    let y = storage
+        .upsert_node(&node("src/render/y.rs", "render_y"))
+        .unwrap();
+    storage.upsert_edge(&edge(x, y)).unwrap();
+    // One cross-module edge so modules aren't fully isolated.
+    storage.upsert_edge(&edge(c, x)).unwrap();
+    // One isolated file (own module).
+    let _lone = storage.upsert_node(&node("main.rs", "main")).unwrap();
+
+    let csr = CsrGraph::load(&storage).unwrap();
+    ModuleFixture { storage, csr }
+}
+
+fn module_args() -> RepoMapArgs {
+    RepoMapArgs {
+        max_files: 50,
+        module: Some(true),
+    }
+}
+
+#[test]
+fn module_map_covers_all_files_within_orientation_budget() {
+    let fx = module_fixture();
+    let result = weave_repo_map(&fx.storage, &fx.csr, module_args());
+
+    // 100% file coverage: every indexed file appears in some module line.
+    for path in [
+        "src/parser/a.rs",
+        "src/parser/b.rs",
+        "src/parser/c.rs",
+        "src/render/x.rs",
+        "src/render/y.rs",
+        "main.rs",
+    ] {
+        assert!(
+            result.text.contains(path),
+            "{path} must appear in module membership"
+        );
+    }
+
+    // ~200-token orientation budget (chars/4 heuristic): 7 short lines.
+    let approx_tokens = result.text.len() / 4;
+    assert!(
+        approx_tokens <= 200,
+        "module map must stay within ~200 tokens, got ~{approx_tokens}:\n{}",
+        result.text
+    );
+
+    // Module lines carry label, file count, symbol count, cross-edges.
+    assert!(result.text.contains("repo map ("), "header expected");
+    assert!(
+        result.text.contains("cross-edges"),
+        "aggregate weight expected"
+    );
+}
+
+#[test]
+fn module_map_labels_modules_by_shared_directory() {
+    let fx = module_fixture();
+    let result = weave_repo_map(&fx.storage, &fx.csr, module_args());
+    assert!(result.text.contains("src/parser"), "parser module label");
+    assert!(result.text.contains("src/render"), "render module label");
+}
+
+#[test]
+fn file_level_default_is_byte_identical_without_module_flag() {
+    let fx = module_fixture();
+    // None and Some(false) must produce the same output…
+    let none = weave_repo_map(
+        &fx.storage,
+        &fx.csr,
+        RepoMapArgs {
+            max_files: 50,
+            module: None,
+        },
+    );
+    let some_false = weave_repo_map(
+        &fx.storage,
+        &fx.csr,
+        RepoMapArgs {
+            max_files: 50,
+            module: Some(false),
+        },
+    );
+    assert_eq!(none.text, some_false.text);
+    // …and that output is the file-level shape, not module lines.
+    assert!(none.text.contains("repo map ("));
+    assert!(
+        !none.text.contains("cross-edges"),
+        "default must stay file-level"
+    );
+}
+
+/// M2.9's required drill-down regression: module → file → symbol reaches
+/// the exact wiring cards the file-level path returns for the same files.
+#[test]
+fn module_drill_down_reaches_the_same_wiring_cards_as_the_file_level_path() {
+    use crate::file_api::weave_file_api;
+    use crate::tools::FileApiArgs;
+
+    let fx = module_fixture();
+    let map = weave_repo_map(&fx.storage, &fx.csr, module_args());
+
+    // Parse every file named in the module map's membership lists.
+    let all_paths = [
+        "src/parser/a.rs",
+        "src/parser/b.rs",
+        "src/parser/c.rs",
+        "src/render/x.rs",
+        "src/render/y.rs",
+        "main.rs",
+    ];
+    let module_files: Vec<&str> = all_paths
+        .iter()
+        .copied()
+        .filter(|p| map.text.contains(p))
+        .collect();
+    assert_eq!(
+        module_files.len(),
+        all_paths.len(),
+        "every file must be reachable from the module map"
+    );
+
+    // Drill-down cards (module → files) vs. the file-level path's cards
+    // for the same paths: identical wiring cards, byte-for-byte.
+    let drill = weave_file_api(
+        &fx.storage,
+        FileApiArgs {
+            paths: &module_files,
+        },
+    );
+    let direct = weave_file_api(&fx.storage, FileApiArgs { paths: &all_paths });
+    assert_wiring_cards_equal(&drill, &direct);
+}
+
+fn assert_wiring_cards_equal(a: &FileApiResult, b: &FileApiResult) {
+    assert_eq!(a.cards.len(), b.cards.len());
+    for (ca, cb) in a.cards.iter().zip(&b.cards) {
+        assert_eq!(ca.path, cb.path);
+        assert_eq!(ca.symbols, cb.symbols);
+    }
 }

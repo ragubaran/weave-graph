@@ -1,0 +1,29 @@
+[package]
+name = "weave-graph-python"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "PyO3 bindings exposing weave-graph's query surface to Python (feature: `python`, plan.md §1.1). Separate wheel artifact — never linked into the native `weave` binary."
+
+[lib]
+name = "weave_graph"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Wheels are built with `maturin build --features python`; default builds
+# compile an empty shim so `cargo build/test --workspace` never needs a
+# Python interpreter (feature isolation, plan.md §0.2).
+python = ["dep:pyo3", "dep:weave-graph-core", "dep:weave-graph-store-sqlite"]
+# Wheel builds enable this (maturin auto-enables it when present): never
+# link libpython into the artifact — the host interpreter provides the
+# symbols at load time.
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+pyo3 = { version = "0.23", optional = true }
+weave-graph-core = { path = "../weave-graph-core", optional = true }
+weave-graph-store-sqlite = { path = "../weave-graph-store-sqlite", optional = true }
+
+[dev-dependencies]
+tempfile = "3.27.0"
