@@ -13,7 +13,11 @@ use thiserror::Error;
 /// error so callers see the underlying cause.
 #[derive(Debug, Error)]
 pub enum HubError {
-    #[error("hub url must be http:// (TLS is follow-on scope): {0}")]
+    #[error(
+        "hub url must be http:// (TLS termination is delegated to a reverse proxy — \
+         deploy `weave-registry` behind nginx/Envoy and point this client at the \
+         proxy's http:// listener): {0}"
+    )]
     UnsupportedScheme(String),
     #[error("invalid hub url: {0}")]
     InvalidUrl(String),
@@ -44,7 +48,7 @@ pub enum PushOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PullOutcome {
-    Found(Vec<u8>),
+    Found(Vec<u8>, Option<String>),
     NotFound,
 }
 
@@ -109,9 +113,16 @@ impl HubClient {
             "{}/snapshots/{}/{}.tar.zst",
             self.url.prefix, self.repo_id, commit_sha
         );
-        let (status, _headers, body) = self.request("GET", &path, &[], &[])?;
+        let (status, headers, body) = self.request("GET", &path, &[], &[])?;
         match status {
-            200 => Ok(PullOutcome::Found(body)),
+            200 => {
+                let sig = headers
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("x-weave-signature:"))
+                    .and_then(|l| l.split(':').nth(1))
+                    .map(|v| v.trim().to_string());
+                Ok(PullOutcome::Found(body, sig))
+            }
             404 => Ok(PullOutcome::NotFound),
             other => Err(HubError::MalformedResponse(format!(
                 "unexpected status {other} on pull"
@@ -128,13 +139,91 @@ impl HubClient {
         target_commit_sha: &str,
         base_commit_sha: Option<&str>,
         retention: usize,
+        signature: Option<&str>,
         payload: &[u8],
     ) -> Result<PushOutcome, HubError> {
         let path = format!(
             "{}/snapshots/{}/{}.tar.zst",
             self.url.prefix, self.repo_id, target_commit_sha
         );
-        let mut headers = vec![
+
+        let total = payload.len() as u64;
+        if total == 0 {
+            let mut headers = self.base_headers(retention, base_commit_sha, signature);
+            headers.push(("Content-Range".to_string(), "bytes 0-0/0".to_string()));
+            let (status, hdrs, _) = self.request("PUT", &path, &headers, &[])?;
+            return self.map_status(status, &hdrs);
+        }
+
+        let mut offset = match self.request("HEAD", &path, &[], &[]) {
+            Ok((200, headers, _)) => headers
+                .lines()
+                .find(|l| l.to_ascii_lowercase().starts_with("upload-offset:"))
+                .and_then(|l| l.split(':').nth(1))
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(0),
+            _ => 0,
+        };
+
+        let chunk_size = 5 * 1024 * 1024; // 5 MB
+        let mut attempts = 0;
+
+        while offset < total {
+            let end = (offset + chunk_size).min(total);
+            let chunk = &payload[offset as usize..end as usize];
+
+            let mut headers = self.base_headers(retention, base_commit_sha, signature);
+            headers.push((
+                "Content-Range".to_string(),
+                format!("bytes {}-{}/{}", offset, end - 1, total),
+            ));
+
+            match self.request("PUT", &path, &headers, chunk) {
+                Ok((status, hdrs, _)) => {
+                    match status {
+                        200 | 201 | 204 => return Ok(PushOutcome::Published),
+                        202 => {
+                            offset = end;
+                            attempts = 0; // reset on success
+                        }
+                        409 => return Ok(PushOutcome::Conflict),
+                        429 => return self.map_status(status, &hdrs),
+                        other => {
+                            return Err(HubError::MalformedResponse(format!(
+                                "unexpected status {other} on push"
+                            )));
+                        }
+                    }
+                }
+                Err(e) => {
+                    attempts += 1;
+                    if attempts > 3 {
+                        return Err(e);
+                    }
+                    std::thread::sleep(Duration::from_secs(1 << attempts));
+                    // Re-query offset to resume cleanly
+                    if let Ok((200, hdrs, _)) = self.request("HEAD", &path, &[], &[])
+                        && let Some(new_offset) = hdrs
+                            .lines()
+                            .find(|l| l.to_ascii_lowercase().starts_with("upload-offset:"))
+                            .and_then(|l| l.split(':').nth(1))
+                            .and_then(|v| v.trim().parse::<u64>().ok())
+                    {
+                        offset = new_offset;
+                    }
+                }
+            }
+        }
+        Ok(PushOutcome::Accepted)
+    }
+
+    fn base_headers(
+        &self,
+        retention: usize,
+        base: Option<&str>,
+        signature: Option<&str>,
+    ) -> Vec<(String, String)> {
+        let mut h = vec![
             (
                 "Content-Type".to_string(),
                 "application/octet-stream".to_string(),
@@ -142,22 +231,28 @@ impl HubClient {
             ("X-Weave-Repo-Id".to_string(), self.repo_id.clone()),
             ("X-Weave-Retention".to_string(), retention.to_string()),
         ];
-        if let Some(base) = base_commit_sha {
-            headers.push(("X-Weave-Base-Sha".to_string(), base.to_string()));
+        if let Some(b) = base {
+            h.push(("X-Weave-Base-Sha".to_string(), b.to_string()));
         }
-        let (status, headers, _body) = self.request("PUT", &path, &headers, payload)?;
+        if let Some(s) = signature {
+            h.push(("X-Weave-Signature".to_string(), s.to_string()));
+        }
+        h
+    }
+
+    fn map_status(&self, status: u16, headers: &str) -> Result<PushOutcome, HubError> {
         match status {
             200 | 201 | 204 => Ok(PushOutcome::Published),
             202 => Ok(PushOutcome::Accepted),
             409 => Ok(PushOutcome::Conflict),
             429 => {
-                let retry_after = headers
+                let retry = headers
                     .lines()
                     .find(|l| l.to_ascii_lowercase().starts_with("retry-after:"))
                     .and_then(|l| l.split(':').nth(1))
                     .and_then(|v| v.trim().parse::<u64>().ok());
                 Ok(PushOutcome::RateLimited {
-                    retry_after_secs: retry_after,
+                    retry_after_secs: retry,
                 })
             }
             other => Err(HubError::MalformedResponse(format!(

@@ -1,0 +1,139 @@
+use std::fs;
+
+use super::{cmd_search, run};
+use weave_graph_store_sqlite::SqliteStorage;
+
+fn init_repo() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let weave_dir = dir.path().join(".weave");
+    fs::create_dir_all(&weave_dir).unwrap();
+    let active_db = weave_dir.join("graph.db");
+    let source = dir.path().join("auth.rs");
+    fs::write(
+        &source,
+        "pub fn checkJwtTtl() {}\npub fn unrelatedHelper() {}\n",
+    )
+    .unwrap();
+    crate::index::full_reindex(dir.path(), &weave_dir, &active_db, &[source]).unwrap();
+    dir
+}
+
+#[test]
+fn search_finds_a_symbol_via_synonym_expansion() {
+    let repo = init_repo();
+    let storage = SqliteStorage::open(&repo.path().join(".weave").join("graph.db")).unwrap();
+
+    // "token lifetime" never appears literally in the source — this only
+    // finds `checkJwtTtl` through the "auth"/"ttl" synonym groups plus
+    // identifier splitting.
+    let hits = run(&storage, "token lifetime", 10, None).unwrap();
+
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].symbol, "checkJwtTtl");
+}
+
+#[test]
+fn search_reports_no_matches_as_an_empty_list_not_an_error() {
+    let repo = init_repo();
+    let storage = SqliteStorage::open(&repo.path().join(".weave").join("graph.db")).unwrap();
+
+    assert!(
+        run(&storage, "nonexistentzzz", 10, None)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn search_respects_the_limit_argument() {
+    let dir = tempfile::tempdir().unwrap();
+    let weave_dir = dir.path().join(".weave");
+    fs::create_dir_all(&weave_dir).unwrap();
+    let active_db = weave_dir.join("graph.db");
+    let source = dir.path().join("auth.rs");
+    fs::write(
+        &source,
+        "pub fn authOne() {}\npub fn authTwo() {}\npub fn authThree() {}\n",
+    )
+    .unwrap();
+    crate::index::full_reindex(dir.path(), &weave_dir, &active_db, &[source]).unwrap();
+    let storage = SqliteStorage::open(&active_db).unwrap();
+
+    assert_eq!(run(&storage, "auth", 10, None).unwrap().len(), 3);
+    assert_eq!(run(&storage, "auth", 1, None).unwrap().len(), 1);
+}
+
+#[test]
+fn search_skips_a_stale_fts_entry_whose_node_id_no_longer_exists() {
+    use weave_graph_core::Storage;
+
+    let repo = init_repo();
+    let db_path = repo.path().join(".weave").join("graph.db");
+    let mut storage = SqliteStorage::open(&db_path).unwrap();
+    // Purge the node without rebuilding the FTS index, so `symbol_fts`
+    // still holds a rowid `get_node` can no longer resolve — the same
+    // defensive gap a race between search and a concurrent reindex could
+    // hit in practice.
+    storage.purge_file_nodes("local", "auth.rs").unwrap();
+
+    let hits = run(&storage, "token lifetime", 10, None).unwrap();
+    assert!(hits.is_empty());
+}
+
+#[test]
+fn cmd_search_runs_end_to_end_without_error() {
+    let repo = init_repo();
+    cmd_search(repo.path(), "token lifetime", 10, None).unwrap();
+    cmd_search(repo.path(), "nonexistentzzz", 10, None).unwrap();
+}
+
+#[cfg(feature = "vector")]
+mod semantic {
+    use super::super::{cmd_search_semantic, run_semantic};
+    use super::init_repo;
+    use weave_graph_store_sqlite::SqliteStorage;
+
+    fn repo_with_two_topics() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let weave_dir = dir.path().join(".weave");
+        std::fs::create_dir_all(&weave_dir).unwrap();
+        let active_db = weave_dir.join("graph.db");
+        let source = dir.path().join("mixed.rs");
+        std::fs::write(
+            &source,
+            "pub fn check_jwt_expiry(token: &str) -> bool { true }\n\
+             pub fn render_page_layout(page: &str) -> String { page.to_string() }\n",
+        )
+        .unwrap();
+        crate::index::full_reindex(dir.path(), &weave_dir, &active_db, &[source]).unwrap();
+        dir
+    }
+
+    #[test]
+    fn semantic_search_ranks_the_closer_chunk_first() {
+        let repo = repo_with_two_topics();
+        let storage = SqliteStorage::open(&repo.path().join(".weave").join("graph.db")).unwrap();
+
+        let hits = run_semantic(&storage, "verify auth token expiry", 5, None).unwrap();
+
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].symbol, "check_jwt_expiry");
+    }
+
+    #[test]
+    fn semantic_search_reports_no_matches_as_an_empty_list() {
+        let repo = init_repo();
+        let storage = SqliteStorage::open(&repo.path().join(".weave").join("graph.db")).unwrap();
+
+        // Every chunk gets some non-zero similarity under the mock
+        // embedder, so assert the limit is honored instead of emptiness.
+        let hits = run_semantic(&storage, "auth token expiry", 1, None).unwrap();
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn cmd_search_semantic_runs_end_to_end_without_error() {
+        let repo = repo_with_two_topics();
+        cmd_search_semantic(repo.path(), "verify auth token expiry", 5, None).unwrap();
+    }
+}

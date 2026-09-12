@@ -1,0 +1,42 @@
+# single-node composition — the registry stays
+# plaintext behind the TLS-terminating nginx sidecar service.
+services:
+  weave-registry:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - registry-data:/data
+    # Loopback-only inside the compose network: only nginx talks to it.
+    expose:
+      - "8080"
+    command:
+      - --bind
+      - 0.0.0.0:8080
+      - --data-dir
+      - /data
+      - --max-queue-depth-per-repo
+      - "1000"
+      - --max-pushes-per-minute-per-repo
+      - "600"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - weave-registry
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  registry-data:

@@ -72,3 +72,19 @@ fn empty_double_brackets_produce_no_link() {
     let doc = parse_markdown("An empty [[]] wikilink should not crash or resolve.");
     assert!(doc.links.is_empty());
 }
+
+#[test]
+fn headings_are_extracted_in_document_order() {
+    let doc =
+        parse_markdown("# Intro\n\ntext [[Note]]\n\n## Architecture Notes\n\n### tailed###\n");
+    assert_eq!(
+        doc.headings,
+        vec![
+            "Intro".to_string(),
+            "Architecture Notes".to_string(),
+            "tailed".to_string()
+        ]
+    );
+    // Heading text must not leak into the wikilink scanner.
+    assert_eq!(doc.links.len(), 1);
+}

@@ -162,42 +162,90 @@ fn handle_connection(mut stream: TcpStream, registry: &Registry) -> std::io::Res
     let sha = sha.as_str();
 
     match req.method.as_str() {
+        "HEAD" => match registry.get_spool_offset(&repo_id, sha) {
+            Ok(offset) if offset > 0 => write_response(
+                &mut stream,
+                200,
+                "OK",
+                &[("Upload-Offset", offset.to_string())],
+                b"",
+            ),
+            _ => write_response(&mut stream, 404, "Not Found", &[], b""),
+        },
         "GET" => match registry.pull(&repo_id, sha) {
-            PullResult::Found(bytes) => write_response(&mut stream, 200, "OK", &[], &bytes),
+            PullResult::Found(bytes, sig) => {
+                let mut headers = vec![];
+                if let Some(s) = sig {
+                    headers.push(("X-Weave-Signature", s));
+                }
+                write_response(&mut stream, 200, "OK", &headers, &bytes)
+            }
             PullResult::NotFound => {
                 write_response(&mut stream, 404, "Not Found", &[], b"no such snapshot")
             }
         },
         "PUT" => {
             let base_sha = header(&req, "X-Weave-Base-Sha").map(str::to_string);
+            let signature = header(&req, "X-Weave-Signature").map(str::to_string);
             let retention: usize = header(&req, "X-Weave-Retention")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(20);
-            match registry.push(&repo_id, sha, base_sha.as_deref(), retention, &req.body) {
-                Ok(PushDecision::Accepted) => {
-                    write_response(&mut stream, 202, "Accepted", &[], b"")
-                }
-                Ok(PushDecision::Conflict) => write_response(
-                    &mut stream,
-                    409,
-                    "Conflict",
-                    &[],
-                    b"base sha does not match current head",
-                ),
-                Ok(PushDecision::RateLimited { retry_after_secs }) => write_response(
-                    &mut stream,
-                    429,
-                    "Too Many Requests",
-                    &[("Retry-After", retry_after_secs.to_string())],
-                    b"rate limited",
-                ),
-                Err(e) => write_response(
+
+            let (start, total) = header(&req, "Content-Range")
+                .and_then(|v| {
+                    let v = v.strip_prefix("bytes ")?;
+                    let (range, total) = v.split_once('/')?;
+                    let (start, _) = range.split_once('-')?;
+                    Some((start.parse().ok()?, total.parse().ok()?))
+                })
+                .unwrap_or((0, req.body.len() as u64));
+
+            if let Err(e) = registry.spool_chunk(&repo_id, sha, start, &req.body) {
+                write_response(
                     &mut stream,
                     500,
                     "Internal Server Error",
                     &[],
                     e.to_string().as_bytes(),
-                ),
+                );
+                return Ok(());
+            }
+
+            if start + req.body.len() as u64 >= total {
+                match registry.push_complete(
+                    &repo_id,
+                    sha,
+                    base_sha.as_deref(),
+                    retention,
+                    signature.as_deref(),
+                ) {
+                    Ok(PushDecision::Accepted) => {
+                        write_response(&mut stream, 202, "Accepted", &[], b"")
+                    }
+                    Ok(PushDecision::Conflict) => write_response(
+                        &mut stream,
+                        409,
+                        "Conflict",
+                        &[],
+                        b"base sha does not match current head",
+                    ),
+                    Ok(PushDecision::RateLimited { retry_after_secs }) => write_response(
+                        &mut stream,
+                        429,
+                        "Too Many Requests",
+                        &[("Retry-After", retry_after_secs.to_string())],
+                        b"rate limited",
+                    ),
+                    Err(e) => write_response(
+                        &mut stream,
+                        500,
+                        "Internal Server Error",
+                        &[],
+                        e.to_string().as_bytes(),
+                    ),
+                }
+            } else {
+                write_response(&mut stream, 202, "Accepted", &[], b"chunk spooled")
             }
         }
         _ => write_response(

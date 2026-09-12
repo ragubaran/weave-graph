@@ -19,8 +19,12 @@ mod index;
 #[cfg(feature = "slm")]
 mod journal;
 mod lock;
+#[cfg(feature = "federation")]
+mod migration;
 #[cfg(feature = "notes")]
 mod notes;
+#[cfg(feature = "policy-lint")]
+mod policy;
 mod provenance;
 mod query;
 #[cfg(feature = "rbac")]
@@ -28,11 +32,15 @@ mod rbac;
 mod report;
 #[cfg(feature = "slm")]
 mod rules;
+#[cfg(feature = "fts")]
+mod search;
 #[cfg(feature = "slm")]
 mod slm;
 mod storage_location;
 #[cfg(feature = "hub")]
 mod sync;
+#[cfg(feature = "otel")]
+mod traces;
 #[cfg(feature = "viz")]
 mod viz;
 #[cfg(feature = "watch")]
@@ -54,7 +62,11 @@ use weave_graph_store_sqlite::SqliteStorage;
 use index::IndexStats;
 
 #[derive(Parser)]
-#[command(name = "weave", about = "Ultra-lightweight code intelligence engine")]
+#[command(
+    name = "weave",
+    version,
+    about = "Ultra-lightweight code intelligence engine"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -120,6 +132,18 @@ enum Commands {
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
+    /// BM25 symbol search with synonym expansion, no neural weights (feature: fts)
+    Search {
+        query: String,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Also run Tier 2 semantic search over AST-bounded chunks (feature: vector)
+        #[cfg(feature = "vector")]
+        #[arg(long)]
+        semantic: bool,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
     /// Generate a lightweight summary report and visualization
     Report {
         #[arg(long, default_value = ".")]
@@ -179,6 +203,27 @@ enum Commands {
         repo_a: Option<PathBuf>,
         repo_b: Option<PathBuf>,
     },
+    /// Query `weave link`'s persisted composite graph (feature: federation)
+    QueryFederated {
+        repo_a: PathBuf,
+        repo_b: PathBuf,
+        /// e.g. "callers(AuthService.verify)", "path(a,b)"
+        expression: String,
+    },
+    /// Unified `.canvas` architecture map across two linked repos (feature: federation)
+    ReportFederated {
+        repo_a: PathBuf,
+        repo_b: PathBuf,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Cross-repo migration plan for a deprecated symbol (feature: federation)
+    PlanMigration {
+        /// The symbol being deprecated, exactly as the providing repo indexes it
+        symbol: String,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
     /// CI gate on divergent boundary contracts (feature: federation)
     CheckContracts {
         #[arg(long, default_value = ".")]
@@ -217,6 +262,59 @@ enum Commands {
     Note {
         #[command(subcommand)]
         action: NoteAction,
+    },
+    /// Import distributed trace spans and overlay them on graph nodes (feature: otel)
+    Traces {
+        #[command(subcommand)]
+        action: TracesAction,
+    },
+    /// Architectural boundary lint and drift analytics (feature: policy-lint)
+    Policy {
+        #[command(subcommand)]
+        action: PolicyAction,
+    },
+    /// Identity directory management (feature: rbac)
+    Rbac {
+        #[command(subcommand)]
+        action: RbacAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum RbacAction {
+    /// Serve the loopback-only SCIM 2.0 provisioning endpoint backed by
+    /// `.weave/rbac-directory.toml` (Okta/Azure AD/Google Workspace push
+    /// provision/deprovision here; identity resolution syncs on demand)
+    ServeScim {
+        #[arg(long, default_value_t = 9292)]
+        port: u16,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum TracesAction {
+    /// Import spans from an OTLP JSON trace-export file
+    Import {
+        file: PathBuf,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum PolicyAction {
+    /// Evaluate `.weave/policy.yaml` boundary rules against the indexed
+    /// graph; non-zero exit on any violation (the CI gate)
+    Lint {
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Report architecture drift: dependency cycles, orphaned files
+    Drift {
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
     },
 }
 
@@ -357,6 +455,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Query { expression, path } => {
             cmd_query(&path, &expression, as_subject.as_deref())?
         }
+        #[cfg(all(feature = "fts", not(feature = "vector")))]
+        Commands::Search { query, limit, path } => {
+            search::cmd_search(&path, &query, limit, as_subject.as_deref())?
+        }
+        #[cfg(feature = "vector")]
+        Commands::Search {
+            query,
+            limit,
+            semantic,
+            path,
+        } => {
+            if semantic {
+                search::cmd_search_semantic(&path, &query, limit, as_subject.as_deref())?
+            } else {
+                search::cmd_search(&path, &query, limit, as_subject.as_deref())?
+            }
+        }
+        #[cfg(not(feature = "fts"))]
+        Commands::Search { .. } => feature_not_compiled("weave search", "fts"),
         #[cfg(not(feature = "viz"))]
         Commands::Report { path } => cmd_report(&path, false, false, as_subject.as_deref())?,
         #[cfg(feature = "viz")]
@@ -387,6 +504,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         #[cfg(not(feature = "federation"))]
         Commands::Link { .. } => feature_not_compiled("weave link", "federation"),
+        #[cfg(feature = "federation")]
+        Commands::QueryFederated {
+            repo_a,
+            repo_b,
+            expression,
+        } => federation::cmd_query_federated(&repo_a, &repo_b, &expression)?,
+        #[cfg(not(feature = "federation"))]
+        Commands::QueryFederated { .. } => {
+            feature_not_compiled("weave query-federated", "federation")
+        }
+        #[cfg(feature = "federation")]
+        Commands::ReportFederated {
+            repo_a,
+            repo_b,
+            out,
+        } => federation::cmd_report_federated(&repo_a, &repo_b, out.as_deref())?,
+        #[cfg(not(feature = "federation"))]
+        Commands::ReportFederated { .. } => {
+            feature_not_compiled("weave report-federated", "federation")
+        }
+        #[cfg(feature = "federation")]
+        Commands::PlanMigration { symbol, path } => migration::cmd_plan_migration(&path, &symbol)?,
+        #[cfg(not(feature = "federation"))]
+        Commands::PlanMigration { .. } => {
+            feature_not_compiled("weave plan-migration", "federation")
+        }
         #[cfg(feature = "federation")]
         Commands::CheckContracts { path } => contracts::cmd_check_contracts(&path)?,
         #[cfg(not(feature = "federation"))]
@@ -447,6 +590,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         #[cfg(not(feature = "notes"))]
         Commands::Note { .. } => feature_not_compiled("weave note", "notes"),
+        #[cfg(feature = "otel")]
+        Commands::Traces {
+            action: TracesAction::Import { file, path },
+        } => traces::cmd_traces_import(&path, &file)?,
+        #[cfg(not(feature = "otel"))]
+        Commands::Traces { .. } => feature_not_compiled("weave traces", "otel"),
+        #[cfg(feature = "policy-lint")]
+        Commands::Policy { action } => match action {
+            PolicyAction::Lint { path } => policy::cmd_policy_lint(&path, as_subject.as_deref())?,
+            PolicyAction::Drift { path } => policy::cmd_policy_drift(&path, as_subject.as_deref())?,
+        },
+        #[cfg(not(feature = "policy-lint"))]
+        Commands::Policy { .. } => feature_not_compiled("weave policy", "policy-lint"),
+        #[cfg(feature = "rbac")]
+        Commands::Rbac {
+            action: RbacAction::ServeScim { port, path },
+        } => rbac::cmd_serve_scim(&path, port)?,
+        #[cfg(not(feature = "rbac"))]
+        Commands::Rbac { .. } => feature_not_compiled("weave rbac", "rbac"),
     }
 
     Ok(())
@@ -612,7 +774,7 @@ fn ensure_gitignored(root: &Path) -> std::io::Result<()> {
 fn should_skip_dir(entry_name: &str) -> bool {
     matches!(
         entry_name,
-        ".git" | "target" | "node_modules" | ".weave" | ".claude" | "dist" | "build"
+        ".git" | "target" | "node_modules" | ".weave" | ".claude" | "dist" | "build" | "graft"
     )
 }
 

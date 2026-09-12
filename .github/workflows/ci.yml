@@ -154,7 +154,32 @@ jobs:
         run: cargo test -p weave-graph-cli --test cli_e2e --features federation test_cli_check_contracts_detects_divergence_end_to_end
 
   # ---------------------------------------------------------------------------
-  # 6. Benchmark Regression Gate (performance_compare.md §5.3)
+  # 6b. Feature-Isolation Regression Gate (pending_p2.md §4.3, Ledger L8)
+  # ---------------------------------------------------------------------------
+  # The Phase 2 Exit Criteria's last open item: each optional feature must
+  # cost nothing measurable in the default build's idle RSS or query
+  # latency. Assertions live in the script (RSS delta and latency
+  # tolerances); this job is what makes them run on every PR instead of
+  # only in manual /usr/bin/time spot checks.
+  feature-isolation:
+    name: Feature Isolation Gate (L8)
+    runs-on: ubuntu-latest
+    needs: [lint]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run feature-isolation assertions
+        run: scripts/feature_isolation.sh
+
+  # ---------------------------------------------------------------------------
+  # 7. Benchmark Regression Gate (performance_compare.md §5.3)
   # ---------------------------------------------------------------------------
   bench:
     name: Benchmark Regression Check

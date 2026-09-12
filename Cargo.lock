@@ -1459,6 +1459,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1527,6 +1533,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_yaml"
+version = "0.9.34+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1560,6 +1579,15 @@ name = "smallvec"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9be42f50aa861c555654aa3a37f52f4b1074bacf4e48fe0ef7fa584e80f1f0f"
+
+[[package]]
+name = "sqlite-vec"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0ba424237a9a5db2f6071f193319e2b6a32f7f3961debb2fbbfe67067abce3f"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "sqlite-wasm-rs"
@@ -2092,6 +2120,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7264e107f553ccae879d21fbea1d6724ac785e8c3bfc762137959b5802826ef3"
 
 [[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
+
+[[package]]
 name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2181,7 +2215,7 @@ dependencies = [
 
 [[package]]
 name = "weave-graph-cli"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -2189,9 +2223,11 @@ dependencies = [
  "fslock",
  "notify",
  "predicates",
+ "rayon",
  "roaring",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "tempfile",
  "toml",
@@ -2206,7 +2242,7 @@ dependencies = [
 
 [[package]]
 name = "weave-graph-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "blake3",
  "criterion 0.8.2",
@@ -2217,7 +2253,7 @@ dependencies = [
 
 [[package]]
 name = "weave-graph-hub"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "tempfile",
  "thiserror 2.0.20",
@@ -2226,7 +2262,7 @@ dependencies = [
 
 [[package]]
 name = "weave-graph-mcp"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2239,7 +2275,7 @@ dependencies = [
 
 [[package]]
 name = "weave-graph-parse"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "criterion 0.8.2",
  "pulldown-cmark",
@@ -2280,7 +2316,7 @@ dependencies = [
 
 [[package]]
 name = "weave-graph-python"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "pyo3",
  "tempfile",
@@ -2290,23 +2326,34 @@ dependencies = [
 
 [[package]]
 name = "weave-graph-store-sqlite"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "criterion 0.8.2",
  "libc",
  "rusqlite",
+ "sqlite-vec",
  "tempfile",
  "weave-graph-core",
 ]
 
 [[package]]
 name = "weave-graph-store-turso"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "criterion 0.5.1",
  "futures",
  "libsql",
  "tempfile",
+ "weave-graph-core",
+]
+
+[[package]]
+name = "weave-graph-wasm"
+version = "1.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
  "weave-graph-core",
 ]
 

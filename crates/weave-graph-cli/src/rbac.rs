@@ -1,10 +1,23 @@
 //! CLI glue for M3.0's query-layer RBAC: resolves an identity from
-//! `.weave/config.toml`'s `[rbac.users]` table and builds the one
-//! `RbacGuard` every masked command (`query`/`report`/`export`, and
-//! `serve --mcp`) shares — see `weave_graph_core::rbac` for the guard
+//! `.weave/config.toml`'s `[rbac.users]` table (plus M3.4's SCIM-managed
+//! directory, which overrides the config for the same subject) and builds
+//! the one `RbacGuard` every masked command (`query`/`report`/`export`,
+//! and `serve --mcp`) shares — see `weave_graph_core::rbac` for the guard
 //! itself and why masking lives there, not here.
+//!
+//! M3.4 (`impl.md`): the SCIM 2.0 directory server. One loopback endpoint
+//! covers Okta / Azure AD / Google Workspace — all three are SCIM *client*
+//! IdPs; they push provision/deprovision here, we never call out to any
+//! of them (Core Invariant 1: zero outbound network). Access is resolved
+//! against a snapshot taken at `sync()` time, so a deprovisioned user
+//! loses query access on the next sync cycle — not immediately, and not
+//! never.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 
 use weave_graph_core::Node;
 use weave_graph_core::rbac::{AuthProvider, Identity, RbacGuard, StaticAuthProvider};
@@ -29,14 +42,331 @@ fn is_public(node: &Node) -> bool {
 }
 
 /// Resolves `--as <subject>` against `.weave/config.toml`'s `[rbac.users]`
-/// map and builds the guard every masked consumer shares. `as_subject =
-/// None` (no `--as` flag) resolves to the anonymous identity — no roles,
-/// the safe default when a command doesn't opt in to an identity.
+/// map, overlaid with the SCIM-managed directory (`M3.4`): IdP-managed
+/// entries win for the same subject — the directory is the source of
+/// truth a deprovision propagates through; config is the static fallback.
+/// `as_subject = None` (no `--as` flag) resolves to the anonymous
+/// identity — no roles, the safe default when a command doesn't opt in to
+/// an identity.
 pub(crate) fn guard_for(root: &Path, as_subject: Option<&str>) -> RbacGuard {
     let config_path = root.join(".weave").join("config.toml");
-    let users = read_rbac_users(&config_path);
+    let mut users = read_rbac_users(&config_path);
+    for (subject, roles) in load_directory(&directory_file(root)) {
+        users.insert(subject, roles);
+    }
     let identity: Identity = StaticAuthProvider::new(users).resolve(as_subject);
     RbacGuard::new(identity, is_public)
+}
+
+/// The SCIM-managed directory: one file, the same `subject -> roles` shape
+/// as `[rbac.users]`, owned exclusively by the SCIM server (hand edits get
+/// overwritten on the next provision).
+pub(crate) fn directory_file(root: &Path) -> PathBuf {
+    root.join(".weave").join("rbac-directory.toml")
+}
+
+pub(crate) fn load_directory(path: &Path) -> HashMap<String, Vec<String>> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(_) => return HashMap::new(),
+    };
+    parse_directory(&content)
+}
+
+fn parse_directory(content: &str) -> HashMap<String, Vec<String>> {
+    let Ok(table) = content.parse::<toml::Table>() else {
+        return HashMap::new();
+    };
+    let Some(users) = table.get("users").and_then(|v| v.as_table()) else {
+        return HashMap::new();
+    };
+    users
+        .iter()
+        .filter_map(|(subject, roles)| {
+            let roles: Vec<String> = roles
+                .as_array()?
+                .iter()
+                .filter_map(|r| r.as_str().map(String::from))
+                .collect();
+            Some((subject.clone(), roles))
+        })
+        .collect()
+}
+
+fn save_directory(path: &Path, users: &HashMap<String, Vec<String>>) -> Result<(), String> {
+    let mut table = toml::Table::new();
+    let mut user_table = toml::Table::new();
+    for (subject, roles) in users {
+        user_table.insert(
+            subject.clone(),
+            toml::Value::Array(
+                roles
+                    .iter()
+                    .map(|r| toml::Value::String(r.clone()))
+                    .collect(),
+            ),
+        );
+    }
+    table.insert("users".to_string(), toml::Value::Table(user_table));
+    let rendered = toml::to_string_pretty(&table).map_err(|e| e.to_string())?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::write(path, rendered).map_err(|e| e.to_string())
+}
+
+/// An `AuthProvider` over a snapshot of the SCIM directory, completing
+/// M3.0's trait (impl.md M3.4). Holds the snapshot from the last `sync()`
+/// — deliberately *not* the live file — so a provision/deprovision lands
+/// at query time exactly one sync cycle late, never zero and never
+/// infinite.
+pub(crate) struct ScimDirectory {
+    snapshot: HashMap<String, Vec<String>>,
+    file: PathBuf,
+}
+
+impl ScimDirectory {
+    pub(crate) fn load(file: PathBuf) -> Self {
+        let snapshot = load_directory(&file);
+        Self { snapshot, file }
+    }
+
+    /// Re-reads the directory file into the snapshot. Returns the number
+    /// of live users — the sync cycle's visible effect.
+    pub(crate) fn sync(&mut self) -> usize {
+        self.snapshot = load_directory(&self.file);
+        self.snapshot.len()
+    }
+
+    /// Backing store for the SCIM server: mutations go to the file
+    /// immediately but *not* to the snapshot — only `sync` refreshes it.
+    fn apply(&mut self, mutation: DirectoryMutation) -> Result<ScimResponse, String> {
+        match mutation {
+            DirectoryMutation::Provision { subject, roles } => {
+                if subject.is_empty() {
+                    return Err("userName must not be empty".to_string());
+                }
+                let mut users = load_directory(&self.file);
+                users.insert(subject.clone(), roles);
+                save_directory(&self.file, &users)?;
+                Ok(ScimResponse(201, format!("{{\"id\":\"{subject}\"}}")))
+            }
+            DirectoryMutation::Deprovision { subject } => {
+                let mut users = load_directory(&self.file);
+                if users.remove(&subject).is_none() {
+                    return Ok(ScimResponse(
+                        404,
+                        format!("{{\"error\":\"unknown user {subject}\"}}"),
+                    ));
+                }
+                save_directory(&self.file, &users)?;
+                Ok(ScimResponse(204, String::new()))
+            }
+        }
+    }
+}
+
+impl AuthProvider for ScimDirectory {
+    fn resolve(&self, credential: Option<&str>) -> Identity {
+        match credential
+            .and_then(|subject| self.snapshot.get(subject).map(|roles| (subject, roles)))
+        {
+            Some((subject, roles)) => Identity {
+                subject: subject.to_string(),
+                roles: roles.clone(),
+            },
+            None => Identity::anonymous(),
+        }
+    }
+}
+
+enum DirectoryMutation {
+    Provision { subject: String, roles: Vec<String> },
+    Deprovision { subject: String },
+}
+
+pub(crate) struct ScimResponse(pub u16, pub String);
+
+/// The SCIM 2.0 subset the directory needs: `GET /Users`,
+/// `GET /Users/{userName}`, `POST /Users` (provision), and
+/// `DELETE /Users/{userName}` (deprovision). Binds loopback only — a
+/// directory endpoint beyond the host would leak role assignments to the
+/// network the moment it starts.
+pub(crate) struct ScimServer {
+    listener: TcpListener,
+    directory: ScimDirectory,
+}
+
+impl ScimServer {
+    pub(crate) fn bind(port: u16, directory: ScimDirectory) -> Result<Self, String> {
+        // Loopback only (Core Invariant 6's spirit): a directory endpoint
+        // beyond the host would leak role assignments the moment it starts.
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .map_err(|e| format!("cannot bind SCIM server on 127.0.0.1:{port}: {e}"))?;
+        Ok(Self {
+            listener,
+            directory,
+        })
+    }
+
+    pub(crate) fn local_addr(&self) -> Result<String, String> {
+        self.listener
+            .local_addr()
+            .map(|a| a.to_string())
+            .map_err(|e| e.to_string())
+    }
+
+    /// One request → one response, then the connection closes (HTTP/1.0
+    /// semantics; SCIM clients reconnect per operation). `sync` is the
+    /// operator's handle for the snapshot semantics, exposed as
+    /// `POST /sync` — deliberately not a standard SCIM endpoint, so an
+    /// IdP can never trigger a snapshot refresh by accident.
+    pub(crate) fn handle_request(
+        directory: &mut ScimDirectory,
+        method: &str,
+        path: &str,
+        body: &str,
+    ) -> ScimResponse {
+        let path = path.strip_prefix("/Users").unwrap_or(path);
+        match (method, path) {
+            ("POST", "/sync") => {
+                let count = directory.sync();
+                ScimResponse(200, format!("{{\"users\":{count}}}"))
+            }
+            ("POST", "") | ("POST", "/") => match provision_request(body) {
+                Ok(m) => directory
+                    .apply(m)
+                    .unwrap_or_else(|e| ScimResponse(400, format!("{{\"error\":\"{e}\"}}"))),
+                Err(e) => ScimResponse(400, format!("{{\"error\":\"{e}\"}}")),
+            },
+            ("DELETE", subject) if !subject.is_empty() => {
+                let subject = subject.trim_start_matches('/').to_string();
+                directory
+                    .apply(DirectoryMutation::Deprovision { subject })
+                    .unwrap_or_else(|e| ScimResponse(500, format!("{{\"error\":\"{e}\"}}")))
+            }
+            ("GET", "") | ("GET", "/") => {
+                let list: Vec<String> = directory
+                    .snapshot
+                    .keys()
+                    .map(|s| format!("\"{s}\""))
+                    .collect();
+                ScimResponse(
+                    200,
+                    format!(
+                        "{{\"totalResults\":{},\"Resources\":[{}]}}",
+                        list.len(),
+                        list.join(",")
+                    ),
+                )
+            }
+            ("GET", subject) => {
+                let subject = subject.trim_start_matches('/');
+                match directory.snapshot.get(subject) {
+                    Some(roles) => ScimResponse(
+                        200,
+                        format!(
+                            "{{\"id\":\"{subject}\",\"roles\":[{}]}}",
+                            roles
+                                .iter()
+                                .map(|r| format!("\"{r}\""))
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        ),
+                    ),
+                    None => ScimResponse(404, format!("{{\"error\":\"unknown user {subject}\"}}")),
+                }
+            }
+            _ => ScimResponse(405, "{\"error\":\"unsupported\"}".to_string()),
+        }
+    }
+
+    /// The accept loop. Serial by design: a directory has one writer, and
+    /// every mutation is a whole-file rewrite — interleaving them would
+    /// need locking for no operator benefit.
+    pub(crate) fn serve(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let Self {
+            listener,
+            directory,
+        } = self;
+        for stream in listener.incoming() {
+            let mut stream = stream?;
+            let (method, path, body) = read_request(&mut stream)?;
+            let ScimResponse(status, body) = Self::handle_request(directory, &method, &path, &body);
+            write_response(&mut stream, status, &body)?;
+        }
+        Ok(())
+    }
+}
+
+fn provision_request(body: &str) -> Result<DirectoryMutation, String> {
+    let json: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("invalid SCIM JSON body: {e}"))?;
+    let subject = json
+        .get("userName")
+        .and_then(|v| v.as_str())
+        .ok_or("SCIM provision requires a string `userName`")?
+        .to_string();
+    let roles = json
+        .get("roles")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|r| r.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_else(|| vec!["reader".to_string()]);
+    Ok(DirectoryMutation::Provision { subject, roles })
+}
+
+fn read_request(stream: &mut TcpStream) -> Result<(String, String, String), std::io::Error> {
+    let mut buf = vec![0u8; 8192];
+    let n = stream.read(&mut buf)?;
+    let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+    let mut lines = raw.split("\r\n");
+    let request_line = lines.next().unwrap_or_default();
+    let mut parts = request_line.split(' ');
+    let method = parts.next().unwrap_or_default().to_string();
+    let path = parts.next().unwrap_or_default().to_string();
+    // Split body off at the header/body boundary, if one arrived.
+    let body = match raw.find("\r\n\r\n") {
+        Some(i) => raw[i + 4..].to_string(),
+        None => String::new(),
+    };
+    Ok((method, path, body))
+}
+
+fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> std::io::Result<()> {
+    let reason = match status {
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        400 => "Bad Request",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        _ => "Internal Server Error",
+    };
+    let head = format!(
+        "HTTP/1.0 {status} {reason}\r\nContent-Type: application/scim+json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes())?;
+    if !body.is_empty() {
+        stream.write_all(body.as_bytes())?;
+    }
+    stream.flush()
+}
+
+/// `weave rbac serve-scim` (feature rbac): loopback-only SCIM 2.0
+/// provisioning endpoint backed by `.weave/rbac-directory.toml`.
+pub(crate) fn cmd_serve_scim(root: &Path, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    let directory = ScimDirectory::load(directory_file(root));
+    let mut server = ScimServer::bind(port, directory)?;
+    println!(
+        "SCIM directory server on {} (loopback only); Ctrl-C to stop",
+        server.local_addr()?
+    );
+    server.serve()
 }
 
 #[cfg(test)]

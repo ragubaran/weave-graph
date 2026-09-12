@@ -6,7 +6,11 @@ mod backend;
 #[cfg(feature = "provenance")]
 mod doc_provenance;
 mod fs_safety;
+#[cfg(feature = "fts")]
+mod fts;
 mod schema;
+#[cfg(feature = "vector")]
+mod vector;
 
 pub use backend::SqliteStorage;
 #[cfg(feature = "provenance")]

@@ -1,0 +1,26 @@
+# TLS termination at the edge; pods themselves stay plaintext, cluster-internal.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: weave-registry
+  annotations:
+    # Push bodies are snapshot blobs; raise the edge body cap to match
+    # the nginx-proxy deployment's 512m.
+    nginx.ingress.kubernetes.io/proxy-body-size: 512m
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - registry.example.internal
+      secretName: weave-registry-tls
+  rules:
+    - host: registry.example.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: weave-registry
+                port:
+                  number: 8080

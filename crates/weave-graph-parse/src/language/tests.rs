@@ -33,6 +33,16 @@ fn detects_language_from_extension() {
         Language::from_path(Path::new("a/b.hpp")),
         Some(Language::Cpp)
     );
+    assert_eq!(Language::from_path(Path::new("a/b.md")), None);
+    assert_eq!(Language::from_path(Path::new("a/b")), None);
+}
+
+/// The `lang-extended` set (`impl.md` M1.2b's widened ten) — split out
+/// from the core test above so the core assertions still run, unchanged,
+/// in a `--no-default-features` ("mini") build.
+#[test]
+#[cfg(feature = "lang-extended")]
+fn detects_extended_language_from_extension() {
     assert_eq!(
         Language::from_path(Path::new("a/b.cs")),
         Some(Language::CSharp)
@@ -73,11 +83,10 @@ fn detects_language_from_extension() {
         Language::from_path(Path::new("a/b.lua")),
         Some(Language::Lua)
     );
-    assert_eq!(Language::from_path(Path::new("a/b.md")), None);
-    assert_eq!(Language::from_path(Path::new("a/b")), None);
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn detects_generic_query_vm_languages_from_extension() {
     assert_eq!(
         Language::from_path(Path::new("a/b.ex")),
@@ -118,6 +127,7 @@ fn detects_generic_query_vm_languages_from_extension() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn dotenv_files_are_detected_by_name_not_extension() {
     assert_eq!(
         Language::from_path(Path::new(".env")),

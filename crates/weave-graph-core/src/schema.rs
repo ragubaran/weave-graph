@@ -7,7 +7,7 @@
 
 /// Highest schema version any migration in `MIGRATIONS` brings a database
 /// to — round-trip tests assert against it.
-pub const LATEST_SCHEMA_VERSION: u32 = 4;
+pub const LATEST_SCHEMA_VERSION: u32 = 5;
 
 /// Base schema (`plan.md` §1.1): `nodes`, `edges`, `doc_links`, `contracts`,
 /// `schema_version`. Unique indices on each table's natural key make
@@ -104,6 +104,28 @@ CREATE TABLE notes (
 CREATE INDEX idx_notes_moniker ON notes(moniker);
 ";
 
+/// M3.3 (`otel` feature): imported distributed trace spans, overlaid onto
+/// graph nodes by symbol at *query* time — no node-id FK, deliberately:
+/// a reindex renumbers ids, and re-resolution by symbol is what keeps a
+/// span from dangling (Core Invariant 3). The table lands unconditionally
+/// (V4's precedent); only the CLI importer/query is feature-gated.
+pub const V5_TRACE_SPANS_TABLE: &str = "
+CREATE TABLE trace_spans (
+    id INTEGER PRIMARY KEY,
+    trace_id TEXT NOT NULL,
+    span_id TEXT NOT NULL,
+    parent_span_id TEXT,
+    service TEXT,
+    name TEXT NOT NULL,
+    symbol TEXT,
+    path TEXT,
+    start_us INTEGER NOT NULL,
+    duration_us INTEGER NOT NULL,
+    status_code TEXT NOT NULL
+);
+CREATE UNIQUE INDEX idx_trace_spans_natural_key ON trace_spans(trace_id, span_id);
+";
+
 /// Ordered migration history. Each backend replays every `(version, sql)`
 /// newer than the database's recorded version, in its own transaction.
 pub const MIGRATIONS: &[(u32, &str)] = &[
@@ -111,4 +133,5 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (2, V2_TRAVERSAL_INDICES),
     (3, V3_DOC_LINK_PROVENANCE),
     (4, V4_NOTES_TABLE),
+    (5, V5_TRACE_SPANS_TABLE),
 ];

@@ -54,17 +54,27 @@ fn serve_once(hub: FakeHub) -> (String, std::thread::JoinHandle<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let request = read_full_request(&mut stream);
-        let mut response = format!("HTTP/1.1 {} OK\r\nConnection: close\r\n", hub.status);
-        for h in hub.headers {
-            response.push_str(h);
-            response.push_str("\r\n");
+        let mut final_request = String::new();
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let request = read_full_request(&mut stream);
+            if request.starts_with("HEAD ") {
+                let response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
+                stream.write_all(response.as_bytes()).unwrap();
+                continue;
+            }
+            let mut response = format!("HTTP/1.1 {} OK\r\nConnection: close\r\n", hub.status);
+            for h in hub.headers {
+                response.push_str(h);
+                response.push_str("\r\n");
+            }
+            response.push_str(&format!("Content-Length: {}\r\n\r\n", hub.body.len()));
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(hub.body).unwrap();
+            final_request = request;
+            break;
         }
-        response.push_str(&format!("Content-Length: {}\r\n\r\n", hub.body.len()));
-        stream.write_all(response.as_bytes()).unwrap();
-        stream.write_all(hub.body).unwrap();
-        request
+        final_request
     });
     (format!("http://{addr}"), handle)
 }
@@ -82,7 +92,7 @@ fn pull_found_returns_the_body() {
     });
     let result = client_for(&addr).pull("abc123").unwrap();
     handle.join().unwrap();
-    assert_eq!(result, PullOutcome::Found(b"snapshot-bytes".to_vec()));
+    assert_eq!(result, PullOutcome::Found(b"snapshot-bytes".to_vec(), None));
 }
 
 #[test]
@@ -105,7 +115,7 @@ fn push_201_publishes() {
         body: b"",
     });
     let result = client_for(&addr)
-        .push("target", Some("base"), 20, b"payload")
+        .push("target", Some("base"), 20, None, b"payload")
         .unwrap();
     handle.join().unwrap();
     assert_eq!(result, PushOutcome::Published);
@@ -119,7 +129,7 @@ fn push_202_accepted() {
         body: b"",
     });
     let result = client_for(&addr)
-        .push("target", Some("base"), 20, b"payload")
+        .push("target", Some("base"), 20, None, b"payload")
         .unwrap();
     handle.join().unwrap();
     assert_eq!(result, PushOutcome::Accepted);
@@ -133,7 +143,7 @@ fn push_409_conflict() {
         body: b"",
     });
     let result = client_for(&addr)
-        .push("target", Some("stale-base"), 20, b"payload")
+        .push("target", Some("stale-base"), 20, None, b"payload")
         .unwrap();
     handle.join().unwrap();
     assert_eq!(result, PushOutcome::Conflict);
@@ -147,7 +157,7 @@ fn push_429_surfaces_retry_after() {
         body: b"slow down",
     });
     let result = client_for(&addr)
-        .push("target", None, 20, b"payload")
+        .push("target", None, 20, None, b"payload")
         .unwrap();
     handle.join().unwrap();
     assert_eq!(
@@ -163,16 +173,28 @@ fn push_sends_repo_id_base_sha_and_retention_headers() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let request = read_full_request(&mut stream);
-        stream
-            .write_all(b"HTTP/1.1 201 Created\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
-            .unwrap();
-        request
+        let mut final_req = String::new();
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let request = read_full_request(&mut stream);
+            if request.starts_with("HEAD ") {
+                let response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
+                stream.write_all(response.as_bytes()).unwrap();
+                continue;
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 201 Created\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                )
+                .unwrap();
+            final_req = request;
+            break;
+        }
+        final_req
     });
 
     let client = HubClient::new(&format!("http://{addr}"), "r").unwrap();
-    client.push("t", Some("b"), 7, b"payload").unwrap();
+    client.push("t", Some("b"), 7, None, b"payload").unwrap();
     let request = handle.join().unwrap();
 
     assert!(request.starts_with("PUT /snapshots/r/t.tar.zst HTTP/1.1"));
@@ -180,6 +202,7 @@ fn push_sends_repo_id_base_sha_and_retention_headers() {
     assert!(request.contains("X-Weave-Base-Sha: b\r\n"));
     assert!(request.contains("X-Weave-Retention: 7\r\n"));
     assert!(request.contains("Content-Length: 7\r\n"));
+    assert!(request.contains("Content-Range: bytes 0-6/7\r\n"));
 }
 
 #[test]
@@ -205,7 +228,7 @@ fn url_prefix_is_preserved() {
 
     let client = HubClient::new(&format!("http://{addr}/weave"), "r").unwrap();
     let result = client.pull("abc").unwrap();
-    assert_eq!(result, PullOutcome::Found(b"hi".to_vec()));
+    assert_eq!(result, PullOutcome::Found(b"hi".to_vec(), None));
     let request = handle.join().unwrap();
     assert!(request.starts_with("GET /weave/snapshots/r/abc.tar.zst HTTP/1.1\r\n"));
 }

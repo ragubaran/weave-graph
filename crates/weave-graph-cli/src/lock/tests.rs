@@ -65,3 +65,36 @@ fn acquire_waits_for_held_lock() {
     let _lock = acquire(dir.path()).unwrap();
     handle.join().unwrap();
 }
+
+#[test]
+fn acquire_timeout_fails_after_deadline_when_held() {
+    let dir = tempfile::tempdir().unwrap();
+    let lock_path = dir.path().join("index.lock");
+    let mut file = fslock::LockFile::open(&lock_path).unwrap();
+    assert!(file.try_lock().unwrap());
+    fs::write(&lock_path, "12345").unwrap();
+
+    let res = acquire_timeout(dir.path(), std::time::Duration::from_millis(100));
+    let err = match res {
+        Err(e) => e,
+        Ok(_) => panic!("expected timeout error"),
+    };
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    assert!(err.to_string().contains("12345"));
+}
+
+#[test]
+fn acquire_timeout_fails_when_held_without_recorded_pid() {
+    let dir = tempfile::tempdir().unwrap();
+    let lock_path = dir.path().join("index.lock");
+    let mut file = fslock::LockFile::open(&lock_path).unwrap();
+    assert!(file.try_lock().unwrap());
+
+    let res = acquire_timeout(dir.path(), std::time::Duration::from_millis(100));
+    let err = match res {
+        Err(e) => e,
+        Ok(_) => panic!("expected timeout error"),
+    };
+    assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    assert!(err.to_string().contains("another weave index"));
+}

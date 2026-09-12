@@ -143,5 +143,5 @@ fn member_name(navigation_expression: Node, source: &[u8]) -> Option<String> {
     Some(text(member, source).to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lang-extended"))]
 mod tests;

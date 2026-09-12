@@ -2,7 +2,9 @@ use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use weave_graph_core::{Edge, EdgeId, Node, NodeId, Note, NoteTier, Storage, StorageError};
+use weave_graph_core::{
+    Edge, EdgeId, Node, NodeId, Note, NoteTier, Storage, StorageError, TraceSpan,
+};
 
 use crate::schema::{ensure_not_newer_than_supported, migrate, schema_version};
 
@@ -23,17 +25,29 @@ impl SqliteStorage {
     /// while `weave index` writes, matching the single-writer/read-heavy
     /// profile this crate is built for.
     pub fn open(path: &Path) -> Result<Self, StorageError> {
+        #[cfg(feature = "vector")]
+        crate::vector::ensure_vector_extension();
         let conn = Connection::open(path).map_err(backend_err)?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(backend_err)?;
         migrate(&conn)?;
+        #[cfg(feature = "fts")]
+        crate::fts::ensure_fts_table(&conn)?;
+        #[cfg(feature = "vector")]
+        crate::vector::ensure_vector_table(&conn)?;
         Ok(Self { conn })
     }
 
     /// Opens an in-memory SQLite database migrated to latest schema.
     pub fn open_in_memory() -> Result<Self, StorageError> {
+        #[cfg(feature = "vector")]
+        crate::vector::ensure_vector_extension();
         let conn = Connection::open_in_memory().map_err(backend_err)?;
         migrate(&conn)?;
+        #[cfg(feature = "fts")]
+        crate::fts::ensure_fts_table(&conn)?;
+        #[cfg(feature = "vector")]
+        crate::vector::ensure_vector_table(&conn)?;
         Ok(Self { conn })
     }
 
@@ -41,10 +55,16 @@ impl SqliteStorage {
     /// Caller atomically renames it over the live path on success; a crash
     /// orphans the temp file and leaves the live index intact.
     pub fn open_rebuild(rebuild_path: &Path) -> Result<Self, StorageError> {
+        #[cfg(feature = "vector")]
+        crate::vector::ensure_vector_extension();
         let conn = Connection::open(rebuild_path).map_err(backend_err)?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(backend_err)?;
         migrate(&conn)?;
+        #[cfg(feature = "fts")]
+        crate::fts::ensure_fts_table(&conn)?;
+        #[cfg(feature = "vector")]
+        crate::vector::ensure_vector_table(&conn)?;
         Ok(Self { conn })
     }
 
@@ -56,6 +76,8 @@ impl SqliteStorage {
     /// can't write a schema upgrade — it only refuses a too-new schema, same
     /// rule `migrate` applies, just without the ability to fix an old one.
     pub fn open_read_only(path: &Path) -> Result<Self, StorageError> {
+        #[cfg(feature = "vector")]
+        crate::vector::ensure_vector_extension();
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(backend_err)?;
         ensure_not_newer_than_supported(&conn)?;
@@ -74,6 +96,21 @@ impl SqliteStorage {
             .execute("VACUUM INTO ?1", params![dest_path.to_string_lossy()])
             .map_err(backend_err)?;
         Ok(())
+    }
+
+    /// Deletes every node of `kind` with zero inbound edges (impl.md M2.0's
+    /// orphan-`doc_topic` sweep). Inbound-only: an outbound edge is not a
+    /// reason to keep a derived node alive.
+    pub fn purge_orphaned_nodes_by_kind(&self, kind: &str) -> Result<u64, StorageError> {
+        let rows = self
+            .conn
+            .execute(
+                "DELETE FROM nodes \
+                 WHERE kind = ?1 AND id NOT IN (SELECT target_id FROM edges)",
+                params![kind],
+            )
+            .map_err(backend_err)?;
+        Ok(rows as u64)
     }
 
     /// Opens an explicit transaction around a bulk sequence of
@@ -142,6 +179,58 @@ impl SqliteStorage {
     /// Commits a transaction opened by `begin_bulk_write`.
     pub fn commit_bulk_write(&self) -> Result<(), StorageError> {
         self.conn.execute_batch("COMMIT").map_err(backend_err)
+    }
+
+    /// Truncates the WAL file, flushing all pages to the main database file.
+    /// This is strictly required before moving/renaming the database file
+    /// via POSIX `rename(2)` so that the `-wal` and `-shm` files aren't left behind.
+    pub fn checkpoint_wal(&self) -> Result<(), StorageError> {
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .map_err(backend_err)
+    }
+
+    /// Rebuilds the FTS5 symbol index from every current `nodes` row
+    /// (`impl.md` M3.7 Tier 1) — call after writing nodes, inside the same
+    /// bulk-write transaction.
+    #[cfg(feature = "fts")]
+    pub fn rebuild_fts_index(&self) -> Result<(), StorageError> {
+        crate::fts::rebuild(&self.conn)
+    }
+
+    /// Ranked node ids for an FTS5 `MATCH` expression, best match first.
+    #[cfg(feature = "fts")]
+    pub fn search_symbols(
+        &self,
+        match_expr: &str,
+        limit: usize,
+    ) -> Result<Vec<NodeId>, StorageError> {
+        crate::fts::search(&self.conn, match_expr, limit)
+    }
+
+    /// Rebuilds the `vec_chunks` semantic index (`impl.md` M3.7 Tier 2)
+    /// from `chunks` — `(node_id, chunk_text)` pairs the caller already
+    /// built from source file spans; this crate owns no file I/O.
+    #[cfg(feature = "vector")]
+    pub fn rebuild_vector_index(
+        &self,
+        embedder: &dyn weave_graph_core::embedding::EmbeddingProvider,
+        chunks: &[(NodeId, String)],
+    ) -> Result<(), StorageError> {
+        crate::vector::rebuild(&self.conn, embedder, chunks)
+    }
+
+    /// Three-stage semantic search: binary ANN oversampled by
+    /// `oversample`, reranked against int8 distance, capped at `limit`.
+    #[cfg(feature = "vector")]
+    pub fn search_vector(
+        &self,
+        embedder: &dyn weave_graph_core::embedding::EmbeddingProvider,
+        query_text: &str,
+        limit: usize,
+        oversample: usize,
+    ) -> Result<Vec<NodeId>, StorageError> {
+        crate::vector::search(&self.conn, embedder, query_text, limit, oversample)
     }
 
     /// Records (or replaces) one doc link, optionally carrying a
@@ -217,6 +306,24 @@ fn note_from_row(row: &rusqlite::Row) -> rusqlite::Result<Note> {
         stale: row.get::<_, i64>(8)? != 0,
         expires_at: row.get(9)?,
         created_at: row.get(10)?,
+    })
+}
+
+const TRACE_SPAN_COLUMNS: &str = "trace_id, span_id, parent_span_id, service, name, symbol, \
+     path, start_us, duration_us, status_code";
+
+fn trace_span_from_row(row: &rusqlite::Row) -> rusqlite::Result<TraceSpan> {
+    Ok(TraceSpan {
+        trace_id: row.get(0)?,
+        span_id: row.get(1)?,
+        parent_span_id: row.get(2)?,
+        service: row.get(3)?,
+        name: row.get(4)?,
+        symbol: row.get(5)?,
+        path: row.get(6)?,
+        start_us: row.get(7)?,
+        duration_us: row.get(8)?,
+        status_code: row.get(9)?,
     })
 }
 
@@ -487,6 +594,52 @@ impl Storage for SqliteStorage {
             )
             .map_err(backend_err)?;
         Ok(rows as u64)
+    }
+
+    fn upsert_trace_span(&self, span: &TraceSpan) -> Result<(), StorageError> {
+        self.conn
+            .execute(
+                "INSERT INTO trace_spans (trace_id, span_id, parent_span_id, service, name, \
+                 symbol, path, start_us, duration_us, status_code)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(trace_id, span_id) DO UPDATE SET
+                     parent_span_id = excluded.parent_span_id,
+                     service = excluded.service,
+                     name = excluded.name,
+                     symbol = excluded.symbol,
+                     path = excluded.path,
+                     start_us = excluded.start_us,
+                     duration_us = excluded.duration_us,
+                     status_code = excluded.status_code",
+                params![
+                    span.trace_id,
+                    span.span_id,
+                    span.parent_span_id,
+                    span.service,
+                    span.name,
+                    span.symbol,
+                    span.path,
+                    span.start_us,
+                    span.duration_us,
+                    span.status_code,
+                ],
+            )
+            .map_err(backend_err)?;
+        Ok(())
+    }
+
+    fn all_trace_spans(&self) -> Result<Vec<TraceSpan>, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {TRACE_SPAN_COLUMNS} FROM trace_spans ORDER BY start_us, id"
+            ))
+            .map_err(backend_err)?;
+        let rows = stmt
+            .query_map([], trace_span_from_row)
+            .map_err(backend_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend_err)
     }
 }
 

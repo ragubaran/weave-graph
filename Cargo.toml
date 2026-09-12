@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 rust-version = "1.93"
 license = "MIT"
@@ -11,9 +11,17 @@ license = "MIT"
 # AGENTS.md §7.2: production binaries optimize for minimum size and
 # maximum runtime throughput, not compile time.
 [profile.release]
-opt-level = 3
+opt-level = "z"
 lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
 overflow-checks = false
+
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+
+[profile.release-min]
+inherits = "release"
+opt-level = "z"

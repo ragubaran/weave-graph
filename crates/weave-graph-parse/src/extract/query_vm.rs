@@ -474,5 +474,5 @@ fn last_identifier_like_descendant(node: Node, source: &[u8]) -> Option<String> 
         .last()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lang-extended"))]
 mod tests;

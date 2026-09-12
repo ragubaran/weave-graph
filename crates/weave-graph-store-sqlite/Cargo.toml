@@ -9,6 +9,7 @@ description = "Default Storage trait implementation for weave-graph, backed by r
 [dependencies]
 libc = "0.2.189"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+sqlite-vec = { version = "0.1.9", optional = true }
 weave-graph-core = { path = "../weave-graph-core" }
 
 [dev-dependencies]
@@ -17,6 +18,13 @@ tempfile = "3.27.0"
 
 [features]
 provenance = ["weave-graph-core/provenance"]
+# The bundled `libsqlite3-sys` build already passes `-DSQLITE_ENABLE_FTS5`
+# unconditionally (verified in its build.rs) — no rusqlite-side feature
+# exists to gate, or needs gating, for FTS5 support itself.
+fts = ["weave-graph-core/fts"]
+# `sqlite-vec` statically links its C extension (SQLITE_CORE-mode build,
+# not a runtime .dylib/.so) — registered once via `sqlite3_auto_extension`.
+vector = ["fts", "dep:sqlite-vec", "weave-graph-core/vector"]
 
 [[bench]]
 name = "sqlite_latency"

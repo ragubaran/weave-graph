@@ -146,20 +146,36 @@ fn read_full_request(stream: &mut std::net::TcpStream) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
+/// A real push (any non-empty payload, every fixture here) is preceded by
+/// an unconditional `HEAD` probe — `HubClient::push` resumes from
+/// `Upload-Offset` if the hub reports one, and starts a fresh chunk loop
+/// at 0 otherwise. `404` here means exactly that: no upload in flight yet.
+fn respond_404_to_head(stream: &mut std::net::TcpStream) {
+    stream
+        .write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+        .unwrap();
+}
+
 fn serve_with_status(status: u16, body: &[u8]) -> (String, std::thread::JoinHandle<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let body = body.to_vec();
     let handle = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let request = read_full_request(&mut stream);
-        let response = format!(
-            "HTTP/1.1 {status} S\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        );
-        stream.write_all(response.as_bytes()).unwrap();
-        stream.write_all(&body).unwrap();
-        request
+        loop {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_full_request(&mut stream);
+            if request.starts_with("HEAD") {
+                respond_404_to_head(&mut stream);
+                continue;
+            }
+            let response = format!(
+                "HTTP/1.1 {status} S\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+            return request;
+        }
     });
     (format!("http://{addr}"), handle)
 }
@@ -168,9 +184,12 @@ fn serve_snapshot(body: &[u8]) -> (String, std::thread::JoinHandle<String>) {
     serve_with_status(200, body)
 }
 
-/// Serves each `(status, headers)` pair in order, one per accepted
-/// connection — for exercising `push_with_backoff`'s retry loop, where
-/// the client makes more than one request against the same address.
+/// Serves each `(status, headers)` pair in order, one per accepted PUT —
+/// for exercising `push_with_backoff`'s retry loop, where the client makes
+/// more than one request against the same address. Each PUT is preceded by
+/// its own `HEAD` probe (`HubClient::push` starts fresh every call, per
+/// `serve_with_status`'s own comment) — drained and answered `404` without
+/// consuming a queued `(status, headers)` entry.
 fn serve_sequence(
     responses: Vec<(u16, &'static str)>,
 ) -> (String, std::thread::JoinHandle<Vec<String>>) {
@@ -179,12 +198,20 @@ fn serve_sequence(
     let handle = std::thread::spawn(move || {
         let mut requests = Vec::new();
         for (status, extra_headers) in responses {
-            let (mut stream, _) = listener.accept().unwrap();
-            requests.push(read_full_request(&mut stream));
-            let response = format!(
-                "HTTP/1.1 {status} S\r\nConnection: close\r\n{extra_headers}Content-Length: 0\r\n\r\n"
-            );
-            stream.write_all(response.as_bytes()).unwrap();
+            let request = loop {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_full_request(&mut stream);
+                if request.starts_with("HEAD") {
+                    respond_404_to_head(&mut stream);
+                    continue;
+                }
+                let response = format!(
+                    "HTTP/1.1 {status} S\r\nConnection: close\r\n{extra_headers}Content-Length: 0\r\n\r\n"
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                break request;
+            };
+            requests.push(request);
         }
         requests
     });
@@ -224,5 +251,82 @@ fn push_retries_with_backoff_after_a_rate_limit_and_then_succeeds() {
         requests.join().unwrap().len(),
         2,
         "expected exactly one retry"
+    );
+}
+
+#[test]
+fn push_retries_past_a_second_conflict_before_giving_up() {
+    let repo = init_repo("racy");
+    // Two 409s (the hub head kept moving) then success — pins that a
+    // conflict republish loops rather than giving up after one retry.
+    let (addr, requests) = serve_sequence(vec![(409, ""), (409, ""), (201, "")]);
+    write_config(repo.path(), &addr);
+    let git_ok = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(git_ok(&["init", "-b", "main"]));
+    assert!(git_ok(&["add", "."]));
+    assert!(git_ok(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-m",
+        "x"
+    ]));
+
+    cmd_sync_push(repo.path()).unwrap();
+
+    assert_eq!(
+        requests.join().unwrap().len(),
+        3,
+        "expected the initial push plus two conflict retries"
+    );
+}
+
+#[test]
+fn push_gives_up_after_exhausting_conflict_retries() {
+    let repo = init_repo("permastale");
+    // Every attempt conflicts — the loop must bail with a clear error
+    // instead of retrying forever.
+    let (addr, requests) = serve_sequence(vec![(409, ""), (409, ""), (409, ""), (409, "")]);
+    write_config(repo.path(), &addr);
+    let git_ok = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(git_ok(&["init", "-b", "main"]));
+    assert!(git_ok(&["add", "."]));
+    assert!(git_ok(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-m",
+        "x"
+    ]));
+
+    let err = cmd_sync_push(repo.path()).unwrap_err();
+
+    assert!(err.to_string().contains("republish attempts"), "got: {err}");
+    assert_eq!(
+        requests.join().unwrap().len(),
+        4,
+        "expected the initial push plus 3 exhausted conflict retries"
     );
 }

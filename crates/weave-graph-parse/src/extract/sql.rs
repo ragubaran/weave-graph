@@ -261,5 +261,5 @@ fn unquote(s: &str) -> &str {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lang-extended"))]
 mod tests;

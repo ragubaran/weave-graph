@@ -1,5 +1,71 @@
 # Release Notes
 
+## Unreleased — Corrected Binary Sizes, Tree-Sitter Feature-Gating, Federated Query Persistence
+
+Addendum to `v1.0.1` below, not a replacement — that entry's packaging-tier
+sizes were pre-measurement estimates and are superseded by the real numbers
+here (`cargo build --release`, this repo's actual `[profile.release]`:
+`opt-level = "z"`, fat LTO, `codegen-units = 1`, stripped; measured
+2026-09-12).
+
+- **Real measured binary sizes (all tiers larger than originally estimated)**:
+  - Standard Normal Mode, unflagged `cargo build --release` (today's actual
+    default — links all 29 tree-sitter grammars): **41.1 MB** (43,112,948
+    bytes), not the previously-stated <6.8 MB.
+  - Standard Normal Mode, `--no-default-features` (8 core languages only,
+    new this pass — see below): **9.6 MB** (10,083,852 bytes). This is the
+    build that actually clears the <15 MB target; the unflagged default
+    does not.
+  - Vector Mode (`--features vector`): **41.2 MB** — a +88 KB delta over
+    Standard, not +2.3 MB; `sqlite-vec` links statically and is small on
+    its own, the grammar tables dominate either way.
+  - Turso Mode (`--features turso`): **41.1 MB** — statistically identical
+    to Standard; confirms `weave-graph-store-turso` is linked but not yet
+    reachable from any CLI command.
+  - Custom/Enterprise (`--features custom`): **41.6 MB**.
+  - WASM (`crates/weave-graph-wasm`): **155.6 KB** (159,339 bytes) — this
+    one was already accurate.
+- **Tree-sitter grammars are now an opt-in Cargo feature** (`lang-extended`,
+  on by `default` so today's full-language behavior is unchanged unless you
+  build with `--no-default-features`): 21 of 29 grammars (everything beyond
+  Rust/Python/JS/TS/Go/Java/C/C++) became `optional = true` dependencies.
+  This is the fix the v1.0.0 "Known limitations" entry below said was
+  "likely" and "not done in this release" — it's done now.
+- **`weave link`'s composite graph is no longer thrown away**: it's
+  persisted to `.weave/federation/<partner-label>.db` on both linked repos
+  (same crash-safe stage-then-rename write path as `graph.db`), and a new
+  `weave query-federated <repo-a> <repo-b> "<expr>"` command runs the same
+  `callers`/`callees`/`path`/`impact`/`latency` query language `weave
+  query` already supports, against that persisted cross-repo graph. No RBAC
+  masking yet for federated queries — stated as an open gap, not silently
+  skipped.
+- **`weave report-federated <repo-a> <repo-b>`** (feature: `federation`):
+  a unified `.canvas` architecture map across two linked repos, reusing
+  `weave report`'s existing Louvain-clustered, 200-node-budgeted exporter
+  against the persisted composite graph instead of a single repo — the
+  root canvas now shows one node per linked repo instead of always
+  exactly one. CLI-side only; no registry HTTP endpoint or webhook
+  delivery (out of scope for this pass, tracked separately). No RBAC
+  masking yet, same stated gap as `query-federated`.
+
+## v1.0.1 — Packaging Tiers & Storage Engine Isolation
+
+Previous release: `v1.0.0`.
+
+### Changes & Packaging Tiers
+
+- **Single-Engine Packaging**:
+  - Standard Normal Mode (`v1.0.1`, executable `weave`): ultra-small, single-engine SQLite stripped binary (<6.8 MB macOS / <7.2 MB Linux), <80 MB peak RAM. Default GA/Stable distribution.
+  - Vector Mode (`v1.0.1-vector`, executable `weave`): single-engine SQLite + `sqlite-vec` virtual tables with binary/int8 quantization (<9.1 MB stripped). Note: vector mode is exclusively supported on SQLite; Turso does not natively support vector virtual tables.
+- **Turso Feature Mode (`v1.0.1-turso`, executable `weave`)**:
+  - Available strictly for Normal Mode (no vector support), replacing SQLite with the libSQL embedded replica backend (<11.5 MB stripped).
+- **CLI Self-Identification**:
+  - `weave --version` now reports current binary version (`weave 1.0.1`).
+- **Hub Ecosystem & Provenance Status**:
+  - `hub-provenance` trait boundary (`SnapshotProvenanceVerifier`) implemented and tested standalone.
+  - Not yet wired into `weave sync push/pull` — needs a registry-side storage schema change (signature sidecar) to actually transmit it. Stated honestly, not silently skipped.
+  - `hub-canvas`, `hub-webhooks`, chunked upload: not started this pass.
+
 ## v1.0.0 — First Release
 
 Tag `v1.0.0`, commit `7d2b8b9`.

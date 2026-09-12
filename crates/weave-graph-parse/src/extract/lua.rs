@@ -74,5 +74,5 @@ fn collect_calls(node: Node, source: &[u8], caller_moniker: &str, file: &mut Par
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lang-extended"))]
 mod tests;

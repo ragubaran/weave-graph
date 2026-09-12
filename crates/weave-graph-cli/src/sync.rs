@@ -66,10 +66,13 @@ pub(crate) fn cmd_sync_pull(
         None => git_merge_base(root)?,
     };
 
+    // `weave sync pull` has no provenance verifier wired yet — the
+    // signature sidecar is fetched but not checked, same as `push` above
+    // not signing (`hub-provenance`'s trait boundary exists, unused here).
     let bytes = match client.pull(&sha)? {
-        PullOutcome::Found(bytes) => bytes,
+        PullOutcome::Found(bytes, _signature) => bytes,
         PullOutcome::NotFound if fallback_latest => match client.pull("latest")? {
-            PullOutcome::Found(bytes) => {
+            PullOutcome::Found(bytes, _signature) => {
                 println!("No snapshot for {sha}; hydrated latest instead.");
                 bytes
             }
@@ -89,6 +92,13 @@ pub(crate) fn cmd_sync_pull(
     let db_path = data_db_path(root)?;
     let rebuild = db_path.with_extension("db.rebuild");
     fs::write(&rebuild, &bytes)?;
+
+    // Enforce filesystem-specific pragmas (WAL vs DELETE) based on the mount
+    // before the active database sees this file (Gap 5).
+    if let Ok(storage) = weave_graph_store_sqlite::SqliteStorage::open(&rebuild) {
+        let _ = storage.checkpoint_wal();
+    }
+
     fs::rename(&rebuild, &db_path)?;
     println!(
         "Hydrated snapshot for {sha} into {} ({} bytes). Run `weave index --incremental` \
@@ -136,13 +146,36 @@ pub(crate) fn cmd_sync_push(root: &Path) -> Result<(), Box<dyn std::error::Error
         }
         PushOutcome::Conflict => {
             // v1 always sends the full snapshot, so a conflict is resolved by
-            // republishing it once more — the hub's head simply moved.
-            let retry = push_with_backoff(&client, &target, None, retention(root), &payload)?;
-            match retry {
+            // republishing it — the hub's head simply moved. Bounded retry
+            // loop with the same backoff+jitter as the rate-limit path
+            // (impl.md M2.5's originally-specified behavior, not just a
+            // single unconditional retry) since a busy hub can race a
+            // second concurrent publish into the same window.
+            let mut outcome = PushOutcome::Conflict;
+            for attempt in 0..MAX_CONFLICT_RETRIES {
+                std::thread::sleep(std::time::Duration::from_millis(jitter_ms()));
+                outcome = push_with_backoff(&client, &target, None, retention(root), &payload)?;
+                if !matches!(outcome, PushOutcome::Conflict) {
+                    break;
+                }
+                eprintln!(
+                    "Hub head still moving (attempt {}/{MAX_CONFLICT_RETRIES}); retrying.",
+                    attempt + 1
+                );
+            }
+            match outcome {
                 PushOutcome::Published | PushOutcome::Accepted => {
                     println!("Hub head had moved; republished full snapshot for {target}.")
                 }
-                _ => return Err("Hub still refuses the snapshot after republish".into()),
+                PushOutcome::Conflict => {
+                    return Err(format!(
+                        "Hub still refuses the snapshot after {MAX_CONFLICT_RETRIES} republish attempts"
+                    )
+                    .into());
+                }
+                PushOutcome::RateLimited { .. } => {
+                    return Err("Hub rate-limited the publish during conflict republish".into());
+                }
             }
         }
         PushOutcome::RateLimited { retry_after_secs } => {
@@ -168,6 +201,21 @@ pub(crate) fn cmd_sync_push(root: &Path) -> Result<(), Box<dyn std::error::Error
 /// elsewhere.
 const MAX_PUSH_ATTEMPTS: u32 = 5;
 
+/// Bounded retries for a `409 Conflict` republish (`impl.md` M2.5's
+/// originally-specified retry-with-backoff, not the single unconditional
+/// retry v1 shipped with).
+const MAX_CONFLICT_RETRIES: u32 = 3;
+
+/// Sub-second jitter derived from wall-clock nanoseconds, so concurrent
+/// runners retrying at the same instant don't stay lockstepped — no `rand`
+/// dependency needed for this.
+fn jitter_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::from(d.subsec_nanos() % 1000))
+        .unwrap_or(0)
+}
+
 fn push_with_backoff(
     client: &weave_graph_hub::HubClient,
     target_sha: &str,
@@ -176,7 +224,10 @@ fn push_with_backoff(
     payload: &[u8],
 ) -> Result<PushOutcome, Box<dyn std::error::Error>> {
     for attempt in 0..MAX_PUSH_ATTEMPTS {
-        let outcome = client.push(target_sha, base_sha, retention, payload)?;
+        // `weave sync push` has no provenance signer wired yet (`hub-provenance`'s
+        // trait boundary exists, but nothing in this module calls it) — `None`
+        // is today's real behavior, not a placeholder for one.
+        let outcome = client.push(target_sha, base_sha, retention, None, payload)?;
         let PushOutcome::RateLimited { retry_after_secs } = outcome else {
             return Ok(outcome);
         };
@@ -185,17 +236,13 @@ fn push_with_backoff(
         }
         let base_wait = retry_after_secs.unwrap_or(1);
         let backoff = base_wait.saturating_mul(1u64 << attempt);
-        let jitter_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos() % 1000)
-            .unwrap_or(0);
+        let jitter_ms = jitter_ms();
         eprintln!(
             "Hub rate-limited (attempt {}/{MAX_PUSH_ATTEMPTS}); backing off {backoff}s + {jitter_ms}ms jitter.",
             attempt + 1
         );
         std::thread::sleep(
-            std::time::Duration::from_secs(backoff)
-                + std::time::Duration::from_millis(jitter_ms.into()),
+            std::time::Duration::from_secs(backoff) + std::time::Duration::from_millis(jitter_ms),
         );
     }
     unreachable!("loop always returns by the last attempt")

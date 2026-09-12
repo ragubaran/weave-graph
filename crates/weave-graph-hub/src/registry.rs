@@ -70,7 +70,7 @@ pub enum PushDecision {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PullResult {
-    Found(Vec<u8>),
+    Found(Vec<u8>, Option<String>),
     NotFound,
 }
 
@@ -99,7 +99,7 @@ pub struct Registry {
     store_dir: PathBuf,
     spool_dir: PathBuf,
     config: RegistryConfig,
-    repos: Mutex<HashMap<String, Arc<RepoState>>>,
+    repos: Arc<Mutex<HashMap<String, Arc<RepoState>>>>,
 }
 
 impl Registry {
@@ -116,7 +116,7 @@ impl Registry {
             store_dir,
             spool_dir,
             config,
-            repos: Mutex::new(HashMap::new()),
+            repos: Arc::new(Mutex::new(HashMap::new())),
         };
         // Recovery: a repo with leftover spool files from a prior crash
         // gets its worker resumed before the registry serves any request.
@@ -151,7 +151,7 @@ impl Registry {
     /// resumes exactly where it left off, using the disk itself as the
     /// durable queue rather than trusting only in-memory state.
     fn repo_state(&self, repo_id: &str) -> Arc<RepoState> {
-        let mut repos = self.repos.lock().unwrap();
+        let mut repos = self.repos.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(state) = repos.get(repo_id) {
             return Arc::clone(state);
         }
@@ -181,10 +181,68 @@ impl Registry {
         });
 
         let worker_state = Arc::clone(&state);
-        thread::spawn(move || worker_loop(store_dir, spool_dir, worker_state, rx));
+        let worker_repos = Arc::clone(&self.repos);
+        let worker_repo_id = repo_id.to_string();
+        thread::spawn(move || {
+            worker_loop(
+                store_dir,
+                spool_dir,
+                worker_state,
+                rx,
+                worker_repos,
+                worker_repo_id,
+            )
+        });
 
         repos.insert(repo_id.to_string(), Arc::clone(&state));
         state
+    }
+    pub fn get_spool_offset(&self, repo_id: &str, target_sha: &str) -> std::io::Result<u64> {
+        if !is_safe_path_component(repo_id) || !is_safe_path_component(target_sha) {
+            return Ok(0);
+        }
+        let spool_dir = self.repo_spool_dir(repo_id);
+        let tmp = spool_dir.join(format!("{target_sha}.tmp"));
+        Ok(fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0))
+    }
+
+    pub fn spool_chunk(
+        &self,
+        repo_id: &str,
+        target_sha: &str,
+        start_offset: u64,
+        chunk: &[u8],
+    ) -> std::io::Result<u64> {
+        if !is_safe_path_component(repo_id) || !is_safe_path_component(target_sha) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unsafe repo_id or target_sha: {repo_id:?}/{target_sha:?}"),
+            ));
+        }
+        let spool_dir = self.repo_spool_dir(repo_id);
+        let _ = fs::create_dir_all(&spool_dir);
+        let tmp = spool_dir.join(format!("{target_sha}.tmp"));
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&tmp)?;
+        if start_offset == 0 {
+            file.set_len(0)?;
+        } else if file.metadata()?.len() != start_offset {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "offset mismatch: expected {}, got {}",
+                    file.metadata()?.len(),
+                    start_offset
+                ),
+            ));
+        }
+        use std::io::{Seek, Write};
+        file.seek(std::io::SeekFrom::End(0))?;
+        file.write_all(chunk)?;
+        Ok(file.metadata()?.len())
     }
 
     /// Synchronous accept path: rate limit, then the backpressure
@@ -197,7 +255,20 @@ impl Registry {
         target_sha: &str,
         base_sha: Option<&str>,
         retention: usize,
+        signature: Option<&str>,
         payload: &[u8],
+    ) -> std::io::Result<PushDecision> {
+        self.spool_chunk(repo_id, target_sha, 0, payload)?;
+        self.push_complete(repo_id, target_sha, base_sha, retention, signature)
+    }
+
+    pub fn push_complete(
+        &self,
+        repo_id: &str,
+        target_sha: &str,
+        base_sha: Option<&str>,
+        retention: usize,
+        signature: Option<&str>,
     ) -> std::io::Result<PushDecision> {
         if !is_safe_path_component(repo_id) || !is_safe_path_component(target_sha) {
             return Err(std::io::Error::new(
@@ -208,7 +279,10 @@ impl Registry {
         let state = self.repo_state(repo_id);
 
         {
-            let mut rate = state.rate.lock().unwrap();
+            let mut rate = state
+                .rate
+                .lock()
+                .map_err(|_| std::io::Error::other("rate lock poisoned"))?;
             if rate.window_start.elapsed() >= Duration::from_secs(60) {
                 rate.window_start = Instant::now();
                 rate.count = 0;
@@ -222,7 +296,10 @@ impl Registry {
         }
 
         let seq = {
-            let mut head = state.head.lock().unwrap();
+            let mut head = state
+                .head
+                .lock()
+                .map_err(|_| std::io::Error::other("head lock poisoned"))?;
             if head.pending >= self.config.max_queue_depth_per_repo {
                 return Ok(PushDecision::RateLimited {
                     retry_after_secs: 5,
@@ -243,9 +320,14 @@ impl Registry {
 
         let spool_dir = self.repo_spool_dir(repo_id);
         let name = job_filename(seq, target_sha, retention);
-        let tmp = spool_dir.join(format!("{name}.tmp"));
+        let tmp = spool_dir.join(format!("{target_sha}.tmp"));
         let dest = spool_dir.join(&name);
-        fs::write(&tmp, payload)?;
+
+        if let Some(sig) = signature {
+            let sig_dest = spool_dir.join(format!("{seq:020}_{target_sha}_{retention}.sig"));
+            let _ = fs::write(&sig_dest, sig);
+        }
+
         fs::rename(&tmp, &dest)?;
         let _ = state.wake.send(());
         Ok(PushDecision::Accepted)
@@ -268,9 +350,20 @@ impl Registry {
             commit_sha.to_string()
         };
         match fs::read(self.repo_store_dir(repo_id).join(format!("{sha}.tar.zst"))) {
-            Ok(bytes) => PullResult::Found(bytes),
+            Ok(bytes) => {
+                let sig =
+                    fs::read_to_string(self.repo_store_dir(repo_id).join(format!("{sha}.sig")))
+                        .ok();
+                PullResult::Found(bytes, sig)
+            }
             Err(_) => PullResult::NotFound,
         }
+    }
+
+    // Reports the number of spooled pushes waiting to be committed or pruned.
+    pub fn pending_jobs(&self, repo_id: &str) -> usize {
+        let state = self.repo_state(repo_id);
+        state.head.lock().map(|h| h.pending).unwrap_or(0)
     }
 }
 
@@ -335,17 +428,31 @@ fn worker_loop(
     spool_dir: PathBuf,
     state: Arc<RepoState>,
     rx: std::sync::mpsc::Receiver<()>,
+    repos: Arc<Mutex<HashMap<String, Arc<RepoState>>>>,
+    repo_id: String,
 ) {
     loop {
         let jobs = leftover_jobs(&spool_dir);
         if jobs.is_empty() {
-            let _ = rx.recv_timeout(Duration::from_millis(200));
+            if rx.recv_timeout(Duration::from_secs(300)).is_err() {
+                // Idle timeout or disconnected: remove from active pool and exit.
+                if let Ok(mut r) = repos.lock() {
+                    r.remove(&repo_id);
+                }
+                break;
+            }
             continue;
         }
         for job in jobs {
             commit_job(&store_dir, &job);
             let _ = fs::remove_file(&job.path);
-            state.head.lock().unwrap().pending -= 1;
+            let sig_path = job
+                .path
+                .with_file_name(format!("{:020}_{}_{}.sig", job.seq, job.sha, job.retention));
+            let _ = fs::remove_file(sig_path);
+            if let Ok(mut head) = state.head.lock() {
+                head.pending -= 1;
+            }
         }
     }
 }
@@ -362,6 +469,16 @@ fn commit_job(store_dir: &Path, job: &SpoolJob) {
     {
         return;
     }
+
+    let sig_path = job
+        .path
+        .with_file_name(format!("{:020}_{}_{}.sig", job.seq, job.sha, job.retention));
+    if let Ok(sig_bytes) = fs::read(&sig_path) {
+        let sig_dest = store_dir.join(format!("{}.sig", job.sha));
+        let sig_tmp = store_dir.join(format!("{}.sig.tmp", job.sha));
+        let _ = fs::write(&sig_tmp, &sig_bytes).and_then(|_| fs::rename(&sig_tmp, &sig_dest));
+    }
+
     let head_tmp = store_dir.join("HEAD.tmp");
     let head_path = store_dir.join("HEAD");
     if fs::write(&head_tmp, &job.sha)
@@ -390,10 +507,14 @@ fn prune_retention(store_dir: &Path, retention: usize) {
                 .map(|t| (t, e.path()))
         })
         .collect();
-    blobs.sort_by_key(|(t, _)| *t);
+    // Sort oldest first; break timestamp collisions by path for deterministic eviction.
+    blobs.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
     if blobs.len() > retention {
         for (_, path) in &blobs[..blobs.len() - retention] {
             let _ = fs::remove_file(path);
+            // Also prune sidecar if it exists
+            let sig_path = path.with_extension("").with_extension("sig");
+            let _ = fs::remove_file(sig_path);
         }
     }
 }

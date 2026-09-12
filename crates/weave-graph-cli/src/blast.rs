@@ -12,6 +12,7 @@ use std::path::Path;
 use crate::git;
 use weave_graph_core::modules::{aggregate_file_edges, build_modules};
 use weave_graph_core::{NodeId, Storage};
+use weave_graph_parse::{Language, contract};
 
 /// At or below this many impacted symbols the markdown lists them
 /// individually; above it, module folding keeps the output bounded
@@ -28,6 +29,13 @@ pub(crate) struct BlastReport {
     /// `(label, file count, impacted symbol count, member files)` for
     /// modules containing at least one impacted symbol.
     pub(crate) modules: Vec<(String, usize, usize, Vec<String>)>,
+    /// Directly-edited symbols (not the transitive `impacted` set) that
+    /// are part of this repo's exported contract surface (`impl.md`
+    /// M2.2's own `visibility_rule` — the same heuristic `check-contracts`
+    /// hashes and RBAC masks by, reused rather than re-derived). Lets a
+    /// reviewer see "this diff touches the public API" without waiting
+    /// for a separate `weave check-contracts` run on the consumer side.
+    pub(crate) exported_touched: Vec<(String, String, u32)>,
 }
 
 pub(crate) fn cmd_blast(
@@ -72,17 +80,43 @@ fn compute(root: &Path, base: &str) -> Result<BlastReport, Box<dyn std::error::E
     // File-level precision (v1 limit, documented): every symbol in a
     // changed file counts as touched; line-level hunk ranges are
     // follow-on scope.
-    let mut impacted: HashSet<u32> = HashSet::new();
+    //
+    // Unioned as `RoaringBitmap`s, not collected into a `HashSet<u32>`:
+    // `reachable_within` already returns a compressed bitmap per touched
+    // node, and a large PR (hundreds of touched files, each with its own
+    // transitive reachability set) previously paid a per-element hash
+    // insertion for every node on every union instead of one compressed
+    // bitwise OR.
+    let mut impacted = roaring::RoaringBitmap::new();
     for node in &touched {
-        impacted.extend(csr.reachable_within(node.id, u32::MAX).iter());
+        impacted |= csr.reachable_within(node.id, u32::MAX);
     }
     let mut impacted_list: Vec<(String, String, u32)> = impacted
         .iter()
-        .filter_map(|idx| nodes.get(*idx as usize))
+        .filter_map(|idx| nodes.get(idx as usize))
         .map(|n| (n.symbol.clone(), n.path.clone(), n.line_start))
         .collect();
     impacted_list.sort();
     impacted_list.dedup();
+
+    // Boundary check: of the *directly edited* symbols (not the wider
+    // transitive `impacted` set), which are exported? A private helper's
+    // internals changing doesn't move `check-contracts`' hash at all; an
+    // exported signature changing does, on the consumer's next check.
+    let mut exported_touched: Vec<(String, String, u32)> = touched
+        .iter()
+        .filter(|n| {
+            Language::from_path(Path::new(&n.path)).is_some_and(|language| {
+                contract::visibility_rule(language)(
+                    n.signature.trim(),
+                    contract::short_name(&n.symbol),
+                )
+            })
+        })
+        .map(|n| (n.symbol.clone(), n.path.clone(), n.line_start))
+        .collect();
+    exported_touched.sort();
+    exported_touched.dedup();
 
     // Module folding for the markdown budget: fold only the modules that
     // actually contain impacted symbols.
@@ -124,6 +158,7 @@ fn compute(root: &Path, base: &str) -> Result<BlastReport, Box<dyn std::error::E
         impacted: impacted_list,
         folded: false,
         modules: folded_modules,
+        exported_touched,
     })
 }
 
@@ -175,6 +210,27 @@ fn render_markdown(report: &BlastReport) -> String {
             ));
         }
     }
+    if report.exported_touched.is_empty() {
+        lines.push(
+            "\n_No exported/public symbols touched by this diff — linked \
+                     consumers' recorded contract expectations can't have gone \
+                     stale from this change._"
+                .to_string(),
+        );
+    } else {
+        lines.push(format!(
+            "\n### ⚠️ Exported contract surface touched ({})",
+            report.exported_touched.len()
+        ));
+        lines.push(
+            "Directly edited, not just impacted — a linked consumer's next \
+             `weave check-contracts` may report drift because of this:"
+                .to_string(),
+        );
+        for (symbol, path, line) in &report.exported_touched {
+            lines.push(format!("- `{symbol}` (`{path}`:L{line})"));
+        }
+    }
     lines.push(String::new());
     lines.push(
         "_File-level precision: every symbol in a changed file counts as touched \
@@ -197,6 +253,9 @@ fn render_json(report: &BlastReport) -> Result<String, serde_json::Error> {
             .map(|(label, files, symbols, members)| serde_json::json!({
                 "label": label, "files": files, "impacted_symbols": symbols, "members": members
             }))
+            .collect::<Vec<_>>(),
+        "exported_touched": report.exported_touched.iter()
+            .map(|(s, p, l)| serde_json::json!({"symbol": s, "path": p, "line_start": l}))
             .collect::<Vec<_>>(),
     }))
 }

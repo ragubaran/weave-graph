@@ -17,6 +17,9 @@ notes = ["dep:blake3"]
 federation = []
 provenance = []
 rbac = []
+policy-lint = []
+fts = []
+vector = []
 
 [dev-dependencies]
 criterion = "0.8.2"

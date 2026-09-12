@@ -12,3 +12,9 @@ weave-graph-core = { path = "../weave-graph-core" }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[features]
+# Independently compilable per-capability features (impl.md M3.6) — a
+# deployment that only wants Merkle-signed snapshots shouldn't pull in
+# the (not yet built) canvas generator or webhook dispatcher, or vice versa.
+hub-provenance = []

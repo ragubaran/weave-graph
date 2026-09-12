@@ -187,6 +187,7 @@ fn cpp_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn csharp_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.cs");
     assert_eq!(
@@ -202,6 +203,7 @@ fn csharp_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn kotlin_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.kt");
     assert_eq!(
@@ -217,6 +219,7 @@ fn kotlin_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn swift_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.swift");
     assert_eq!(
@@ -232,6 +235,7 @@ fn swift_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn scala_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.scala");
     assert_eq!(
@@ -247,6 +251,7 @@ fn scala_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn zig_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.zig");
     assert_eq!(
@@ -260,6 +265,7 @@ fn zig_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn ruby_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.rb");
     assert_eq!(
@@ -275,6 +281,7 @@ fn ruby_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn php_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.php");
     assert_eq!(
@@ -292,6 +299,7 @@ fn php_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn bash_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.sh");
     assert_eq!(
@@ -304,6 +312,7 @@ fn bash_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn powershell_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.ps1");
     assert_eq!(
@@ -316,6 +325,7 @@ fn powershell_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn lua_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.lua");
     assert_eq!(
@@ -328,6 +338,7 @@ fn lua_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn sql_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.sql");
     assert_eq!(
@@ -342,6 +353,7 @@ fn sql_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn dart_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.dart");
     assert_eq!(
@@ -363,6 +375,7 @@ fn dart_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn elixir_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.ex");
     assert_eq!(
@@ -376,6 +389,7 @@ fn elixir_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn html_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.html");
     assert_eq!(
@@ -390,6 +404,7 @@ fn html_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn css_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.css");
     assert_eq!(
@@ -403,6 +418,7 @@ fn css_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn r_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.R");
     assert_eq!(
@@ -422,6 +438,7 @@ fn r_fixture_symbols_match_hand_count() {
 }
 
 #[test]
+#[cfg(feature = "lang-extended")]
 fn haskell_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.hs");
     assert_eq!(

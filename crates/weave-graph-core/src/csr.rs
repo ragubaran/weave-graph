@@ -19,6 +19,16 @@ pub struct CsrGraph {
 }
 
 impl CsrGraph {
+    // Infallible empty graph constructor for default/WASM initialization.
+    // Bypasses edge sorting since vertex and edge sets are empty.
+    pub fn empty() -> Self {
+        Self {
+            csr: Csr::new(),
+            id_to_index: HashMap::new(),
+            index_to_id: Vec::new(),
+        }
+    }
+
     /// Loads every node/edge from `storage`, compacting storage ids (which
     /// may have gaps) into the dense `0..n` space `Csr` requires. Multiple
     /// edges on the same `(source, target)` pair collapse into one CSR
@@ -67,6 +77,50 @@ impl CsrGraph {
         // `from_sorted_edges` sizes the CSR to `max_node_id + 1`; nodes
         // with no edges at all past the highest connected id still need
         // to exist.
+        while csr.node_count() < index_to_id.len() {
+            csr.add_node(());
+        }
+
+        Ok(Self {
+            csr,
+            id_to_index,
+            index_to_id,
+        })
+    }
+
+    // Constructs CsrGraph directly from memory slices for WASM/offline use.
+    // Preserves identical compaction, sorting, and deduping as load().
+    pub fn from_nodes_and_edges(
+        nodes: &[NodeId],
+        edges: &[(NodeId, NodeId, f64)],
+    ) -> Result<Self, StorageError> {
+        let mut id_to_index: HashMap<NodeId, u32> = HashMap::with_capacity(nodes.len());
+        let mut index_to_id: Vec<NodeId> = Vec::with_capacity(nodes.len());
+        for &id in nodes {
+            if let std::collections::hash_map::Entry::Vacant(e) = id_to_index.entry(id) {
+                e.insert(index_to_id.len() as u32);
+                index_to_id.push(id);
+            }
+        }
+
+        let mut compact_edges: Vec<(u32, u32, f64)> = Vec::with_capacity(edges.len());
+        for &(source, target, weight) in edges {
+            let (Some(&u), Some(&v)) = (id_to_index.get(&source), id_to_index.get(&target)) else {
+                continue;
+            };
+            compact_edges.push((u, v, weight));
+        }
+        compact_edges.sort_by_key(|&(u, v, _)| (u, v));
+        compact_edges.dedup_by(|a, b| {
+            let same_pair = a.0 == b.0 && a.1 == b.1;
+            if same_pair {
+                b.2 = b.2.max(a.2);
+            }
+            same_pair
+        });
+
+        let mut csr: Csr<(), f64, Directed, u32> = Csr::from_sorted_edges(&compact_edges)
+            .map_err(|_| StorageError::Backend("CSR edges were not sorted/deduped".to_string()))?;
         while csr.node_count() < index_to_id.len() {
             csr.add_node(());
         }
@@ -168,6 +222,27 @@ impl CsrGraph {
             frontier = next;
         }
         reached
+    }
+
+    // Resolves internal compact CSR index back to original external NodeId.
+    // Handles sparse storage IDs without exposing index renumbering details.
+    pub fn id_of_index(&self, index: u32) -> Option<NodeId> {
+        self.index_to_id.get(index as usize).copied()
+    }
+
+    // Resolves reachable NodeIds within max_hops steps from start node.
+    // Maps internal RoaringBitmap indices back to external storage IDs.
+    pub fn reachable_nodes(&self, from: NodeId, max_hops: u32) -> Vec<NodeId> {
+        self.reachable_within(from, max_hops)
+            .iter()
+            .filter_map(|idx| self.id_of_index(idx))
+            .collect()
+    }
+}
+
+impl Default for CsrGraph {
+    fn default() -> Self {
+        Self::empty()
     }
 }
 

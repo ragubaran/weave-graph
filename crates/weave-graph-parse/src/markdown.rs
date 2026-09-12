@@ -19,6 +19,9 @@ pub struct ParsedMarkdown {
     pub tags: Vec<String>,
     pub aliases: Vec<String>,
     pub links: Vec<Wikilink>,
+    /// Heading texts in document order (`# Section` -> "Section") — the
+    /// `[[Note#Section]]` anchor targets resolve against these.
+    pub headings: Vec<String>,
     /// Raw backtick code-span text, e.g. `AuthService.verify()` — resolving
     /// this against already-indexed code symbols is the caller's job, not
     /// this module's; a Markdown parser has no business knowing the graph.
@@ -42,10 +45,27 @@ pub fn parse_markdown(source: &str) -> ParsedMarkdown {
     // wikilink syntax only becomes visible once those fragments are
     // rejoined in document order, so accumulate first and scan once.
     let mut text_buffer = String::new();
+    let mut in_heading: Option<String> = None;
     for event in Parser::new(body) {
         match event {
             Event::Code(text) => doc.code_refs.push(text.to_string()),
-            Event::Text(text) => text_buffer.push_str(text.as_ref()),
+            Event::Text(text) => match &mut in_heading {
+                Some(heading) => heading.push_str(text.as_ref()),
+                None => text_buffer.push_str(text.as_ref()),
+            },
+            Event::Start(pulldown_cmark::Tag::Heading { .. }) => {
+                in_heading = Some(String::new());
+            }
+            Event::End(pulldown_cmark::TagEnd::Heading(_)) => {
+                if let Some(heading) = in_heading.take() {
+                    // CommonMark allows a closing ATX sequence (`## Intro ##`);
+                    // pulldown-cmark leaves it in the text events.
+                    let heading = heading.trim().trim_end_matches('#').trim().to_string();
+                    if !heading.is_empty() {
+                        doc.headings.push(heading);
+                    }
+                }
+            }
             _ => {}
         }
     }

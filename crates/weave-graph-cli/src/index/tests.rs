@@ -159,3 +159,58 @@ fn indexed_file_count_counts_distinct_paths() {
 
     assert_eq!(indexed_file_count(&fx.active_db).unwrap(), 2);
 }
+
+/// The skip branches of the parse loop: an unparseable source (`Some(Err)`)
+/// and an unsupported extension (`None`) are reported or skipped without
+/// aborting the whole index; an unreadable file (listed but vanished)
+/// exercises the read-failure arm of both upsert passes.
+#[test]
+fn unparseable_unsupported_and_unreadable_files_are_skipped_not_fatal() {
+    let fx = Fixture::new();
+    let bad_rs = fx.write("broken.rs", "pub fn oops( {}\n");
+    let unsupported = fx.write("blob.bin", "\x00\x01\x02 not source\n");
+    let good = fx.write("good.rs", "pub fn fine() {}\n");
+    let vanished = fx.root().join("ghost.rs");
+    // A call whose target is indexed nowhere: the edge pass must skip it
+    // (never fabricate a dangling edge) and still count the rest.
+    let dangling = fx.write(
+        "dangling.rs",
+        "pub fn dangling_caller() { nowhere_fn(); }\n",
+    );
+
+    let files = vec![bad_rs, unsupported, good, vanished, dangling];
+    let stats = full_reindex(fx.root(), &fx.weave_dir, &fx.active_db, &files).unwrap();
+
+    assert_eq!(stats.files, 5, "every listed file is attempted");
+    assert_eq!(stats.edges, 0, "the dangling call produces no edge");
+    let storage = fx.storage();
+    let symbols: Vec<String> = storage
+        .all_nodes()
+        .unwrap()
+        .into_iter()
+        .map(|n| n.symbol)
+        .collect();
+    // good.rs parses; broken.rs error-recovers a symbol (tree-sitter is
+    // tolerant); blob.bin and the vanished file contribute nothing.
+    assert!(symbols.contains(&"fine".to_string()), "{symbols:?}");
+    assert_eq!(symbols.len(), 3, "{symbols:?}");
+}
+
+/// A leftover `.rebuild` file from a crashed previous run is replaced, not
+/// appended to — both the full and the incremental paths start clean.
+#[test]
+fn stale_rebuild_files_are_removed_before_both_reindex_paths() {
+    let fx = Fixture::new();
+    fx.write("a.rs", "pub fn helper() {}\n");
+    let files = fx.discovered_files(&["a.rs"]);
+
+    full_reindex(fx.root(), &fx.weave_dir, &fx.active_db, &files).unwrap();
+    fs::copy(&fx.active_db, fx.weave_dir.join("graph.db.rebuild")).unwrap();
+    full_reindex(fx.root(), &fx.weave_dir, &fx.active_db, &files).unwrap();
+    assert!(!fx.weave_dir.join("graph.db.rebuild").exists());
+
+    let changed: Vec<String> = Vec::new();
+    fs::copy(&fx.active_db, fx.weave_dir.join("graph.db.rebuild")).unwrap();
+    incremental_reindex(fx.root(), &fx.weave_dir, &fx.active_db, &files, &changed).unwrap();
+    assert!(!fx.weave_dir.join("graph.db.rebuild").exists());
+}

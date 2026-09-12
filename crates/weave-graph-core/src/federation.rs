@@ -29,12 +29,11 @@ pub fn tarjan_scc(node_ids: &[u32], edges: &[(u32, u32)]) -> Vec<Vec<u32>> {
         lowlink: HashMap::new(),
         on_stack: HashMap::new(),
         stack: Vec::new(),
-        adjacency,
         result: Vec::new(),
     };
     for &id in node_ids {
         if !state.index.contains_key(&id) {
-            state.strong_connect(id);
+            state.strong_connect(id, &adjacency);
         }
     }
     state.result
@@ -46,49 +45,62 @@ struct TarjanState {
     lowlink: HashMap<u32, u32>,
     on_stack: HashMap<u32, bool>,
     stack: Vec<u32>,
-    adjacency: HashMap<u32, Vec<u32>>,
     result: Vec<Vec<u32>>,
 }
 
 impl TarjanState {
-    // ponytail: recursive DFS — stack depth tracks the federated composite
-    // graph's longest dependency chain, not the 500k-symbol core scale
-    // Core Invariant 4 targets. Fine for repo-to-repo linking; revisit
-    // with an explicit worklist if that ever changes.
-    fn strong_connect(&mut self, v: u32) {
-        let v_index = self.index_counter;
-        self.index.insert(v, v_index);
-        self.lowlink.insert(v, v_index);
-        self.index_counter += 1;
-        self.stack.push(v);
-        self.on_stack.insert(v, true);
+    fn strong_connect(&mut self, start: u32, adjacency: &HashMap<u32, Vec<u32>>) {
+        let mut work = vec![(start, 0)];
 
-        let neighbors = self.adjacency.get(&v).cloned().unwrap_or_default();
-        for w in neighbors {
-            if !self.index.contains_key(&w) {
-                self.strong_connect(w);
-                let low_w = self.lowlink.get(&w).copied().unwrap_or(u32::MAX);
-                let low_v = self.lowlink.get(&v).copied().unwrap_or(u32::MAX);
-                self.lowlink.insert(v, low_v.min(low_w));
-            } else if self.on_stack.get(&w).copied().unwrap_or(false) {
-                let idx_w = self.index.get(&w).copied().unwrap_or(u32::MAX);
-                let low_v = self.lowlink.get(&v).copied().unwrap_or(u32::MAX);
-                self.lowlink.insert(v, low_v.min(idx_w));
+        while let Some((v, neighbor_idx)) = work.pop() {
+            if neighbor_idx == 0 {
+                let v_index = self.index_counter;
+                self.index.insert(v, v_index);
+                self.lowlink.insert(v, v_index);
+                self.index_counter += 1;
+                self.stack.push(v);
+                self.on_stack.insert(v, true);
             }
-        }
 
-        let low_v = self.lowlink.get(&v).copied().unwrap_or(u32::MAX);
-        let idx_v = self.index.get(&v).copied().unwrap_or(u32::MAX);
-        if low_v == idx_v {
-            let mut component = Vec::new();
-            while let Some(w) = self.stack.pop() {
-                self.on_stack.insert(w, false);
-                component.push(w);
-                if w == v {
+            let neighbors = adjacency.get(&v).map(|v| v.as_slice()).unwrap_or(&[]);
+            let mut recurse = false;
+
+            for (i, &w) in neighbors.iter().enumerate().skip(neighbor_idx) {
+                if !self.index.contains_key(&w) {
+                    work.push((v, i + 1));
+                    work.push((w, 0));
+                    recurse = true;
                     break;
+                } else if self.on_stack.get(&w).copied().unwrap_or(false) {
+                    let idx_w = self.index.get(&w).copied().unwrap_or(u32::MAX);
+                    let low_v = self.lowlink.get(&v).copied().unwrap_or(u32::MAX);
+                    self.lowlink.insert(v, low_v.min(idx_w));
                 }
             }
-            self.result.push(component);
+
+            if recurse {
+                continue;
+            }
+
+            if let Some(&(p, _)) = work.last() {
+                let low_v = self.lowlink.get(&v).copied().unwrap_or(u32::MAX);
+                let low_p = self.lowlink.get(&p).copied().unwrap_or(u32::MAX);
+                self.lowlink.insert(p, low_p.min(low_v));
+            }
+
+            let low_v = self.lowlink.get(&v).copied().unwrap_or(u32::MAX);
+            let idx_v = self.index.get(&v).copied().unwrap_or(u32::MAX);
+            if low_v == idx_v {
+                let mut component = Vec::new();
+                while let Some(w) = self.stack.pop() {
+                    self.on_stack.insert(w, false);
+                    component.push(w);
+                    if w == v {
+                        break;
+                    }
+                }
+                self.result.push(component);
+            }
         }
     }
 }

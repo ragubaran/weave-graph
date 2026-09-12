@@ -2,8 +2,7 @@ use std::collections::{HashSet, VecDeque};
 
 use weave_graph_core::{CsrGraph, Node, NodeId, Storage};
 
-const USAGE: &str =
-    "Supported forms: callers(<symbol>), callees(<symbol>), impact(<symbol>), path(<a>,<b>)";
+const USAGE: &str = "Supported forms: callers(<symbol>), callees(<symbol>), impact(<symbol>), path(<a>,<b>), latency(<symbol>)";
 
 fn resolve_symbol(nodes: &[Node], symbol: &str) -> Option<NodeId> {
     nodes.iter().find(|n| n.symbol == symbol).map(|n| n.id)
@@ -72,7 +71,7 @@ pub(crate) fn run(
     match name {
         "callers" => {
             let root = resolve(&nodes, single_arg(&args)?)?;
-            Ok(callers_text(storage, &nodes, root))
+            callers_text(storage, &nodes, root)
         }
         "callees" => {
             let root = resolve(&nodes, single_arg(&args)?)?;
@@ -91,6 +90,27 @@ pub(crate) fn run(
             let csr = CsrGraph::load(storage).map_err(|e| e.to_string())?;
             Ok(path_text(&csr, &nodes, from, to))
         }
+        "latency" => {
+            // M3.3: trace-span overlay, resolved against the (possibly
+            // rbac-masked) node list — a hidden symbol fails resolution
+            // here and never reaches the span store.
+            #[cfg(feature = "otel")]
+            {
+                let symbol = resolve(&nodes, single_arg(&args)?)?;
+                let node = nodes
+                    .iter()
+                    .find(|n| n.id == symbol)
+                    .ok_or_else(|| format!("Symbol {} not found", symbol))?;
+                crate::traces::latency_text(storage, &node.symbol)
+            }
+            #[cfg(not(feature = "otel"))]
+            {
+                let _ = (&nodes, &args);
+                Err("latency() requires the `otel` feature; \
+                     rebuild with `--features otel`"
+                    .to_string())
+            }
+        }
         other => Err(format!("unknown query function '{other}'. {USAGE}")),
     }
 }
@@ -104,13 +124,16 @@ fn describe(n: &Node) -> String {
 }
 
 /// All transitive callers of `root` (unbounded, cycle-safe via a visited
-/// set) — via `Storage::get_callers`, since the CSR only walks outbound.
-fn callers_text(storage: &dyn Storage, nodes: &[Node], root: NodeId) -> String {
+/// set) — via `Storage::get_callers`, propagating backend storage errors.
+fn callers_text(storage: &dyn Storage, nodes: &[Node], root: NodeId) -> Result<String, String> {
     let mut visited = HashSet::from([root]);
     let mut queue = VecDeque::from([root]);
     let mut lines = Vec::new();
     while let Some(current) = queue.pop_front() {
-        for edge in storage.get_callers(current).unwrap_or_default() {
+        let callers = storage
+            .get_callers(current)
+            .map_err(|e| format!("failed to read callers for node {current}: {e}"))?;
+        for edge in callers {
             if !visited.insert(edge.source_id) {
                 continue;
             }
@@ -121,9 +144,9 @@ fn callers_text(storage: &dyn Storage, nodes: &[Node], root: NodeId) -> String {
         }
     }
     if lines.is_empty() {
-        "no results".to_string()
+        Ok("no results".to_string())
     } else {
-        lines.join("\n")
+        Ok(lines.join("\n"))
     }
 }
 

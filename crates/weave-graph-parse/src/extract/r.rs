@@ -190,5 +190,5 @@ fn resolve_callee(func_node: Node, source: &[u8]) -> (String, bool) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lang-extended"))]
 mod tests;

@@ -625,6 +625,18 @@ fn test_cli_uncompiled_features_fail_with_clear_message() {
     // `weave note ...` (M2.10) is real once `notes` is compiled.
     #[cfg(not(feature = "notes"))]
     uncompiled_commands.push(vec!["note", "list"]);
+    // `weave traces ...` (M3.3) and `weave policy ...` (M3.2) are real
+    // commands once `otel`/`policy-lint` are compiled.
+    #[cfg(not(feature = "otel"))]
+    uncompiled_commands.push(vec!["traces", "import", "traces.json"]);
+    #[cfg(not(feature = "policy-lint"))]
+    uncompiled_commands.push(vec!["policy", "lint"]);
+    // `weave rbac serve-scim` (M3.4) and `weave plan-migration` (M3.5) are
+    // real once `rbac`/`federation` are compiled.
+    #[cfg(not(feature = "rbac"))]
+    uncompiled_commands.push(vec!["rbac", "serve-scim"]);
+    #[cfg(not(feature = "federation"))]
+    uncompiled_commands.push(vec!["plan-migration", "f"]);
 
     for args in uncompiled_commands {
         let mut cmd = Command::cargo_bin("weave").unwrap();
@@ -1054,4 +1066,138 @@ fn test_cli_rbac_masks_consistently_across_query_report_export_and_mcp() {
             "mcp for {subject}: {mcp_text}"
         );
     }
+}
+
+/// impl.md M3.2's verify criterion, through the real binary: a policy
+/// declaring a boundary the repo violates blocks (non-zero exit, the CI
+/// gate), and the same repo under a compliant policy does not.
+#[test]
+#[cfg(feature = "policy-lint")]
+fn test_cli_policy_lint_blocks_violation_and_passes_compliant_repo() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let ui = root.join("src/ui");
+    let db = root.join("src/db");
+    std::fs::create_dir_all(&ui).unwrap();
+    std::fs::create_dir_all(&db).unwrap();
+    std::fs::write(
+        ui.join("view.rs"),
+        "fn render() { crate::db::store::save(); }",
+    )
+    .unwrap();
+    std::fs::write(db.join("store.rs"), "pub fn save() {}").unwrap();
+
+    let mut init = Command::cargo_bin("weave").unwrap();
+    init.current_dir(root).arg("init").assert().success();
+    let mut index = Command::cargo_bin("weave").unwrap();
+    index.current_dir(root).arg("index").assert().success();
+
+    let weave_dir = root.join(".weave");
+    let policy = weave_dir.join("policy.yaml");
+    std::fs::write(
+        &policy,
+        "rules:\n  - disallow:\n      from: src/ui\n      to: src/db\n",
+    )
+    .unwrap();
+
+    // Violating repo: blocked, with the violation spelled out.
+    let mut lint = Command::cargo_bin("weave").unwrap();
+    lint.current_dir(root)
+        .args(["policy", "lint"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("disallow"))
+        .stderr(predicate::str::contains("policy violation"));
+
+    // Same repo, a boundary it actually respects: the gate passes.
+    std::fs::write(
+        &policy,
+        "rules:\n  - disallow:\n      from: src/db\n      to: src/ui\n",
+    )
+    .unwrap();
+    let mut lint_ok = Command::cargo_bin("weave").unwrap();
+    lint_ok
+        .current_dir(root)
+        .args(["policy", "lint"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no boundary violations"));
+}
+
+/// impl.md M3.2's drift analytics through the real binary: a synthetic
+/// two-file cycle and an isolated orphan are both reported.
+#[test]
+#[cfg(feature = "policy-lint")]
+fn test_cli_policy_drift_reports_cycles_and_orphans() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), "fn ping() { crate::pong(); }").unwrap();
+    std::fs::write(root.join("b.rs"), "fn pong() { crate::ping(); }").unwrap();
+    std::fs::write(root.join("c.rs"), "fn lonely() {}").unwrap();
+
+    let mut init = Command::cargo_bin("weave").unwrap();
+    init.current_dir(root).arg("init").assert().success();
+    let mut index = Command::cargo_bin("weave").unwrap();
+    index.current_dir(root).arg("index").assert().success();
+
+    let mut drift = Command::cargo_bin("weave").unwrap();
+    drift
+        .current_dir(root)
+        .args(["policy", "drift"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("dependency cycle(s)")
+                .and(predicate::str::contains("orphaned file(s)")),
+        );
+}
+
+/// impl.md M3.3's verify criterion, through the real binary: an OTLP
+/// trace export annotates the matching symbol, its latency is queryable
+/// via `weave query`, and it survives a full reindex (the carry-over
+/// path).
+#[test]
+#[cfg(feature = "otel")]
+fn test_cli_traces_import_annotates_node_and_latency_is_queryable() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("lib.rs"), "fn handle() {}").unwrap();
+
+    let mut init = Command::cargo_bin("weave").unwrap();
+    init.current_dir(root).arg("init").assert().success();
+    let mut index = Command::cargo_bin("weave").unwrap();
+    index.current_dir(root).arg("index").assert().success();
+
+    std::fs::write(
+        root.join("traces.json"),
+        r#"{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"api"}}]},"scopeSpans":[{"spans":[{"traceId":"aaaa","spanId":"s1","name":"handle","startTimeUnixNano":"1000000000","endTimeUnixNano":"1004000000","status":{"statusCode":"STATUS_CODE_OK"},"attributes":[{"key":"code.function","value":{"stringValue":"handle"}}]}]}]}]}"#,
+    )
+    .unwrap();
+
+    let mut import = Command::cargo_bin("weave").unwrap();
+    import
+        .current_dir(root)
+        .args(["traces", "import", "traces.json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 matched to graph symbols"));
+
+    let mut latency = Command::cargo_bin("weave").unwrap();
+    latency
+        .current_dir(root)
+        .args(["query", "latency(handle)"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 span(s)").and(predicate::str::contains("p50 400")));
+
+    // A full reindex writes a fresh database; the span must ride along.
+    let mut reindex = Command::cargo_bin("weave").unwrap();
+    reindex.current_dir(root).arg("index").assert().success();
+    let mut latency_after = Command::cargo_bin("weave").unwrap();
+    latency_after
+        .current_dir(root)
+        .args(["query", "latency(handle)"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("p50 400"));
 }

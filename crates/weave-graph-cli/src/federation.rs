@@ -25,19 +25,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use weave_graph_core::federation::{composite_key, tarjan_scc};
-use weave_graph_core::{Node, Storage};
+use weave_graph_core::{Edge, Node, Storage};
 use weave_graph_parse::{Language, ParsedFile, ProjectIndex, contract, moniker};
+use weave_graph_store_sqlite::SqliteStorage;
 
 use crate::discover_files;
 use crate::index::parse_all;
 use crate::open_storage_for_read;
 
-struct RepoGraph {
-    label: String,
-    nodes: Vec<Node>,
+pub(crate) struct RepoGraph {
+    pub(crate) label: String,
+    pub(crate) nodes: Vec<Node>,
     edges: Vec<(u32, u32)>,
-    project_index: ProjectIndex,
-    parsed_files: Vec<(PathBuf, ParsedFile)>,
+    pub(crate) project_index: ProjectIndex,
+    pub(crate) parsed_files: Vec<(PathBuf, ParsedFile)>,
 }
 
 fn repo_label(repo_root: &Path) -> String {
@@ -49,7 +50,7 @@ fn repo_label(repo_root: &Path) -> String {
         .unwrap_or_else(|| repo_root.to_string_lossy().to_string())
 }
 
-fn load_repo(root: &Path) -> Result<RepoGraph, Box<dyn std::error::Error>> {
+pub(crate) fn load_repo(root: &Path) -> Result<RepoGraph, Box<dyn std::error::Error>> {
     let (storage, _db_path) = open_storage_for_read(root)?;
     let nodes = storage.all_nodes()?;
     let edges = storage
@@ -86,12 +87,18 @@ pub(crate) fn cmd_link(repo_a: &Path, repo_b: &Path) -> Result<(), Box<dyn std::
     let mut composite_ids: HashMap<(u8, u32), u32> = HashMap::new();
     let mut moniker_ids: HashMap<(u8, String), u32> = HashMap::new();
     let mut composite_keys: Vec<String> = Vec::new();
+    let mut composite_nodes: Vec<Node> = Vec::new();
     for (r, graph) in repos.iter().enumerate() {
         for node in &graph.nodes {
             let idx = composite_keys.len() as u32;
             composite_ids.insert((r as u8, node.id), idx);
             moniker_ids.insert((r as u8, moniker::build(&node.path, &node.symbol)), idx);
             composite_keys.push(composite_key(&graph.label, &node.path, &node.symbol));
+            composite_nodes.push(Node {
+                id: idx,
+                repo_id: graph.label.clone(),
+                ..node.clone()
+            });
         }
     }
 
@@ -109,9 +116,10 @@ pub(crate) fn cmd_link(repo_a: &Path, repo_b: &Path) -> Result<(), Box<dyn std::
         }
     }
 
+    let local_edges = composite_edges.clone();
     let cross_repo_edges = resolve_cross_repo_edges(&a, &b, &moniker_ids);
     let cross_repo_count = cross_repo_edges.len();
-    composite_edges.extend(cross_repo_edges);
+    composite_edges.extend(cross_repo_edges.iter().copied());
 
     let all_ids: Vec<u32> = (0..composite_keys.len() as u32).collect();
     let cycles: Vec<Vec<u32>> = tarjan_scc(&all_ids, &composite_edges)
@@ -144,6 +152,168 @@ pub(crate) fn cmd_link(repo_a: &Path, repo_b: &Path) -> Result<(), Box<dyn std::
         "Recorded contract expectations: {} = {}, {} = {}",
         a.label, hash_a, b.label, hash_b
     );
+
+    // M2.1: Auto-append `repo_b` to `repo_a`'s config so `weave link` works seamlessly later.
+    let config_a = repo_a.join(".weave").join("config.toml");
+    crate::config::add_linked_repo(&config_a, repo_b)?;
+    let config_b = repo_b.join(".weave").join("config.toml");
+    crate::config::add_linked_repo(&config_b, repo_a)?;
+
+    // impl.md tracked gap: the composite graph used to be built, reported,
+    // and thrown away — `weave query-federated` needs it to still exist
+    // after this process exits. Persisted symmetrically so either side can
+    // query without caring which repo actually ran `weave link`.
+    persist_composite_graph(
+        repo_a,
+        &b.label,
+        &composite_nodes,
+        &local_edges,
+        &cross_repo_edges,
+    )?;
+    persist_composite_graph(
+        repo_b,
+        &a.label,
+        &composite_nodes,
+        &local_edges,
+        &cross_repo_edges,
+    )?;
+    println!(
+        "Persisted federated graph ({} <-> {}); query it with `weave query-federated`.",
+        a.label, b.label
+    );
+
+    Ok(())
+}
+
+/// Writes the composite graph to `.weave/federation/<partner_label>.db` so
+/// `weave query-federated` can reload it later — the same crash-safe
+/// stage-then-rename `weave index` already uses for `graph.db`
+/// (`AGENTS.md` Invariant #2).
+fn persist_composite_graph(
+    repo_dir: &Path,
+    partner_label: &str,
+    nodes: &[Node],
+    local_edges: &[(u32, u32)],
+    cross_repo_edges: &[(u32, u32)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let dir = repo_dir.join(".weave").join("federation");
+    fs::create_dir_all(&dir)?;
+    let active_db = dir.join(format!("{partner_label}.db"));
+    let rebuild_db = dir.join(format!("{partner_label}.db.rebuild"));
+    if rebuild_db.exists() {
+        fs::remove_file(&rebuild_db)?;
+    }
+    let mut storage = SqliteStorage::open(&rebuild_db)?;
+    storage.begin_bulk_write()?;
+    // `upsert_node` always assigns its own autoincrement id (it ignores
+    // `Node::id` entirely), so the edges below — built against
+    // composite-vector positions — must be translated through this map.
+    let mut db_id = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        db_id.push(storage.upsert_node(node)?);
+    }
+    for &(src, tgt) in local_edges {
+        storage.upsert_edge(&Edge {
+            id: 0,
+            source_id: db_id[src as usize],
+            target_id: db_id[tgt as usize],
+            kind: "LOCAL".to_string(),
+            weight: 1.0,
+        })?;
+    }
+    for &(src, tgt) in cross_repo_edges {
+        storage.upsert_edge(&Edge {
+            id: 0,
+            source_id: db_id[src as usize],
+            target_id: db_id[tgt as usize],
+            kind: "CROSS_REPO".to_string(),
+            weight: 1.0,
+        })?;
+    }
+    storage.commit_bulk_write()?;
+    storage.checkpoint_wal()?;
+    drop(storage);
+    fs::rename(&rebuild_db, &active_db)?;
+    Ok(())
+}
+
+/// Locates and opens the composite graph `weave link` persisted for this
+/// pair (`persist_composite_graph`) — shared by every federated-graph
+/// reader (`query-federated`, `report-federated`) so "no federated graph
+/// yet" always produces the same clear error naming the fix.
+fn open_federated_storage(
+    repo_a: &Path,
+    repo_b: &Path,
+) -> Result<(SqliteStorage, PathBuf), Box<dyn std::error::Error>> {
+    let partner_label = repo_label(repo_b);
+    let db_path = repo_a
+        .join(".weave")
+        .join("federation")
+        .join(format!("{partner_label}.db"));
+    if !db_path.exists() {
+        return Err(format!(
+            "No federated graph at {} — run `weave link {} {}` first.",
+            db_path.display(),
+            repo_a.display(),
+            repo_b.display()
+        )
+        .into());
+    }
+    let storage = SqliteStorage::open_read_only(&db_path)?;
+    Ok((storage, db_path))
+}
+
+/// `weave query-federated <repo_a> <repo_b> "<expr>"`: runs the same
+/// deterministic query language `weave query` uses (`query::run`), against
+/// the composite graph `weave link` persisted for this pair. No RBAC
+/// masking yet — a federated query spans two repos' policies, which is a
+/// real gap, not an oversight; single-repo `weave query` is unaffected.
+pub(crate) fn cmd_query_federated(
+    repo_a: &Path,
+    repo_b: &Path,
+    expression: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (storage, _db_path) = open_federated_storage(repo_a, repo_b)?;
+    match crate::query::run(&storage, expression, None) {
+        Ok(text) => {
+            println!("{text}");
+            Ok(())
+        }
+        Err(message) => Err(message.into()),
+    }
+}
+
+/// `weave report-federated <repo_a> <repo_b>` — `hub-canvas` v1
+/// (`docs/hub_enhancement_external.md` §3.2's "unified `.canvas`
+/// architecture maps"). Reuses `report::generate` exactly as `weave
+/// report` calls it, just pointed at the persisted composite graph
+/// instead of a single repo's `graph.db`. `report.rs`'s LOD 0 canvas
+/// already groups nodes by `Node::repo_id` — its own comment notes that
+/// today this is "always exactly one ... since cross-repo federation
+/// isn't built yet". Composite nodes carry each repo's real label in that
+/// field (`cmd_link`), so this one call turns LOD 0 into the multi-repo
+/// root canvas the design doc asks for: zero new rendering code, zero new
+/// clustering code (M1.8/M2.9's Louvain + 200-node budget apply
+/// unchanged, now over the composite file-dependency graph). No RBAC
+/// masking yet, same stated gap as `query-federated`.
+pub(crate) fn cmd_report_federated(
+    repo_a: &Path,
+    repo_b: &Path,
+    out_dir: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (storage, db_path) = open_federated_storage(repo_a, repo_b)?;
+    let partner_label = repo_label(repo_b);
+    let out_dir = out_dir.map(Path::to_path_buf).unwrap_or_else(|| {
+        repo_a
+            .join(".weave")
+            .join("federation-report")
+            .join(&partner_label)
+    });
+    let paths = crate::report::generate(repo_a, &out_dir, &db_path, &storage, None, None)?;
+    println!("Wrote {}", paths.report_md.display());
+    for canvas in &paths.canvas_files {
+        println!("Wrote {}", canvas.display());
+    }
     Ok(())
 }
 

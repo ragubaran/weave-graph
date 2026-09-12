@@ -9,7 +9,7 @@ use std::path::Path;
 
 use weave_graph_core::notes::{EPHEMERAL_TTL_SECS, hash_span};
 use weave_graph_core::{NodeId, Note, NoteTier, Storage, StorageError};
-use weave_graph_parse::{ParsedFile, moniker};
+use weave_graph_parse::moniker;
 use weave_graph_store_sqlite::SqliteStorage;
 
 fn now_secs() -> i64 {
@@ -116,18 +116,19 @@ pub(crate) fn cmd_note_list(root: &Path) -> Result<(), Box<dyn std::error::Error
 
 /// Moniker → the symbol's current `(line_start, line_end)`, derived from
 /// the files `parse_all` already parsed — no second parse pass.
-fn moniker_span_map(
-    root: &Path,
-    parsed_files: &[(std::path::PathBuf, ParsedFile)],
-) -> HashMap<String, (u32, u32)> {
+fn moniker_span_map(root: &Path, files: &[std::path::PathBuf]) -> HashMap<String, (u32, u32)> {
     let mut spans = HashMap::new();
-    for (path, parsed) in parsed_files {
-        let rel = crate::index::rel_path(root, path);
-        for symbol in &parsed.symbols {
-            spans.insert(
-                moniker::build(&rel, &symbol.symbol),
-                (symbol.line_start, symbol.line_end),
-            );
+    for path in files {
+        if let Ok(source) = std::fs::read_to_string(path) {
+            let rel = crate::index::rel_path(root, path);
+            if let Some(Ok(parsed)) = weave_graph_parse::parse_file(Path::new(&rel), &source) {
+                for symbol in &parsed.symbols {
+                    spans.insert(
+                        weave_graph_parse::moniker::build(&rel, &symbol.symbol),
+                        (symbol.line_start, symbol.line_end),
+                    );
+                }
+            }
         }
     }
     spans
@@ -156,13 +157,13 @@ fn file_source(root: &Path, file: &str, cache: &mut HashMap<String, String>) -> 
 pub(crate) fn reattach_and_prune(
     storage: &SqliteStorage,
     root: &Path,
-    parsed_files: &[(std::path::PathBuf, ParsedFile)],
+    files: &[std::path::PathBuf],
     moniker_to_id: &HashMap<String, NodeId>,
 ) -> Result<(), StorageError> {
     let now = now_secs();
     let notes = storage.all_notes()?;
     if !notes.is_empty() {
-        let spans = moniker_span_map(root, parsed_files);
+        let spans = moniker_span_map(root, files);
         let mut sources: HashMap<String, String> = HashMap::new();
 
         for note in &notes {
@@ -195,12 +196,12 @@ pub(crate) fn carry_over_and_prune(
     new_storage: &SqliteStorage,
     old_db: &Path,
     root: &Path,
-    parsed_files: &[(std::path::PathBuf, ParsedFile)],
+    files: &[std::path::PathBuf],
     moniker_to_id: &HashMap<String, NodeId>,
 ) -> Result<(), StorageError> {
     let old_storage = SqliteStorage::open(old_db)?;
     let notes = old_storage.all_notes()?;
-    let spans = moniker_span_map(root, parsed_files);
+    let spans = moniker_span_map(root, files);
     let mut sources: HashMap<String, String> = HashMap::new();
 
     for note in &notes {

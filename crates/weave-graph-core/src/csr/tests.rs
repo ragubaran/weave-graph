@@ -201,3 +201,53 @@ fn fake_storage_upsert_edge_is_a_write_stub_this_test_double_never_needs() {
 fn fake_storage_query_path_is_a_stub_csr_graph_never_calls() {
     let _ = gapped_chain().query_path(1, 2);
 }
+
+#[test]
+fn from_nodes_and_edges_reconstructs_identical_csr_structure() {
+    let nodes = vec![10, 20, 30];
+    let edges = vec![(10, 20, 1.0), (20, 30, 2.0), (10, 999, 1.0)];
+    let graph = CsrGraph::from_nodes_and_edges(&nodes, &edges).unwrap();
+    assert_eq!(graph.node_count(), 3);
+    assert_eq!(graph.edge_count(), 2);
+    assert_eq!(graph.outbound(10), vec![20]);
+    assert_eq!(graph.query_path(10, 30), Some(vec![10, 20, 30]));
+}
+
+#[test]
+fn from_nodes_and_edges_dedups_and_takes_max_weight() {
+    let nodes = vec![1, 2];
+    let edges = vec![(1, 2, 1.0), (1, 2, 5.0)];
+    let graph = CsrGraph::from_nodes_and_edges(&nodes, &edges).unwrap();
+    assert_eq!(graph.edge_count(), 1);
+    assert_eq!(graph.outbound(1), vec![2]);
+}
+
+#[test]
+fn empty_and_default_graphs_have_zero_size() {
+    let empty = CsrGraph::empty();
+    assert_eq!(empty.node_count(), 0);
+    assert_eq!(empty.edge_count(), 0);
+    assert!(empty.outbound(1).is_empty());
+    assert_eq!(empty.id_of_index(0), None);
+    assert!(empty.reachable_nodes(1, 1).is_empty());
+
+    let def = CsrGraph::default();
+    assert_eq!(def.node_count(), 0);
+}
+
+#[test]
+fn id_of_index_and_reachable_nodes_map_correctly() {
+    let nodes = vec![100, 200, 300];
+    let edges = vec![(100, 200, 1.0), (200, 300, 1.0)];
+    let graph = CsrGraph::from_nodes_and_edges(&nodes, &edges).unwrap();
+
+    assert_eq!(graph.id_of_index(0), Some(100));
+    assert_eq!(graph.id_of_index(1), Some(200));
+    assert_eq!(graph.id_of_index(999), None);
+
+    let reachable = graph.reachable_nodes(100, 1);
+    assert_eq!(reachable.len(), 2);
+    assert!(reachable.contains(&100));
+    assert!(reachable.contains(&200));
+    assert!(!reachable.contains(&300));
+}

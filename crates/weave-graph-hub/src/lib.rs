@@ -15,9 +15,13 @@
 //! dependencies.
 
 pub mod client;
+#[cfg(feature = "hub-provenance")]
+pub mod provenance;
 pub mod registry;
 pub mod server;
 
 pub use client::{HubClient, HubError, PullOutcome, PushOutcome};
+#[cfg(feature = "hub-provenance")]
+pub use provenance::{MockSnapshotProvenanceVerifier, ProvenanceError, SnapshotProvenanceVerifier};
 pub use registry::{PullResult, PushDecision, Registry, RegistryConfig};
 pub use server::RegistryServer;

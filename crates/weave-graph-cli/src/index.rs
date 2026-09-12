@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use rayon::prelude::*;
 
 use weave_graph_core::{Edge, Node, NodeId, Storage, StorageError};
 use weave_graph_parse::{ParsedFile, ProjectIndex, moniker, parse_file};
@@ -39,12 +41,66 @@ pub(crate) fn rel_path(root: &Path, path: &Path) -> String {
 /// (`path#qualified.symbol`) are built from whatever path is passed here,
 /// and `full_moniker_map` reconstructs those same monikers later from the
 /// relative `Node.path` column — an absolute path here would never match.
+pub(crate) fn build_project_index(root: &Path, files: &[PathBuf]) -> ProjectIndex {
+    let mut project_index = ProjectIndex::new();
+    let _ = parse_files_bounded(root, files, |_rel, parsed| {
+        project_index.add_file(parsed);
+        Ok(())
+    });
+    project_index
+}
+
+/// Files parsed concurrently — the parallel-parse bound (L10, `plan.md`
+/// §1.2a). Each in-flight `ParsedFile` is KBs, so the worst-case working
+/// set stays orders of magnitude under Invariant 4's 80 MB ceiling: the
+/// streaming property PERF-06 demanded, kept by construction, not by hope.
+const PARSE_CHUNK: usize = 32;
+
+/// The parse stage is the *only* parallel stage: chunks of files are
+/// parsed across the rayon pool, then folded strictly serially into the
+/// caller's closure — node/edge writes stay funnel-shaped through the one
+/// SQLite connection (L10's single-writer constraint). A parse error or
+/// unparseable file is reported and skipped, exactly as the sequential
+/// loop always behaved.
+fn parse_files_bounded(
+    root: &Path,
+    files: &[PathBuf],
+    mut fold: impl FnMut(&str, &ParsedFile) -> Result<(), StorageError>,
+) -> Result<(), StorageError> {
+    for batch in files.chunks(PARSE_CHUNK) {
+        let parsed: Vec<(String, ParsedFile)> = batch
+            .par_iter()
+            .filter_map(|file_path| {
+                let source = fs::read_to_string(file_path).ok()?;
+                let rel = rel_path(root, file_path);
+                match parse_file(Path::new(&rel), &source) {
+                    Some(Ok(parsed)) => Some((rel, parsed)),
+                    Some(Err(err)) => {
+                        eprintln!("skipping {}: {err}", file_path.display());
+                        None
+                    }
+                    None => None,
+                }
+            })
+            .collect();
+        for (rel, parsed) in &parsed {
+            fold(rel, parsed)?;
+        }
+    }
+    Ok(())
+}
+
+// Parses all files in memory for contract hashing or federated queries
+// where global cross-repo AST inspection is explicitly requested. Its only
+// callers are the `federation`-feature modules, so the function is
+// feature-gated to keep the default build's dead-code lint clean.
+#[cfg(feature = "federation")]
 pub(crate) fn parse_all(
     root: &Path,
     files: &[PathBuf],
 ) -> (ProjectIndex, Vec<(PathBuf, ParsedFile)>) {
     let mut project_index = ProjectIndex::new();
-    let mut parsed_files = Vec::with_capacity(files.len());
+    let mut parsed_files = Vec::new();
     for file_path in files {
         if let Ok(source) = fs::read_to_string(file_path) {
             let rel = rel_path(root, file_path);
@@ -64,16 +120,15 @@ pub(crate) fn parse_all(
 fn upsert_all_nodes(
     storage: &mut SqliteStorage,
     root: &Path,
-    parsed_files: &[(PathBuf, ParsedFile)],
+    files: &[PathBuf],
 ) -> Result<usize, StorageError> {
-    let mut total_symbols = 0;
-    for (path, parsed) in parsed_files {
-        let rel = rel_path(root, path);
+    let mut total_symbols = 0usize;
+    parse_files_bounded(root, files, |rel, parsed| {
         for symbol in &parsed.symbols {
             let node = Node {
                 id: 0,
                 repo_id: "local".to_string(),
-                path: rel.clone(),
+                path: rel.to_string(),
                 symbol: symbol.symbol.clone(),
                 kind: symbol.kind.as_str().to_string(),
                 line_start: symbol.line_start,
@@ -83,7 +138,8 @@ fn upsert_all_nodes(
             storage.upsert_node(&node)?;
             total_symbols += 1;
         }
-    }
+        Ok(())
+    })?;
     Ok(total_symbols)
 }
 
@@ -100,12 +156,18 @@ fn full_moniker_map(storage: &SqliteStorage) -> Result<HashMap<String, NodeId>, 
 
 fn upsert_all_edges(
     storage: &mut SqliteStorage,
+    root: &Path,
     project_index: &ProjectIndex,
-    parsed_files: &[(PathBuf, ParsedFile)],
+    files: &[PathBuf],
     moniker_to_id: &HashMap<String, NodeId>,
 ) -> Result<usize, StorageError> {
-    let mut total_edges = 0;
-    for (_path, parsed) in parsed_files {
+    // `upsert_edge`'s natural key is (source_id, target_id, kind) — a repeat
+    // resolve (the same call site re-parsed, or CALLS_DYNAMIC fanning out to
+    // a candidate already reached another way) upserts the same row rather
+    // than adding one. Dedup here too, so the reported count matches what's
+    // actually stored instead of counting write attempts.
+    let mut distinct_edges = HashSet::new();
+    parse_files_bounded(root, files, |_rel, parsed| {
         for edge in project_index.resolve(parsed) {
             if let (Some(&src_id), Some(&tgt_id)) = (
                 moniker_to_id.get(&edge.source_moniker),
@@ -115,14 +177,45 @@ fn upsert_all_edges(
                     id: 0,
                     source_id: src_id,
                     target_id: tgt_id,
-                    kind: edge.kind,
+                    kind: edge.kind.clone(),
                     weight: 1.0,
                 })?;
-                total_edges += 1;
+                distinct_edges.insert((src_id, tgt_id, edge.kind));
             }
         }
-    }
-    Ok(total_edges)
+        Ok(())
+    })?;
+    Ok(distinct_edges.len())
+}
+
+/// AST-bounded chunk text per node (`impl.md` M3.7 Tier 2): the node's own
+/// `line_start..=line_end` source span, reusing spans the parser already
+/// computed rather than a second span-finder. Falls back to the bare
+/// symbol name if the source file can't be read or the span is empty —
+/// never fails the reindex over a missing chunk.
+#[cfg(feature = "vector")]
+fn build_vector_chunks(
+    root: &Path,
+    storage: &SqliteStorage,
+) -> Result<Vec<(NodeId, String)>, StorageError> {
+    let mut file_lines: HashMap<String, Vec<String>> = HashMap::new();
+    let mut chunks = Vec::new();
+    storage.for_each_node(&mut |node| {
+        let lines = file_lines.entry(node.path.clone()).or_insert_with(|| {
+            fs::read_to_string(root.join(&node.path))
+                .map(|s| s.lines().map(str::to_string).collect())
+                .unwrap_or_default()
+        });
+        let start = (node.line_start.saturating_sub(1)) as usize;
+        let end = (node.line_end as usize).min(lines.len());
+        let text = if start < end {
+            lines[start..end].join("\n")
+        } else {
+            node.symbol.clone()
+        };
+        chunks.push((node.id, text));
+    })?;
+    Ok(chunks)
 }
 
 /// Full rebuild: parse everything, write into a fresh `.rebuild` file, then
@@ -135,42 +228,84 @@ pub(crate) fn full_reindex(
     active_db: &Path,
     files: &[PathBuf],
 ) -> Result<IndexStats, Box<dyn std::error::Error>> {
-    let (project_index, parsed_files) = parse_all(root, files);
-
     let rebuild_db = weave_dir.join("graph.db.rebuild");
     if rebuild_db.exists() {
         fs::remove_file(&rebuild_db)?;
     }
     let mut storage = SqliteStorage::open(&rebuild_db)?;
     storage.begin_bulk_write()?;
-    let total_symbols = upsert_all_nodes(&mut storage, root, &parsed_files)?;
+
+    // Fused pass (was two passes): parse each file once, feeding both the
+    // `ProjectIndex` (edge resolution's symbol table) and the node upserts.
+    // The edges pass still needs its own parse — edge resolution needs the
+    // *complete* index, which only exists after every file is seen — so the
+    // floor is 2 parses/file, not 1. The `ParsedFile` is dropped per chunk;
+    // nothing accumulates (PERF-06's streaming constraint, now bounded by
+    // `PARSE_CHUNK` instead of one-at-a-time).
+    let mut project_index = ProjectIndex::new();
+    let mut total_symbols = 0usize;
+    parse_files_bounded(root, files, |rel, parsed| {
+        project_index.add_file(parsed);
+        for symbol in &parsed.symbols {
+            let node = Node {
+                id: 0,
+                repo_id: "local".to_string(),
+                path: rel.to_string(),
+                symbol: symbol.symbol.clone(),
+                kind: symbol.kind.as_str().to_string(),
+                line_start: symbol.line_start,
+                line_end: symbol.line_end,
+                signature: symbol.signature.clone(),
+            };
+            storage.upsert_node(&node)?;
+            total_symbols += 1;
+        }
+        Ok(())
+    })?;
+
     let moniker_to_id = full_moniker_map(&storage)?;
-    let total_edges =
-        upsert_all_edges(&mut storage, &project_index, &parsed_files, &moniker_to_id)?;
+    let total_edges = upsert_all_edges(&mut storage, root, &project_index, files, &moniker_to_id)?;
     #[cfg(feature = "docs")]
     {
         let parsed_md = crate::docs::parse_markdown_files(files);
         crate::docs::upsert_doc_nodes(&mut storage, root, &parsed_md)?;
         crate::docs::upsert_doc_edges(&mut storage, root, &parsed_md)?;
+        crate::docs::gc_orphaned_doc_topics(&storage)?;
     }
     #[cfg(feature = "notes")]
     {
         // Carry notes over from the old database the rebuild is replacing,
         // re-attaching by moniker (M2.10) — inside the same transaction.
-        crate::notes::carry_over_and_prune(
-            &storage,
-            active_db,
-            root,
-            &parsed_files,
-            &moniker_to_id,
+        crate::notes::carry_over_and_prune(&storage, active_db, root, files, &moniker_to_id)?;
+    }
+    #[cfg(feature = "otel")]
+    {
+        // Carry imported trace spans over too (M3.3) — they match nodes
+        // by symbol at query time, so a plain row copy suffices. A first
+        // index has no previous database to copy from.
+        if active_db.exists() {
+            crate::traces::carry_over(active_db, &storage)?;
+        }
+    }
+    #[cfg(feature = "fts")]
+    // Full rebuild from the just-written `nodes` table (M3.7 Tier 1) —
+    // `symbol_fts` is a derived index, never its own source of truth.
+    storage.rebuild_fts_index()?;
+    #[cfg(feature = "vector")]
+    {
+        let chunks = build_vector_chunks(root, &storage)?;
+        storage.rebuild_vector_index(
+            &weave_graph_core::embedding::MockEmbeddingProvider::new(),
+            &chunks,
         )?;
     }
     storage.commit_bulk_write()?;
+    storage.checkpoint_wal()?;
     drop(storage);
     fs::rename(&rebuild_db, active_db)?;
 
     Ok(IndexStats {
-        files: parsed_files.len(),
+        files: files.len(),
         symbols: total_symbols,
         edges: total_edges,
     })
@@ -189,7 +324,7 @@ pub(crate) fn incremental_reindex(
     files: &[PathBuf],
     changed: &[String],
 ) -> Result<IndexStats, Box<dyn std::error::Error>> {
-    let (project_index, parsed_files) = parse_all(root, files);
+    let project_index = build_project_index(root, files);
 
     let rebuild_db = weave_dir.join("graph.db.rebuild");
     if rebuild_db.exists() {
@@ -204,16 +339,15 @@ pub(crate) fn incremental_reindex(
         storage.purge_file_nodes("local", rel)?;
     }
 
-    let changed_parsed: Vec<(PathBuf, ParsedFile)> = parsed_files
+    let changed_files: Vec<PathBuf> = files
         .iter()
-        .filter(|(path, _)| changed.iter().any(|c| c == &rel_path(root, path)))
+        .filter(|path| changed.iter().any(|c| c == &rel_path(root, path)))
         .cloned()
         .collect();
-    upsert_all_nodes(&mut storage, root, &changed_parsed)?;
+    upsert_all_nodes(&mut storage, root, &changed_files)?;
 
     let moniker_to_id = full_moniker_map(&storage)?;
-    let total_edges =
-        upsert_all_edges(&mut storage, &project_index, &parsed_files, &moniker_to_id)?;
+    let total_edges = upsert_all_edges(&mut storage, root, &project_index, files, &moniker_to_id)?;
     #[cfg(feature = "docs")]
     {
         let all_parsed_md = crate::docs::parse_markdown_files(files);
@@ -224,6 +358,7 @@ pub(crate) fn incremental_reindex(
             .collect();
         crate::docs::upsert_doc_nodes(&mut storage, root, &changed_md)?;
         crate::docs::upsert_doc_edges(&mut storage, root, &all_parsed_md)?;
+        crate::docs::gc_orphaned_doc_topics(&storage)?;
     }
     #[cfg(feature = "notes")]
     {
@@ -231,7 +366,17 @@ pub(crate) fn incremental_reindex(
         // target_node_id dangling (no FK enforcement is enabled on this
         // connection); reattach_and_prune re-resolves by moniker below,
         // explicitly nulling out anything that no longer resolves (M2.10).
-        crate::notes::reattach_and_prune(&storage, root, &parsed_files, &moniker_to_id)?;
+        crate::notes::reattach_and_prune(&storage, root, files, &moniker_to_id)?;
+    }
+    #[cfg(feature = "fts")]
+    storage.rebuild_fts_index()?;
+    #[cfg(feature = "vector")]
+    {
+        let chunks = build_vector_chunks(root, &storage)?;
+        storage.rebuild_vector_index(
+            &weave_graph_core::embedding::MockEmbeddingProvider::new(),
+            &chunks,
+        )?;
     }
     storage.commit_bulk_write()?;
     let total_symbols = storage.all_nodes()?.len();
@@ -239,7 +384,7 @@ pub(crate) fn incremental_reindex(
     fs::rename(&rebuild_db, active_db)?;
 
     Ok(IndexStats {
-        files: parsed_files.len(),
+        files: files.len(),
         symbols: total_symbols,
         edges: total_edges,
     })

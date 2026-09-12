@@ -2,7 +2,9 @@ use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::Path;
 
-use weave_graph_core::{Edge, EdgeId, Node, NodeId, Note, NoteTier, Storage, StorageError};
+use weave_graph_core::{
+    Edge, EdgeId, Node, NodeId, Note, NoteTier, Storage, StorageError, TraceSpan,
+};
 
 use crate::schema::{migrate, schema_version};
 
@@ -22,6 +24,24 @@ fn note_from_row(row: &libsql::Row) -> libsql::Result<Note> {
         stale: row.get::<i64>(8)? != 0,
         expires_at: row.get(9)?,
         created_at: row.get(10)?,
+    })
+}
+
+const TRACE_SPAN_COLUMNS: &str = "trace_id, span_id, parent_span_id, service, name, symbol, \
+     path, start_us, duration_us, status_code";
+
+fn trace_span_from_row(row: &libsql::Row) -> libsql::Result<TraceSpan> {
+    Ok(TraceSpan {
+        trace_id: row.get(0)?,
+        span_id: row.get(1)?,
+        parent_span_id: row.get(2)?,
+        service: row.get(3)?,
+        name: row.get(4)?,
+        symbol: row.get(5)?,
+        path: row.get(6)?,
+        start_us: row.get(7)?,
+        duration_us: row.get(8)?,
+        status_code: row.get(9)?,
     })
 }
 
@@ -439,6 +459,57 @@ impl Storage for TursoStorage {
                 )
                 .await?;
             Ok(rows)
+        })
+    }
+
+    fn upsert_trace_span(&self, span: &TraceSpan) -> Result<(), StorageError> {
+        block_on(async {
+            self.conn
+                .execute(
+                    "INSERT INTO trace_spans (trace_id, span_id, parent_span_id, service, name, \
+                     symbol, path, start_us, duration_us, status_code)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                     ON CONFLICT(trace_id, span_id) DO UPDATE SET
+                         parent_span_id = excluded.parent_span_id,
+                         service = excluded.service,
+                         name = excluded.name,
+                         symbol = excluded.symbol,
+                         path = excluded.path,
+                         start_us = excluded.start_us,
+                         duration_us = excluded.duration_us,
+                         status_code = excluded.status_code",
+                    libsql::params![
+                        span.trace_id.as_str(),
+                        span.span_id.as_str(),
+                        span.parent_span_id.clone(),
+                        span.service.clone(),
+                        span.name.as_str(),
+                        span.symbol.clone(),
+                        span.path.clone(),
+                        span.start_us,
+                        span.duration_us,
+                        span.status_code.as_str(),
+                    ],
+                )
+                .await?;
+            Ok(())
+        })
+    }
+
+    fn all_trace_spans(&self) -> Result<Vec<TraceSpan>, StorageError> {
+        block_on(async {
+            let mut rows = self
+                .conn
+                .query(
+                    &format!("SELECT {TRACE_SPAN_COLUMNS} FROM trace_spans ORDER BY start_us, id"),
+                    (),
+                )
+                .await?;
+            let mut spans = Vec::new();
+            while let Some(row) = rows.next().await? {
+                spans.push(trace_span_from_row(&row)?);
+            }
+            Ok(spans)
         })
     }
 }

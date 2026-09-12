@@ -16,18 +16,21 @@ per-feature; see the [Release Notes](release-notes.md#quality-gates-this-release
 | [`watch`](#watch) | `--features watch` | **Done** |
 | `weave blast` | not required (base CLI) | **Done** |
 | [`viz`](#viz) | `--features viz` | **Done** |
-| [`hub`](#hub) | `--features hub` | **Done (client only)** |
+| [`hub`](#hub) | `--features hub` | **Done** (client + `weave-registry` server; provenance trait done, transport wiring pending) |
 | [`slm`](#slm) | `--features slm` | **Done** (deterministic scope; real-model latency pending downloaded weights) |
-| [`turso`](#turso) | `--features turso` | **Done** (library backend; not yet wired into CLI storage selection) |
+| [`turso`](#turso) | `--features turso` | **Done** (library backend; roadmap in progress) |
 | [`python`](#python) | `--features python` | **Done** (separate `pip install` wheel, native binary untouched) |
 | MCP live reload | not required (base MCP tier) | **Done** |
 | MCP token budgeting | not required (base MCP tier) | **Done** |
-| `rbac` | `--features rbac` | Not started (Phase 3) |
-| `otel` | `--features otel` | Not started (Phase 3) |
-| `policy-lint` | `--features policy-lint` | Not started (Phase 3) |
+| `rbac` | `--features rbac` | **Done** (query-layer masking, M3.0; SCIM directory server, M3.4) |
+| `otel` | `--features otel` | **Done** (OTLP JSON trace import + `latency()` query, M3.3) |
+| `policy-lint` | `--features policy-lint` | **Done** (YAML boundary lint + drift analytics, M3.2) |
+| `fts` | `--features fts` | **Done** (FTS5 + synonym BM25, `weave search`, M3.7 Tier 1) |
+| `vector` | `--features vector` | **Not started** (sqlite-vec + quantization, M3.7 Tier 2) |
+| `hub-provenance` | `--features hub-provenance` | **Trait boundary done** (M3.6; transport wiring pending) |
 
 Convenience bundles (`weave-graph-cli/Cargo.toml`): `team = [docs, federation]`,
-`custom = [team, hub, provenance]`.
+`custom = [team, hub, provenance, rbac, otel, policy-lint, fts, vector]`.
 
 ---
 
@@ -132,15 +135,22 @@ path-traversal refused.
 
 ## `hub`
 
-Client for an optional, **rare** self-hosted snapshot service: `weave sync
-pull` hydrates the graph for a commit (falling back to the hub's `latest`
-snapshot on request), `weave sync push` publishes the current snapshot
-(refuses off the default branch, retries once on a `409` conflict). This
-is the client side only — `weave-graph-hub` implements a small hand-rolled
-HTTP/1.1 client with zero new dependencies beyond the standard library;
-there is no bundled hub server in this repository. Most teams never need
-this feature — it exists for orgs wanting cross-machine warm starts
-without re-indexing from scratch on every checkout.
+Centralized snapshot registry and client sync: `weave sync pull` hydrates the
+graph for a commit (falling back to the hub's `latest` snapshot on request),
+`weave sync push` publishes the current snapshot (refuses off the default branch,
+retries once on a `409` conflict). Includes both the zero-dependency HTTP client
+and the lightweight `weave-registry` standalone server.
+
+### Hub Ecosystem & Provenance Status
+- **Lodestone Nexus Provenance (`hub-provenance`)**:
+  `SnapshotProvenanceVerifier` trait and reference implementation are done and
+  tested standalone.
+- **Transport Wiring**:
+  Not yet wired into `weave sync push/pull` — needs a registry-side storage
+  schema change (signature sidecar) to actually transmit it. Stated honestly,
+  not silently skipped.
+- **Unstarted Ecosystem Extensions**:
+  `hub-canvas`, `hub-webhooks`, and chunked upload: not started this pass.
 
 ## `slm`
 
@@ -193,14 +203,14 @@ Weave Graph links frontier coding models (Claude 3.7 Sonnet, GPT-4o, o3, Gemini 
 
 An alternate `Storage` backend on embedded libSQL, implementing the exact
 same trait as the default `rusqlite` backend (same schema, same
-migrations, same transaction discipline) — a from-scratch rewrite is not
-needed to add a second engine. Both backends can be compiled into the same
-binary at once (`--features turso` links `rusqlite` and libSQL together
-without conflict). Batch-insert throughput is currently ~15–25% slower
-than `rusqlite` on this workload (measured, not assumed), which is why it
-isn't the default. Not yet wired into the CLI's own storage selection —
-no `weave` command can choose it today; it exists as a library-level
-alternative for embedders.
+migrations, same transaction discipline).
+
+- **Normal Mode Alternative (`--features turso` / `vX.Y.Z-turso`)**:
+  Turso is **only available for normal mode** (no vector support), replacing
+  bundled SQLite with embedded libSQL ($11.5\text{MB}$ stripped release).
+- **SQLite Exclusivity for Default and Vector Modes**:
+  1. *Default Normal Mode (`vX.Y.Z`)* uses SQLite exclusively to keep the binary single-engine, ultra-small ($<6.8\text{MB}$), and zero-network.
+  2. *Vector Mode (`vX.Y.Z-vector`)* is SQLite-exclusive because Turso does not natively support `sqlite-vec` virtual tables yet.
 
 ## `python`
 

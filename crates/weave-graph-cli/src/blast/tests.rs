@@ -172,8 +172,153 @@ fn blast_json_format_is_parseable_and_carries_the_impacted_set() {
     assert!(symbols.contains(&"feature_caller"), "{parsed}");
 }
 
+/// Two changed files whose transitive reachability overlaps at one shared
+/// target — pins that unioning `RoaringBitmap`s across touched nodes
+/// (rather than the previous `HashSet<u32>::extend` per node) still
+/// produces the correct, deduped impacted set: both callers present,
+/// `shared` counted once despite being reached from both.
+#[test]
+fn blast_unions_reachability_across_multiple_touched_files_without_duplicates() {
+    let dir = init_repo();
+    fs::write(dir.path().join("shared.rs"), "pub fn shared() {}\n").unwrap();
+    fs::write(
+        dir.path().join("caller_a.rs"),
+        "fn caller_a() { shared(); }\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("caller_b.rs"),
+        "fn caller_b() { shared(); }\n",
+    )
+    .unwrap();
+    commit_all(dir.path(), "base");
+    git(dir.path(), &["checkout", "-q", "-b", "pr"]);
+    // Touch both caller files on the PR side — neither shared.rs.
+    fs::write(
+        dir.path().join("caller_a.rs"),
+        "fn caller_a() { shared(); }\n// pr change\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("caller_b.rs"),
+        "fn caller_b() { shared(); }\n// pr change\n",
+    )
+    .unwrap();
+    commit_all(dir.path(), "pr change");
+
+    let root = dir.path();
+    let weave_dir = root.join(".weave");
+    fs::create_dir_all(&weave_dir).unwrap();
+    let active_db = weave_dir.join("graph.db");
+    let files = ["shared.rs", "caller_a.rs", "caller_b.rs"]
+        .iter()
+        .map(|f| root.join(f))
+        .collect::<Vec<_>>();
+    crate::index::full_reindex(root, &weave_dir, &active_db, &files).unwrap();
+
+    let out_path = root.join("blast.json");
+    cmd_blast(root, "main", "json", Some(&out_path)).unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
+    let symbols: Vec<&str> = parsed["impacted_symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["symbol"].as_str().unwrap())
+        .collect();
+
+    assert!(symbols.contains(&"caller_a"), "{parsed}");
+    assert!(symbols.contains(&"caller_b"), "{parsed}");
+    assert_eq!(
+        symbols.iter().filter(|s| **s == "shared").count(),
+        1,
+        "shared is reachable from both touched callers — must appear exactly \
+         once in the union, not once per touched file: {parsed}"
+    );
+}
+
 #[test]
 fn blast_with_an_unknown_format_is_a_clear_error() {
     let fx = PrFixture::new();
     assert!(cmd_blast(fx.dir.path(), "main", "xml", None).is_err());
+}
+
+/// Editing only a private helper must never flag the exported-contract
+/// section — `check-contracts`' hash is exported-signatures-only, so a
+/// private-only diff genuinely cannot move it.
+#[test]
+fn blast_reports_no_exported_symbols_touched_when_only_a_private_fn_changes() {
+    let dir = init_repo();
+    fs::write(dir.path().join("internal.rs"), "fn helper() {}\n").unwrap();
+    commit_all(dir.path(), "base");
+    git(dir.path(), &["checkout", "-q", "-b", "pr"]);
+    fs::write(dir.path().join("internal.rs"), "fn helper() { /* pr */ }\n").unwrap();
+    commit_all(dir.path(), "pr change");
+
+    let root = dir.path();
+    let weave_dir = root.join(".weave");
+    fs::create_dir_all(&weave_dir).unwrap();
+    let active_db = weave_dir.join("graph.db");
+    let files = vec![root.join("internal.rs")];
+    crate::index::full_reindex(root, &weave_dir, &active_db, &files).unwrap();
+
+    let out_path = root.join("blast.json");
+    cmd_blast(root, "main", "json", Some(&out_path)).unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
+    assert_eq!(
+        parsed["exported_touched"].as_array().unwrap().len(),
+        0,
+        "{parsed}"
+    );
+
+    let md_path = root.join("blast.md");
+    cmd_blast(root, "main", "md", Some(&md_path)).unwrap();
+    let md = fs::read_to_string(&md_path).unwrap();
+    assert!(
+        md.contains("No exported/public symbols touched"),
+        "private-only diff must say so plainly: {md}"
+    );
+}
+
+/// Editing a `pub fn` surfaces it in both the markdown warning section and
+/// the JSON `exported_touched` array — the signal a reviewer (or a linked
+/// consumer re-running `weave check-contracts`) actually needs.
+#[test]
+fn blast_flags_a_directly_edited_pub_fn_as_exported_contract_surface_touched() {
+    let dir = init_repo();
+    fs::write(dir.path().join("api.rs"), "pub fn public_api() {}\n").unwrap();
+    commit_all(dir.path(), "base");
+    git(dir.path(), &["checkout", "-q", "-b", "pr"]);
+    fs::write(
+        dir.path().join("api.rs"),
+        "pub fn public_api(extra: u32) {}\n",
+    )
+    .unwrap();
+    commit_all(dir.path(), "pr change");
+
+    let root = dir.path();
+    let weave_dir = root.join(".weave");
+    fs::create_dir_all(&weave_dir).unwrap();
+    let active_db = weave_dir.join("graph.db");
+    let files = vec![root.join("api.rs")];
+    crate::index::full_reindex(root, &weave_dir, &active_db, &files).unwrap();
+
+    let out_path = root.join("blast.json");
+    cmd_blast(root, "main", "json", Some(&out_path)).unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
+    let exported: Vec<&str> = parsed["exported_touched"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["symbol"].as_str().unwrap())
+        .collect();
+    assert!(exported.contains(&"public_api"), "{parsed}");
+
+    let md_path = root.join("blast.md");
+    cmd_blast(root, "main", "md", Some(&md_path)).unwrap();
+    let md = fs::read_to_string(&md_path).unwrap();
+    assert!(md.contains("Exported contract surface touched"), "{md}");
+    assert!(md.contains("public_api"), "{md}");
 }

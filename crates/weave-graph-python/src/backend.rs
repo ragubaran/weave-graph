@@ -6,7 +6,7 @@
 
 use std::sync::Mutex;
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
@@ -38,7 +38,10 @@ impl WeaveGraph {
 
     /// One symbol's full record as a dict, or None if `id` is unknown.
     fn get_node<'py>(&self, py: Python<'py>, id: u32) -> PyResult<Option<Bound<'py, PyDict>>> {
-        let storage = self.storage.lock().unwrap();
+        let storage = self
+            .storage
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         let Some(node) = storage.get_node(id).map_err(py_err)? else {
             return Ok(None);
         };
@@ -56,7 +59,10 @@ impl WeaveGraph {
 
     /// Outbound edges from `id`, each `{source_id, target_id, kind, weight}`.
     fn get_edges<'py>(&self, py: Python<'py>, id: u32) -> PyResult<Vec<Bound<'py, PyDict>>> {
-        let storage = self.storage.lock().unwrap();
+        let storage = self
+            .storage
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         let edges: Vec<Edge> = storage.get_edges(id).map_err(py_err)?;
         let mut out = Vec::with_capacity(edges.len());
         for e in &edges {
@@ -73,7 +79,10 @@ impl WeaveGraph {
     /// Shortest BFS path between two node ids (inclusive of both
     /// endpoints), or None when unreachable.
     fn query_path(&self, from: u32, to: u32) -> PyResult<Option<Vec<u32>>> {
-        let storage = self.storage.lock().unwrap();
+        let storage = self
+            .storage
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         storage.query_path(from, to).map_err(py_err)
     }
 
@@ -81,7 +90,10 @@ impl WeaveGraph {
     /// outbound edges) — the blast-radius count the MCP tool reports,
     /// as a list of `[symbol, path]` pairs.
     fn impact_radius(&self, symbol: &str) -> PyResult<Vec<(String, String)>> {
-        let storage = self.storage.lock().unwrap();
+        let storage = self
+            .storage
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         let nodes = storage.all_nodes().map_err(py_err)?;
         let Some(root_id) = nodes.iter().find(|n| n.symbol == symbol).map(|n| n.id) else {
             return Err(PyValueError::new_err(format!("symbol not found: {symbol}")));
@@ -100,7 +112,10 @@ impl WeaveGraph {
     /// a list of `symbol (path:line)` strings, matching the MCP tool's
     /// rendered lines.
     fn trace_calls(&self, symbol: &str, depth: u32) -> PyResult<(Vec<String>, Vec<String>)> {
-        let storage = self.storage.lock().unwrap();
+        let storage = self
+            .storage
+            .lock()
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         let nodes = storage.all_nodes().map_err(py_err)?;
         let Some(root_id) = nodes.iter().find(|n| n.symbol == symbol).map(|n| n.id) else {
             return Err(PyValueError::new_err(format!("symbol not found: {symbol}")));

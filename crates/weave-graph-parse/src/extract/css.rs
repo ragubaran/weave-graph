@@ -182,5 +182,5 @@ fn push_symbol(
     moniker
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "lang-extended"))]
 mod tests;

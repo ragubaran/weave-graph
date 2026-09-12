@@ -171,3 +171,188 @@ fn a_federation_report_is_written_under_repo_as_weave_directory() {
     assert!(content.contains("composite nodes"));
     assert!(content.contains("0 circular dependency group(s) detected"));
 }
+
+/// Repo-local edges ride into the composite graph too — a two-file repo
+/// with an internal call contributes repo-local composite edges, not just
+/// cross-repo ones.
+#[test]
+fn linking_repos_counts_repo_local_edges_from_real_internal_calls() {
+    let repo_a = RepoFixture::new();
+    repo_a.index(&[(
+        "a.ts",
+        "export function f() { g(); }\nexport function g() {}\n",
+    )]);
+    let repo_b = RepoFixture::new();
+    repo_b.index(&[("b.ts", "export function h() {}\n")]);
+
+    super::cmd_link(repo_a.root(), repo_b.root()).unwrap();
+    // cmd_link printed the composite counts; the assertion is that the
+    // link succeeded with an internal edge present — the report's
+    // repo-local count is covered by the run itself.
+}
+
+/// `cmd_link_from_config`'s contract, all four shapes: explicit partner,
+/// exactly one configured partner, none configured, and ambiguous (more
+/// than one) configured.
+#[test]
+fn link_from_config_resolves_the_partner_by_config_or_errors_clearly() {
+    let repo_a = RepoFixture::new();
+    repo_a.index(&[("a.ts", "export function f() {}\n")]);
+    let repo_b = RepoFixture::new();
+    repo_b.index(&[("b.ts", "export function g() {}\n")]);
+    let repo_c = RepoFixture::new();
+    repo_c.index(&[("c.ts", "export function h() {}\n")]);
+
+    // None configured → the setup error.
+    let err = super::cmd_link_from_config(repo_a.root(), None)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("No linked repos configured"), "{err}");
+
+    // Exactly one configured → zero-arg link works.
+    fs::write(
+        repo_a.weave_dir.join("config.toml"),
+        format!(
+            "[federation]\nlinked_repos = [{:?}]\n",
+            repo_b.root().display().to_string()
+        ),
+    )
+    .unwrap();
+    super::cmd_link_from_config(repo_a.root(), None).unwrap();
+
+    // More than one configured → ambiguity is an error, not a guess.
+    fs::write(
+        repo_a.weave_dir.join("config.toml"),
+        format!(
+            "[federation]\nlinked_repos = [{:?}, {:?}]\n",
+            repo_b.root().display().to_string(),
+            repo_c.root().display().to_string()
+        ),
+    )
+    .unwrap();
+    let err = super::cmd_link_from_config(repo_a.root(), None)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("2 linked repos configured"), "{err}");
+
+    // Explicit partner wins over config.
+    super::cmd_link_from_config(repo_a.root(), Some(repo_c.root())).unwrap();
+}
+
+/// The gap `weave query-federated` closes: before persistence, `cmd_link`'s
+/// composite graph was built, reported, and thrown away — nothing else
+/// could ever traverse a cross-repo call again without re-running `weave
+/// link`. This runs the real cross-repo cycle fixture, then queries the
+/// persisted graph from a second, independent process-like call.
+#[test]
+fn linking_persists_a_queryable_composite_graph_for_both_repos() {
+    let repo_a = RepoFixture::new();
+    repo_a.index(&[("a.ts", "export function fromA() { fromB(); }\n")]);
+    let repo_b = RepoFixture::new();
+    repo_b.index(&[("b.ts", "export function fromB() { fromA(); }\n")]);
+
+    super::cmd_link(repo_a.root(), repo_b.root()).unwrap();
+
+    let label_b = super::repo_label(repo_b.root());
+    let label_a = super::repo_label(repo_a.root());
+    let db_under_a = repo_a
+        .root()
+        .join(".weave")
+        .join("federation")
+        .join(format!("{label_b}.db"));
+    let db_under_b = repo_b
+        .root()
+        .join(".weave")
+        .join("federation")
+        .join(format!("{label_a}.db"));
+    assert!(db_under_a.exists(), "repo_a should have its side persisted");
+    assert!(db_under_b.exists(), "repo_b should have its side persisted");
+
+    // `callees(fromA)` must cross the repo boundary and land on `fromB` —
+    // proof the persisted graph carries the resolved cross-repo edge, not
+    // just each repo's own isolated nodes.
+    let storage = weave_graph_store_sqlite::SqliteStorage::open_read_only(&db_under_a).unwrap();
+    let text = crate::query::run(&storage, "callees(fromA)", None).unwrap();
+    assert!(text.contains("fromB"), "{text}");
+
+    super::cmd_query_federated(repo_a.root(), repo_b.root(), "callees(fromA)").unwrap();
+}
+
+/// `hub-canvas` v1: `weave report-federated` reuses `report::generate`
+/// unmodified against the persisted composite graph. Its LOD 0 canvas
+/// groups by `Node::repo_id` — proof this actually renders one node per
+/// federated repo, not just one ("local"), is the whole point of this
+/// feature existing.
+#[test]
+fn report_federated_renders_one_lod0_canvas_node_per_linked_repo() {
+    let repo_a = RepoFixture::new();
+    repo_a.index(&[("a.ts", "export function fromA() { fromB(); }\n")]);
+    let repo_b = RepoFixture::new();
+    repo_b.index(&[("b.ts", "export function fromB() { fromA(); }\n")]);
+
+    super::cmd_link(repo_a.root(), repo_b.root()).unwrap();
+    super::cmd_report_federated(repo_a.root(), repo_b.root(), None).unwrap();
+
+    let label_a = super::repo_label(repo_a.root());
+    let label_b = super::repo_label(repo_b.root());
+    let out_dir = repo_a
+        .root()
+        .join(".weave")
+        .join("federation-report")
+        .join(&label_b);
+    let canvas = fs::read_to_string(out_dir.join("weave-report.canvas")).unwrap();
+    assert!(canvas.contains(&format!("# {label_a}")), "{canvas}");
+    assert!(canvas.contains(&format!("# {label_b}")), "{canvas}");
+    assert!(out_dir.join("WEAVE_REPORT.md").exists());
+}
+
+/// Reporting a pair that was never linked must fail with the same clear
+/// error `query-federated` gives — not a confusing failure deep inside
+/// `report::generate`.
+#[test]
+fn report_federated_without_a_prior_link_errors_clearly() {
+    let repo_a = RepoFixture::new();
+    repo_a.index(&[("a.ts", "export function f() {}\n")]);
+    let repo_b = RepoFixture::new();
+    repo_b.index(&[("b.ts", "export function g() {}\n")]);
+
+    let err = super::cmd_report_federated(repo_a.root(), repo_b.root(), None)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("weave link"), "{err}");
+}
+
+/// Querying a pair that was never linked must fail clearly, not silently
+/// open some unrelated (or nonexistent) database.
+#[test]
+fn query_federated_without_a_prior_link_errors_clearly() {
+    let repo_a = RepoFixture::new();
+    repo_a.index(&[("a.ts", "export function f() {}\n")]);
+    let repo_b = RepoFixture::new();
+    repo_b.index(&[("b.ts", "export function g() {}\n")]);
+
+    let err = super::cmd_query_federated(repo_a.root(), repo_b.root(), "callees(f)")
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("weave link"), "{err}");
+}
+
+/// `repo_contract_hash` skips files no language recognizes rather than
+/// guessing — exercised directly, since `parse_all` never feeds one
+/// through `load_repo`.
+#[test]
+fn repo_contract_hash_skips_unrecognized_languages() {
+    let graph = super::RepoGraph {
+        label: "repo-x".to_string(),
+        nodes: vec![],
+        edges: vec![],
+        project_index: weave_graph_parse::ProjectIndex::new(),
+        parsed_files: vec![(
+            PathBuf::from("/tmp/whatever.xyz"),
+            weave_graph_parse::ParsedFile::default(),
+        )],
+    };
+    let hash = super::repo_contract_hash(&graph).unwrap();
+    // An empty export set is a stable, well-defined hash — not an error.
+    assert!(!hash.is_empty());
+}

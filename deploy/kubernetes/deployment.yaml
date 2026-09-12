@@ -1,0 +1,80 @@
+# Kubernetes deployment. ONE replica on purpose:
+# the spool queue and blob store are local-disk state partitioned by
+# `repo_id` — scale by sharding repos across registry
+# instances, not by replicating one instance behind a Service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weave-registry
+  labels: { app: weave-registry }
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # the data volume is RWO; no rolling two-at-once
+  selector:
+    matchLabels: { app: weave-registry }
+  template:
+    metadata:
+      labels: { app: weave-registry }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: weave-registry
+          image: ghcr.io/ragu/weave-registry:latest
+          args:
+            - --bind
+            - 0.0.0.0:8080
+            - --data-dir
+            - /data
+            # Operator-calibrated starting points; tune to your own merge rates.
+            - --max-queue-depth-per-repo
+            - "1000"
+            - --max-pushes-per-minute-per-repo
+            - "600"
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { memory: "64Mi", cpu: "100m" }
+            limits: { memory: "512Mi" }
+          livenessProbe:
+            tcpSocket: { port: 8080 }
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: weave-registry-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: weave-registry-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: weave-registry
+  labels: { app: weave-registry }
+spec:
+  # Cluster-internal plaintext; TLS is terminated at the ingress.
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  selector:
+    app: weave-registry

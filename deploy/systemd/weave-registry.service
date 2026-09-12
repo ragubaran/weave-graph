@@ -1,0 +1,42 @@
+# Bare-metal/systemd deployment for `weave-registry`. Install the release
+# binary to /usr/local/bin, then:
+#   systemctl daemon-reload && systemctl enable --now weave-registry
+[Unit]
+Description=weave-graph Central Graph Registry
+Documentation=https://github.com/ragu/weave-graph
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Bare-metal has no container network boundary — bind loopback and put a
+# reverse proxy (nginx, same host or a sidecar) in front, same as the
+# docker-compose deployment does. Widen only behind your own firewall/VPC rules.
+ExecStart=/usr/local/bin/weave-registry \
+  --bind 127.0.0.1:8080 \
+  --data-dir /var/lib/weave-registry \
+  --max-queue-depth-per-repo 1000 \
+  --max-pushes-per-minute-per-repo 600
+Restart=on-failure
+RestartSec=5
+
+User=weave-registry
+Group=weave-registry
+StateDirectory=weave-registry
+
+# Hardening: the registry needs network + its state dir, nothing else.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

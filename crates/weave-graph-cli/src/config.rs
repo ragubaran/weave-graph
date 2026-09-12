@@ -58,14 +58,42 @@ pub(crate) fn read_linked_repos(config_path: &Path) -> Vec<PathBuf> {
     };
     get_dotted(&table, "federation.linked_repos")
         .and_then(|v| v.as_array())
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|v| v.as_str())
-                .map(PathBuf::from)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.as_str().map(PathBuf::from))
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Appends a repository path to `[federation] linked_repos` in `config.toml`,
+/// creating the file, section, or array if they don't already exist.
+#[cfg(feature = "federation")]
+pub(crate) fn add_linked_repo(
+    config_path: &Path,
+    repo: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let existing = fs::read_to_string(config_path).unwrap_or_default();
+    let mut table: toml::Table = existing.parse().unwrap_or_default();
+
+    let fed = table
+        .entry("federation")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    let fed_table = fed.as_table_mut().unwrap();
+
+    let linked = fed_table
+        .entry("linked_repos")
+        .or_insert_with(|| toml::Value::Array(Vec::new()));
+    let linked_arr = linked.as_array_mut().unwrap();
+
+    let repo_str = repo.to_string_lossy().to_string();
+    if !linked_arr.iter().any(|v| v.as_str() == Some(&repo_str)) {
+        linked_arr.push(toml::Value::String(repo_str));
+        let rendered = toml::to_string_pretty(&table)?;
+        fs::write(config_path, rendered)?;
+    }
+
+    Ok(())
 }
 
 /// `[rbac.users]` (`impl.md` M3.0): a static subject -> roles map, e.g.

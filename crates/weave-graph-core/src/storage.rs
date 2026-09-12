@@ -1,6 +1,7 @@
 use crate::error::StorageError;
 use crate::model::{Edge, Node, NodeId};
 use crate::notes::Note;
+use crate::trace::TraceSpan;
 
 /// Backend-agnostic persistence trait (`plan.md` §0.4, §1.1). No core logic
 /// references a concrete backend — `weave-graph-store-sqlite` is the
@@ -96,6 +97,21 @@ pub trait Storage {
     /// Opportunistic cleanup of expired ephemeral notes — piggybacks on
     /// the reindex's own bulk-write transaction, never a separate pass.
     fn delete_expired_notes(&self, now: i64) -> Result<u64, StorageError>;
+
+    /// Persist (or replace, by the `(trace_id, span_id)` natural key) one
+    /// imported span (M3.3). Defaulted to "unsupported" so minimal `Storage`
+    /// implementations (test mocks, benches) need no stub rows; the SQLite
+    /// and Turso backends override both.
+    fn upsert_trace_span(&self, _span: &TraceSpan) -> Result<(), StorageError> {
+        Err(StorageError::Backend(
+            "this storage backend does not support trace spans".to_string(),
+        ))
+    }
+
+    /// Every imported span, ordered by `(start_us, id)`.
+    fn all_trace_spans(&self) -> Result<Vec<TraceSpan>, StorageError> {
+        Ok(Vec::new())
+    }
 }
 
 #[cfg(test)]

@@ -5,6 +5,8 @@
 
 mod cluster;
 mod csr;
+#[cfg(feature = "vector")]
+pub mod embedding;
 mod error;
 #[cfg(feature = "federation")]
 pub mod federation;
@@ -12,12 +14,17 @@ pub mod indexer;
 mod model;
 pub mod modules;
 pub mod notes;
+#[cfg(feature = "policy-lint")]
+pub mod policy;
 #[cfg(feature = "provenance")]
 pub mod provenance;
 #[cfg(feature = "rbac")]
 pub mod rbac;
 pub mod schema;
 mod storage;
+#[cfg(feature = "fts")]
+pub mod synonym;
+pub mod trace;
 
 pub use cluster::{CommunityId, louvain_communities};
 pub use csr::CsrGraph;
@@ -26,3 +33,4 @@ pub use indexer::{ReindexConfig, should_bail_out};
 pub use model::{Edge, EdgeId, Node, NodeId};
 pub use notes::{Note, NoteTier};
 pub use storage::Storage;
+pub use trace::TraceSpan;

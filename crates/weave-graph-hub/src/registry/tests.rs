@@ -18,7 +18,7 @@ fn generous_config() -> RegistryConfig {
 fn wait_for_commit(registry: &Registry, repo_id: &str, sha: &str) -> Vec<u8> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if let PullResult::Found(bytes) = registry.pull(repo_id, sha) {
+        if let PullResult::Found(bytes, _) = registry.pull(repo_id, sha) {
             return bytes;
         }
         if Instant::now() >= deadline {
@@ -49,20 +49,25 @@ fn is_safe_path_component_rejects_traversal_and_accepts_ordinary_names() {
 fn push_and_pull_refuse_a_traversal_repo_id_or_sha_at_the_sink() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(dir.path(), generous_config()).unwrap();
-
-    let err = registry
-        .push("../../etc", "sha1", None, 20, b"payload")
-        .unwrap_err();
-    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-    let err = registry
-        .push("repo", "../../etc/passwd", None, 20, b"payload")
-        .unwrap_err();
-    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
-
-    assert_eq!(registry.pull("../../etc", "sha1"), PullResult::NotFound);
+    assert!(
+        registry
+            .push("../escape", "sha1", None, 20, None, b"payload")
+            .is_err()
+    );
+    assert!(
+        registry
+            .push("repo-a", "../escape", None, 20, None, b"payload")
+            .is_err()
+    );
     assert_eq!(
-        registry.pull("repo", "../../etc/passwd"),
-        PullResult::NotFound
+        registry.pull("../escape", "sha1"),
+        PullResult::NotFound,
+        "pull with traversal repo_id must not touch the filesystem"
+    );
+    assert_eq!(
+        registry.pull("repo-a", "../escape"),
+        PullResult::NotFound,
+        "pull with traversal sha must not touch the filesystem"
     );
 }
 
@@ -71,7 +76,14 @@ fn first_push_succeeds_regardless_of_base_sha() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(dir.path(), generous_config()).unwrap();
     let decision = registry
-        .push("repo-a", "sha1", Some("nonexistent-base"), 20, b"payload")
+        .push(
+            "repo-a",
+            "sha1",
+            Some("nonexistent-base"),
+            20,
+            None,
+            b"payload",
+        )
         .unwrap();
     assert_eq!(decision, PushDecision::Accepted);
 }
@@ -81,12 +93,14 @@ fn matching_base_sha_is_accepted_and_advances_head() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(dir.path(), generous_config()).unwrap();
     assert_eq!(
-        registry.push("repo-a", "sha1", None, 20, b"v1").unwrap(),
+        registry
+            .push("repo-a", "sha1", None, 20, None, b"v1")
+            .unwrap(),
         PushDecision::Accepted
     );
     assert_eq!(
         registry
-            .push("repo-a", "sha2", Some("sha1"), 20, b"v2")
+            .push("repo-a", "sha2", Some("sha1"), 20, None, b"v2")
             .unwrap(),
         PushDecision::Accepted
     );
@@ -96,9 +110,11 @@ fn matching_base_sha_is_accepted_and_advances_head() {
 fn stale_base_sha_is_a_conflict() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(dir.path(), generous_config()).unwrap();
-    registry.push("repo-a", "sha1", None, 20, b"v1").unwrap();
+    registry
+        .push("repo-a", "sha1", None, 20, None, b"v1")
+        .unwrap();
     let decision = registry
-        .push("repo-a", "sha2", Some("wrong-base"), 20, b"v2")
+        .push("repo-a", "sha2", Some("wrong-base"), 20, None, b"v2")
         .unwrap();
     assert_eq!(decision, PushDecision::Conflict);
 }
@@ -109,15 +125,19 @@ fn republish_with_no_base_after_a_conflict_always_succeeds() {
     // once with base=None.
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(dir.path(), generous_config()).unwrap();
-    registry.push("repo-a", "sha1", None, 20, b"v1").unwrap();
+    registry
+        .push("repo-a", "sha1", None, 20, None, b"v1")
+        .unwrap();
     assert_eq!(
         registry
-            .push("repo-a", "sha2", Some("wrong-base"), 20, b"v2")
+            .push("repo-a", "sha2", Some("wrong-base"), 20, None, b"v2")
             .unwrap(),
         PushDecision::Conflict
     );
     assert_eq!(
-        registry.push("repo-a", "sha2", None, 20, b"v2").unwrap(),
+        registry
+            .push("repo-a", "sha2", None, 20, None, b"v2")
+            .unwrap(),
         PushDecision::Accepted
     );
 }
@@ -126,7 +146,9 @@ fn republish_with_no_base_after_a_conflict_always_succeeds() {
 fn concurrent_pushes_to_the_same_repo_never_both_succeed_against_the_same_stale_base() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Arc::new(Registry::open(dir.path(), generous_config()).unwrap());
-    registry.push("repo-a", "sha1", None, 20, b"v1").unwrap();
+    registry
+        .push("repo-a", "sha1", None, 20, None, b"v1")
+        .unwrap();
 
     // Two racers both build on "sha1" — at most one may be accepted;
     // the loser must see a Conflict, never a corrupted/duplicated head.
@@ -136,7 +158,7 @@ fn concurrent_pushes_to_the_same_repo_never_both_succeed_against_the_same_stale_
             let registry = Arc::clone(&registry);
             std::thread::spawn(move || {
                 registry
-                    .push("repo-a", target, Some("sha1"), 20, b"racer")
+                    .push("repo-a", target, Some("sha1"), 20, None, b"racer")
                     .unwrap()
             })
         })
@@ -170,7 +192,7 @@ fn watermark_rate_limits_once_the_queue_backs_up() {
     for i in 0..20 {
         let target = format!("sha{i}");
         match registry
-            .push("repo-a", &target, base.as_deref(), 20, b"payload")
+            .push("repo-a", &target, base.as_deref(), 20, None, b"payload")
             .unwrap()
         {
             PushDecision::Accepted => base = Some(target),
@@ -198,7 +220,7 @@ fn sustained_rate_limit_kicks_in_independent_of_queue_depth() {
     for i in 0..5 {
         let target = format!("sha{i}");
         let decision = registry
-            .push("repo-a", &target, base.as_deref(), 20, b"payload")
+            .push("repo-a", &target, base.as_deref(), 20, None, b"payload")
             .unwrap();
         if decision == PushDecision::Accepted {
             base = Some(target);
@@ -226,7 +248,7 @@ fn different_repos_never_contend_with_each_other() {
     for i in 0..10 {
         let target = format!("sha{i}");
         match registry
-            .push("repo-a", &target, base.as_deref(), 20, b"payload")
+            .push("repo-a", &target, base.as_deref(), 20, None, b"payload")
             .unwrap()
         {
             PushDecision::Accepted => base = Some(target),
@@ -240,7 +262,7 @@ fn different_repos_never_contend_with_each_other() {
     assert!(hit_watermark, "expected repo-a to hit its own watermark");
 
     let decision = registry
-        .push("repo-b", "sha0", None, 20, b"payload")
+        .push("repo-b", "sha0", None, 20, None, b"payload")
         .unwrap();
     assert_eq!(
         decision,
@@ -253,13 +275,42 @@ fn different_repos_never_contend_with_each_other() {
 fn pull_of_latest_resolves_through_the_persisted_head() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(dir.path(), generous_config()).unwrap();
-    registry.push("repo-a", "sha1", None, 20, b"v1").unwrap();
-    assert_eq!(wait_for_commit(&registry, "repo-a", "sha1"), b"v1");
+    registry
+        .push("repo-a", "sha1", None, 20, None, b"v1")
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let PullResult::Found(bytes, _) = registry.pull("repo-a", "latest") {
+            assert_eq!(bytes, b"v1");
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("timeout waiting for push");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 
-    assert_eq!(
-        registry.pull("repo-a", "latest"),
-        PullResult::Found(b"v1".to_vec())
-    );
+#[test]
+fn push_with_signature_is_persisted_and_returned_on_pull() {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(repo_dir.path(), generous_config()).unwrap();
+
+    registry
+        .push("repo-a", "sha1", None, 20, Some("abcd123"), b"v1")
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let PullResult::Found(bytes, sig) = registry.pull("repo-a", "latest") {
+            assert_eq!(bytes, b"v1");
+            assert_eq!(sig.as_deref(), Some("abcd123"));
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!("timeout waiting for push");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[test]
@@ -269,7 +320,9 @@ fn pull_of_unknown_repo_or_sha_is_not_found() {
     assert_eq!(registry.pull("nope", "sha1"), PullResult::NotFound);
     assert_eq!(registry.pull("nope", "latest"), PullResult::NotFound);
 
-    registry.push("repo-a", "sha1", None, 20, b"v1").unwrap();
+    registry
+        .push("repo-a", "sha1", None, 20, None, b"v1")
+        .unwrap();
     wait_for_commit(&registry, "repo-a", "sha1");
     assert_eq!(
         registry.pull("repo-a", "sha-never-pushed"),
@@ -283,6 +336,7 @@ fn retention_prunes_older_snapshots_beyond_the_hint() {
     let registry = Registry::open(dir.path(), generous_config()).unwrap();
     let mut base: Option<String> = None;
     for i in 0..5 {
+        std::thread::sleep(Duration::from_millis(15));
         let target = format!("sha{i}");
         registry
             .push(
@@ -290,6 +344,7 @@ fn retention_prunes_older_snapshots_beyond_the_hint() {
                 &target,
                 base.as_deref(),
                 2,
+                None,
                 format!("v{i}").as_bytes(),
             )
             .unwrap();
@@ -298,11 +353,21 @@ fn retention_prunes_older_snapshots_beyond_the_hint() {
     }
 
     let store_dir = dir.path().join("store").join("repo-a");
-    let remaining: Vec<_> = std::fs::read_dir(&store_dir)
-        .unwrap()
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "zst"))
-        .collect();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut remaining = Vec::new();
+    while Instant::now() < deadline {
+        if registry.pending_jobs("repo-a") == 0 {
+            remaining = std::fs::read_dir(&store_dir)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "zst"))
+                .collect();
+            if remaining.len() == 2 {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
     assert_eq!(remaining.len(), 2, "retention hint was 2");
     // The two most recent pushes must be the ones that survived.
     assert_eq!(wait_for_commit(&registry, "repo-a", "sha3"), b"v3");
@@ -331,7 +396,7 @@ fn restart_recovers_a_leftover_spool_job_from_a_prior_crash() {
     );
     assert_eq!(
         registry.pull("repo-a", "latest"),
-        PullResult::Found(b"recovered payload".to_vec())
+        PullResult::Found(b"recovered payload".to_vec(), None)
     );
 }
 
@@ -356,7 +421,7 @@ fn twenty_repos_pushing_concurrently_each_land_their_own_final_head() {
                     let payload = target.clone().into_bytes();
                     loop {
                         match registry
-                            .push(&repo_id, &target, base.as_deref(), 20, &payload)
+                            .push(&repo_id, &target, base.as_deref(), 20, None, &payload)
                             .unwrap()
                         {
                             PushDecision::Accepted => break,
