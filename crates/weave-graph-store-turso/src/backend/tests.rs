@@ -109,3 +109,137 @@ fn purge_file_edges_removes_both_directions() {
     assert_eq!(purged, 2);
     assert_eq!(storage.all_edges().unwrap().len(), 1);
 }
+
+#[test]
+fn query_path_finds_shortest_route_across_multiple_hops() {
+    let mut storage = TursoStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    let b = storage.upsert_node(&node("r", "b.rs", "b", 1)).unwrap();
+    let c = storage.upsert_node(&node("r", "c.rs", "c", 1)).unwrap();
+    storage.upsert_edge(&edge(a, b, "CALLS_EXACT")).unwrap();
+    storage.upsert_edge(&edge(b, c, "CALLS_EXACT")).unwrap();
+
+    assert_eq!(storage.query_path(a, c).unwrap(), Some(vec![a, b, c]));
+    assert_eq!(storage.query_path(a, a).unwrap(), Some(vec![a]));
+}
+
+#[test]
+fn query_path_does_not_loop_on_a_cycle() {
+    let mut storage = TursoStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    let b = storage.upsert_node(&node("r", "b.rs", "b", 1)).unwrap();
+    let c = storage.upsert_node(&node("r", "c.rs", "c", 1)).unwrap();
+    // a→b→c→a forms a cycle
+    storage.upsert_edge(&edge(a, b, "CALLS_EXACT")).unwrap();
+    storage.upsert_edge(&edge(b, c, "CALLS_EXACT")).unwrap();
+    storage.upsert_edge(&edge(c, a, "CALLS_EXACT")).unwrap();
+
+    // Must terminate (visited set prevents re-enqueuing the cycle's `a`).
+    assert_eq!(storage.query_path(a, c).unwrap(), Some(vec![a, b, c]));
+    assert_eq!(storage.query_path(b, a).unwrap(), Some(vec![b, c, a]));
+}
+
+fn sample_note(target: Option<NodeId>, tier: NoteTier, expires_at: Option<i64>) -> Note {
+    Note {
+        id: 0,
+        target_node_id: target,
+        moniker: "a.rs#fn_a".into(),
+        kind: "note".into(),
+        tier,
+        author: "agent".into(),
+        content: "why this exists".into(),
+        content_hash: Some("abc".into()),
+        stale: false,
+        expires_at,
+        created_at: 1_000,
+    }
+}
+
+#[test]
+fn pinned_note_round_trips_through_recall() {
+    let mut storage = TursoStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    let id = storage
+        .pin_note(&sample_note(Some(a), NoteTier::Crystallized, None))
+        .unwrap();
+    let recalled = storage.recall_notes(2_000).unwrap();
+    assert_eq!(recalled.len(), 1);
+    assert_eq!(recalled[0].id, id);
+    assert_eq!(recalled[0].tier, NoteTier::Crystallized);
+    assert_eq!(recalled[0].target_node_id, Some(a));
+}
+
+#[test]
+fn recall_filters_expired_ephemerals_but_keeps_crystallized() {
+    let mut storage = TursoStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    storage
+        .pin_note(&sample_note(Some(a), NoteTier::Ephemeral, Some(900)))
+        .unwrap();
+    storage
+        .pin_note(&sample_note(Some(a), NoteTier::Ephemeral, Some(2_000)))
+        .unwrap();
+    storage
+        .pin_note(&sample_note(Some(a), NoteTier::Crystallized, None))
+        .unwrap();
+
+    assert_eq!(storage.recall_notes(1_000).unwrap().len(), 2);
+    assert_eq!(
+        storage.all_notes().unwrap().len(),
+        3,
+        "all_notes is the unfiltered view"
+    );
+}
+
+#[test]
+fn expired_ephemerals_are_deleted_only_on_demand() {
+    let mut storage = TursoStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    storage
+        .pin_note(&sample_note(Some(a), NoteTier::Ephemeral, Some(900)))
+        .unwrap();
+    storage
+        .pin_note(&sample_note(Some(a), NoteTier::Crystallized, None))
+        .unwrap();
+    storage
+        .pin_note(&sample_note(Some(a), NoteTier::Crystallized, Some(100)))
+        .unwrap();
+
+    let deleted = storage.delete_expired_notes(1_000).unwrap();
+    assert_eq!(deleted, 1);
+    assert_eq!(storage.all_notes().unwrap().len(), 2);
+}
+
+#[test]
+fn reattach_moves_the_target_and_sets_staleness() {
+    let mut storage = TursoStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    let b = storage.upsert_node(&node("r", "b.rs", "b", 1)).unwrap();
+    let id = storage
+        .pin_note(&sample_note(Some(a), NoteTier::Crystallized, None))
+        .unwrap();
+    storage.reattach_note(id, Some(b), true).unwrap();
+    let recalled = storage.recall_notes(1_000).unwrap();
+    assert_eq!(recalled[0].target_node_id, Some(b));
+    assert!(recalled[0].stale);
+
+    storage.reattach_note(id, None, false).unwrap();
+    let recalled = storage.recall_notes(1_000).unwrap();
+    assert_eq!(recalled[0].target_node_id, None);
+    assert!(!recalled[0].stale);
+}
+
+#[test]
+fn open_on_a_corrupt_file_surfaces_a_backend_error() {
+    // Not a valid SQLite/libSQL file at all — the connect step itself
+    // must fail and flow through `backend_err`, not panic.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("graph.db");
+    std::fs::write(&path, b"not a real database file").unwrap();
+
+    match TursoStorage::open(&path) {
+        Err(StorageError::Backend(_)) => {}
+        Err(e) => panic!("expected a Backend error, got {e:?}"),
+        Ok(_) => panic!("expected a Backend error, got Ok"),
+    }
+}

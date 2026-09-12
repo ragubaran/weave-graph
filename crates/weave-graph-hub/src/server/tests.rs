@@ -235,3 +235,52 @@ fn unrecognized_path_is_404() {
     let (status, _headers, _body) = raw_request(&base, "GET", "/health", &[], b"");
     assert_eq!(status, 404);
 }
+
+#[test]
+fn run_stops_accepting_after_max_connections() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(dir.path(), generous_config()).unwrap();
+    let server = RegistryServer::bind("127.0.0.1:0", registry).unwrap();
+    let addr = server.local_addr().unwrap();
+
+    let client = thread::spawn(move || {
+        raw_request(
+            &format!("http://{addr}"),
+            "PUT",
+            "/snapshots/my-repo/sha1.tar.zst",
+            &[],
+            b"v1",
+        )
+    });
+    server.run(Some(1)).unwrap();
+    let (status, ..) = client.join().unwrap();
+    assert_eq!(status, 202);
+}
+
+#[test]
+fn a_connection_closed_before_any_bytes_does_not_disturb_later_requests() {
+    let (base, _guard) = spawn_server(generous_config());
+    let authority = base.strip_prefix("http://").unwrap();
+    drop(TcpStream::connect(authority).unwrap());
+
+    let (status, _headers, _body) = raw_request(&base, "GET", "/snapshots/x/y.tar.zst", &[], b"");
+    assert_eq!(status, 404, "server must still answer normally afterward");
+}
+
+#[test]
+fn a_put_whose_body_is_shorter_than_content_length_does_not_hang_the_server() {
+    let (base, _guard) = spawn_server(generous_config());
+    let authority = base.strip_prefix("http://").unwrap();
+    {
+        let mut stream = TcpStream::connect(authority).unwrap();
+        stream
+            .write_all(
+                b"PUT /snapshots/my-repo/sha1.tar.zst HTTP/1.1\r\nContent-Length: 100\r\n\r\nshort",
+            )
+            .unwrap();
+        // Dropped here without sending the remaining 95 claimed bytes.
+    }
+
+    let (status, _headers, _body) = raw_request(&base, "GET", "/snapshots/x/y.tar.zst", &[], b"");
+    assert_eq!(status, 404, "server must still answer normally afterward");
+}

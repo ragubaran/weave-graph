@@ -139,6 +139,112 @@ fn test_cli_serve_without_mcp_flag_fails() {
 }
 
 #[test]
+fn test_cli_serve_mcp_fails_clearly_when_no_index_exists() {
+    let dir = tempdir().unwrap();
+    let mut cmd = Command::cargo_bin("weave").unwrap();
+    cmd.current_dir(dir.path())
+        .args(["serve", "--mcp"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("weave init && weave index"));
+}
+
+#[test]
+fn test_cli_serve_mcp_rejects_an_unknown_transport() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("main.rs"), "fn hello() {}").unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["serve", "--mcp", "--transport", "bogus"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown transport"));
+}
+
+#[test]
+fn test_cli_config_set_creates_the_weave_dir_when_missing() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    // No `weave init` first — `.weave/` doesn't exist yet.
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["config", "set", "mode", "single"])
+        .assert()
+        .success();
+    assert!(root.join(".weave").join("config.toml").exists());
+}
+
+#[test]
+fn test_cli_query_reports_a_clear_error_for_an_unknown_symbol() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("main.rs"), "fn hello() {}").unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["query", "callers(does_not_exist)"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("symbol not found"));
+}
+
+#[test]
+fn test_cli_export_reports_a_clear_error_for_an_unknown_symbol() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("main.rs"), "fn hello() {}").unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["export", "--symbol", "does_not_exist"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("symbol not found"));
+}
+
+#[test]
 fn test_cli_config_set_and_get_storage_home() {
     let repo_dir = tempdir().unwrap();
     let storage_dir = tempdir().unwrap();
@@ -513,6 +619,12 @@ fn test_cli_uncompiled_features_fail_with_clear_message() {
     // `sync pull`/`push` (M2.5) are real commands once `hub` is compiled.
     #[cfg(not(feature = "hub"))]
     uncompiled_commands.push(vec!["sync", "pull"]);
+    // `weave index --watch` is real once `watch` is compiled.
+    #[cfg(not(feature = "watch"))]
+    uncompiled_commands.push(vec!["index", "--watch"]);
+    // `weave note ...` (M2.10) is real once `notes` is compiled.
+    #[cfg(not(feature = "notes"))]
+    uncompiled_commands.push(vec!["note", "list"]);
 
     for args in uncompiled_commands {
         let mut cmd = Command::cargo_bin("weave").unwrap();

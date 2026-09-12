@@ -92,6 +92,30 @@ fn refuses_to_open_a_schema_newer_than_this_binary_supports() {
 }
 
 #[test]
+fn schema_version_errors_when_the_initial_table_check_query_fails() {
+    // A corrupted (non-database) file: `Connection::open` succeeds lazily,
+    // but the very first real query against it — `current_version`'s
+    // `sqlite_master` check — fails, exercising `backend_err` for real.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("corrupt.db");
+    std::fs::write(&path, b"not a valid sqlite database, just garbage bytes").unwrap();
+    let conn = Connection::open(&path).unwrap();
+    let err = schema_version(&conn).unwrap_err();
+    assert!(matches!(err, StorageError::Backend(_)));
+}
+
+#[test]
+fn schema_version_errors_when_the_schema_version_table_is_malformed() {
+    // `schema_version` exists (so the table-exists check passes) but
+    // without the `version` column current_version's second query expects.
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute("CREATE TABLE schema_version (not_version INTEGER)", [])
+        .unwrap();
+    let err = schema_version(&conn).unwrap_err();
+    assert!(matches!(err, StorageError::Backend(_)));
+}
+
+#[test]
 fn legacy_v3_db_upgrades_to_v4_notes_table() {
     let conn = Connection::open_in_memory().unwrap();
     let v3_only = format!(

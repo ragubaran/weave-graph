@@ -175,10 +175,13 @@ fn cpp_fixture_symbols_match_hand_count() {
     assert_eq!(
         symbol_tuples(&file),
         vec![
-            ("Base", SymbolKind::Class, 1, 4),
-            ("Greeter", SymbolKind::Class, 6, 14),
-            ("Greeter::greet", SymbolKind::Method, 8, 10),
-            ("Greeter::helper", SymbolKind::Method, 11, 13),
+            ("add", SymbolKind::Function, 3, 5),
+            ("app::Point", SymbolKind::Struct, 9, 12),
+            ("app::Base", SymbolKind::Class, 14, 17),
+            ("app::Greeter", SymbolKind::Class, 19, 31),
+            ("app::Greeter::greet", SymbolKind::Method, 21, 24),
+            ("app::Greeter::helper", SymbolKind::Method, 25, 27),
+            ("app::Greeter::getPtr", SymbolKind::Method, 28, 30),
         ]
     );
 }

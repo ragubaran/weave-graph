@@ -31,3 +31,21 @@ fn aliased_import_uses_the_original_name_not_the_alias() {
     let file = parse("from collections import OrderedDict as OD\n");
     assert_eq!(file.structural_edges[0].target_name, "OrderedDict");
 }
+
+#[test]
+fn bare_single_segment_import_resolves_via_plain_identifier() {
+    let file = parse("import os\n");
+    assert_eq!(file.structural_edges[0].target_name, "os");
+}
+
+#[test]
+fn star_import_produces_no_structural_edge() {
+    let file = parse("from os import *\n");
+    assert!(file.structural_edges.is_empty());
+}
+
+#[test]
+fn call_through_a_subscript_is_not_recorded_as_a_named_call() {
+    let file = parse("def f():\n    handlers[0]()\n");
+    assert!(file.calls.is_empty());
+}

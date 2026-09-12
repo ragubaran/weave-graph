@@ -154,6 +154,31 @@ fn generate_writes_a_report_and_canvases_that_are_all_valid_json() {
 }
 
 #[test]
+fn generate_applies_a_visible_filter_to_nodes_and_their_edges() {
+    // Only "caller" passes the filter — "helper" (and the edge touching
+    // it) must be excluded from both the node count and the module graph.
+    // This is M3.0's rbac hook, but `generate` itself takes the filter
+    // unconditionally (not feature-gated), so this is a plain unit test.
+    let (dir, storage) = seeded_storage();
+    let out_dir = dir.path().join("out");
+    let db_path = dir.path().join("graph.db");
+    let visible: &dyn Fn(&Node) -> bool = &|n: &Node| n.symbol == "caller";
+
+    let paths = generate(
+        dir.path(),
+        &out_dir,
+        &db_path,
+        &storage,
+        None,
+        Some(visible),
+    )
+    .unwrap();
+
+    let report = fs::read_to_string(&paths.report_md).unwrap();
+    assert!(report.contains("Total symbols: 1"), "got: {report}");
+}
+
+#[test]
 fn generate_appends_the_doc_provenance_section_only_when_given_one() {
     let (dir, storage) = seeded_storage();
     let out_dir = dir.path().join("out");

@@ -21,6 +21,16 @@ fn ensure_gitignored_appends_to_an_existing_gitignore() {
 }
 
 #[test]
+fn ensure_gitignored_adds_a_trailing_newline_before_appending() {
+    let dir = tempfile::tempdir().unwrap();
+    // No trailing newline — the append path must add one before ".weave/".
+    fs::write(dir.path().join(".gitignore"), "target/").unwrap();
+    ensure_gitignored(dir.path()).unwrap();
+    let content = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert_eq!(content, "target/\n.weave/\n");
+}
+
+#[test]
 fn ensure_gitignored_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     ensure_gitignored(dir.path()).unwrap();
@@ -36,6 +46,63 @@ fn ensure_gitignored_respects_an_existing_weave_entry() {
     ensure_gitignored(dir.path()).unwrap();
     let content = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
     assert_eq!(content, ".weave\n");
+}
+
+#[test]
+fn try_fast_path_reports_already_up_to_date_when_shas_match_and_db_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    let weave_dir = dir.path().join(".weave");
+    fs::create_dir_all(&weave_dir).unwrap();
+    let active_db = weave_dir.join("graph.db");
+    fs::write(&active_db, b"db bytes").unwrap();
+
+    let took_fast_path = try_fast_path(
+        &weave_dir,
+        &active_db,
+        Some("sha1"),
+        Some("sha1"),
+        Instant::now(),
+    )
+    .unwrap();
+    assert!(took_fast_path);
+}
+
+#[test]
+fn try_fast_path_restores_from_a_cached_snapshot_for_the_current_sha() {
+    let dir = tempfile::tempdir().unwrap();
+    let weave_dir = dir.path().join(".weave");
+    fs::create_dir_all(&weave_dir).unwrap();
+    let active_db = weave_dir.join("graph.db");
+    fs::write(&active_db, b"original bytes").unwrap();
+    cache::save_snapshot(&weave_dir, &active_db, "sha1").unwrap();
+
+    // A different last-indexed sha skips the "already up to date" branch,
+    // so this exercises the cache-restore branch specifically.
+    let took_fast_path = try_fast_path(
+        &weave_dir,
+        &active_db,
+        Some("sha1"),
+        Some("sha2"),
+        Instant::now(),
+    )
+    .unwrap();
+    assert!(took_fast_path);
+    assert_eq!(
+        cache::read_last_indexed_sha(&weave_dir).as_deref(),
+        Some("sha1")
+    );
+}
+
+#[test]
+fn try_fast_path_returns_false_when_neither_shortcut_applies() {
+    let dir = tempfile::tempdir().unwrap();
+    let weave_dir = dir.path().join(".weave");
+    fs::create_dir_all(&weave_dir).unwrap();
+    let active_db = weave_dir.join("graph.db");
+
+    let took_fast_path =
+        try_fast_path(&weave_dir, &active_db, Some("sha1"), None, Instant::now()).unwrap();
+    assert!(!took_fast_path);
 }
 
 #[test]

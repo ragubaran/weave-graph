@@ -1,7 +1,71 @@
 use super::*;
 use crate::tools::ImpactRadiusArgs;
-use weave_graph_core::{Edge, Node, Storage};
+use weave_graph_core::{Edge, Node, Storage, StorageError};
 use weave_graph_store_sqlite::SqliteStorage;
+
+/// A `Storage` whose `all_nodes` always errors — `weave_impact_radius`'s
+/// only escape hatch for a real backend failure.
+struct FailingStorage;
+
+impl Storage for FailingStorage {
+    fn get_node(&self, _: weave_graph_core::NodeId) -> Result<Option<Node>, StorageError> {
+        unimplemented!("not needed for this test")
+    }
+    fn get_edges(&self, _: weave_graph_core::NodeId) -> Result<Vec<Edge>, StorageError> {
+        unimplemented!("not needed for this test")
+    }
+    fn get_callers(&self, _: weave_graph_core::NodeId) -> Result<Vec<Edge>, StorageError> {
+        unimplemented!("not needed for this test")
+    }
+    fn upsert_node(&mut self, _: &Node) -> Result<weave_graph_core::NodeId, StorageError> {
+        unimplemented!("not needed for this test")
+    }
+    fn upsert_edge(&mut self, _: &Edge) -> Result<u32, StorageError> {
+        unimplemented!("not needed for this test")
+    }
+    fn query_path(
+        &self,
+        _: weave_graph_core::NodeId,
+        _: weave_graph_core::NodeId,
+    ) -> Result<Option<Vec<weave_graph_core::NodeId>>, StorageError> {
+        unimplemented!("not needed for this test")
+    }
+    fn schema_version(&self) -> Result<u32, StorageError> {
+        unimplemented!("not needed for this test")
+    }
+    fn all_nodes(&self) -> Result<Vec<Node>, StorageError> {
+        Err(StorageError::Backend("disk on fire".to_string()))
+    }
+    fn all_edges(&self) -> Result<Vec<Edge>, StorageError> {
+        unimplemented!("not needed for this test")
+    }
+    fn purge_file_edges(&mut self, _: &str, _: &str) -> Result<u64, StorageError> {
+        unimplemented!("not needed for this test")
+    }
+    fn purge_file_nodes(&mut self, _: &str, _: &str) -> Result<u64, StorageError> {
+        unimplemented!("not needed for this test")
+    }
+    fn pin_note(&self, _: &weave_graph_core::Note) -> Result<i64, StorageError> {
+        unimplemented!("not needed for this test")
+    }
+    fn all_notes(&self) -> Result<Vec<weave_graph_core::Note>, StorageError> {
+        unimplemented!("not needed for this test")
+    }
+    fn recall_notes(&self, _: i64) -> Result<Vec<weave_graph_core::Note>, StorageError> {
+        unimplemented!("not needed for this test")
+    }
+    fn reattach_note(
+        &self,
+        _: i64,
+        _: Option<weave_graph_core::NodeId>,
+        _: bool,
+    ) -> Result<(), StorageError> {
+        unimplemented!("not needed for this test")
+    }
+    fn delete_expired_notes(&self, _: i64) -> Result<u64, StorageError> {
+        unimplemented!("not needed for this test")
+    }
+}
 
 fn node(symbol: &str) -> Node {
     Node {
@@ -23,6 +87,79 @@ fn edge(src: u32, tgt: u32) -> Edge {
         kind: "CALLS_EXACT".into(),
         weight: 1.0,
     }
+}
+
+#[test]
+fn storage_error_is_reported_not_panicked() {
+    let empty = SqliteStorage::open_in_memory().unwrap();
+    let csr = CsrGraph::load(&empty).unwrap();
+    let result = weave_impact_radius(
+        &FailingStorage,
+        &csr,
+        ImpactRadiusArgs {
+            symbol: "root",
+            max_tokens: None,
+        },
+        None,
+    );
+    assert_eq!(result.symbol_count, 0);
+    assert!(result.text.contains("disk on fire"), "{}", result.text);
+}
+
+#[test]
+fn mask_is_applied_to_every_node_before_rendering() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let id1 = storage.upsert_node(&node("root")).unwrap();
+    let id2 = storage.upsert_node(&node("b")).unwrap();
+    storage.upsert_edge(&edge(id1, id2)).unwrap();
+    let csr = CsrGraph::load(&storage).unwrap();
+
+    // Leaves "root" itself alone — masking the requested root symbol too
+    // would make it unresolvable by name, which isn't what this test is
+    // checking (that's a real, separate RBAC consideration, not this bug).
+    let mask: &dyn Fn(&Node) -> Node = &|n: &Node| {
+        if n.symbol == "root" {
+            n.clone()
+        } else {
+            Node {
+                symbol: format!("masked-{}", n.symbol),
+                ..n.clone()
+            }
+        }
+    };
+    let result = weave_impact_radius(
+        &storage,
+        &csr,
+        ImpactRadiusArgs {
+            symbol: "root",
+            max_tokens: None,
+        },
+        Some(mask),
+    );
+    // "root" itself is resolved via the masked list too, so masking it
+    // must not break symbol resolution — only "b" (the impacted node)
+    // shows up in the rendered text.
+    assert!(result.text.contains("masked-b"), "{}", result.text);
+}
+
+#[test]
+fn very_small_max_tokens_sheds_a_hub_all_the_way_to_module_summary() {
+    let (storage, csr) = hub_storage();
+    let result = weave_impact_radius(
+        &storage,
+        &csr,
+        ImpactRadiusArgs {
+            symbol: "root",
+            max_tokens: Some(3),
+        },
+        None,
+    );
+    assert!(
+        result.text.contains("shed to module summary"),
+        "{}",
+        result.text
+    );
+    assert_eq!(result.symbol_count, 100);
 }
 
 #[test]
