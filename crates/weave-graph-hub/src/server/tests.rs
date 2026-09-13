@@ -213,6 +213,62 @@ fn push_past_the_watermark_returns_429_with_retry_after() {
     );
 }
 
+#[cfg(feature = "hub-provenance")]
+fn spawn_server_with_verifier(
+    config: RegistryConfig,
+    verifier: crate::provenance::MockSnapshotProvenanceVerifier,
+) -> (String, PathBufGuard) {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(dir.path(), config)
+        .unwrap()
+        .with_provenance_verifier(std::sync::Arc::new(verifier));
+    let server = RegistryServer::bind("127.0.0.1:0", registry).unwrap();
+    let addr = server.local_addr().unwrap();
+    thread::spawn(move || {
+        let _ = server.run(None);
+    });
+    (format!("http://{addr}"), PathBufGuard(dir))
+}
+
+#[cfg(feature = "hub-provenance")]
+#[test]
+fn push_with_a_missing_signature_returns_400_when_a_verifier_is_configured() {
+    use crate::provenance::MockSnapshotProvenanceVerifier;
+    let (base, _guard) = spawn_server_with_verifier(
+        generous_config(),
+        MockSnapshotProvenanceVerifier::with_key(7),
+    );
+    let (status, _headers, body) =
+        raw_request(&base, "PUT", "/snapshots/my-repo/sha1.tar.zst", &[], b"v1");
+    assert_eq!(status, 400);
+    assert!(
+        String::from_utf8_lossy(&body).contains("signature"),
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+}
+
+#[cfg(feature = "hub-provenance")]
+#[test]
+fn push_with_a_valid_signature_is_accepted_when_a_verifier_is_configured() {
+    use crate::provenance::{MockSnapshotProvenanceVerifier, SnapshotProvenanceVerifier};
+    let verifier = MockSnapshotProvenanceVerifier::with_key(7);
+    let (base, _guard) = spawn_server_with_verifier(generous_config(), verifier);
+    let sig = verifier
+        .sign_snapshot("my-repo", "sha1", b"v1")
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let (status, _headers, _body) = raw_request(
+        &base,
+        "PUT",
+        "/snapshots/my-repo/sha1.tar.zst",
+        &[("X-Weave-Signature", sig)],
+        b"v1",
+    );
+    assert_eq!(status, 202);
+}
+
 #[test]
 fn pull_of_missing_snapshot_is_404() {
     let (base, _guard) = spawn_server(generous_config());

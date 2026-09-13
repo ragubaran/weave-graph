@@ -125,6 +125,10 @@ enum Commands {
         /// Allow binding beyond loopback interface (unsafe: exposes full source structure)
         #[arg(long, default_value_t = false)]
         allow_remote: bool,
+        /// SEC-05: Force authentication for the MCP server session
+        #[cfg(feature = "rbac")]
+        #[arg(long, default_value_t = false)]
+        require_as: bool,
     },
     /// Run a deterministic query against the indexed graph
     Query {
@@ -481,6 +485,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             host,
             port,
             allow_remote,
+            #[cfg(feature = "rbac")]
+            require_as,
         } => cmd_serve(
             mcp,
             &transport,
@@ -488,6 +494,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             port,
             allow_remote,
             as_subject.as_deref(),
+            #[cfg(feature = "rbac")]
+            require_as,
         )?,
         Commands::Query { expression, path } => {
             cmd_query(&path, &expression, as_subject.as_deref())?
@@ -1437,6 +1445,7 @@ fn cmd_serve(
     port: u16,
     allow_remote: bool,
     as_subject: Option<&str>,
+    #[cfg(feature = "rbac")] require_as: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !mcp {
         eprintln!("Error: specify --mcp to start the Model Context Protocol server.");
@@ -1444,6 +1453,22 @@ fn cmd_serve(
     }
 
     let root = Path::new(".");
+
+    #[cfg(feature = "rbac")]
+    {
+        let config_require_as = crate::config::get_key(
+            &root.join(".weave").join("config.toml"),
+            "rbac.require_identity",
+        )
+        .is_some_and(|v| crate::waiver::is_truthy(Some(&v)));
+        if (require_as || config_require_as) && as_subject.is_none() {
+            eprintln!(
+                "Error: --as <subject> is required by --require-as flag or [rbac] require_identity config (SEC-05)."
+            );
+            std::process::exit(1);
+        }
+    }
+
     let weave_home_env = std::env::var("WEAVE_HOME").ok();
     let data_dir = storage_location::resolve_data_dir(root, weave_home_env.as_deref());
     let db_path = data_dir.path.join("graph.db");

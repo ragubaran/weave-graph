@@ -431,6 +431,10 @@ fn twenty_repos_pushing_concurrently_each_land_their_own_final_head() {
                             PushDecision::Conflict => {
                                 panic!("no other thread touches {repo_id} — a conflict here means cross-repo contention")
                             }
+                            #[cfg(feature = "hub-provenance")]
+                            PushDecision::SignatureInvalid => {
+                                panic!("no verifier is configured on this registry")
+                            }
                         }
                     }
                     base = Some(target);
@@ -662,4 +666,131 @@ fn a_committed_push_with_no_registered_webhook_never_dials_out() {
         .push("repo-a", "sha1", None, 20, None, b"v1")
         .unwrap();
     wait_for_commit(&registry, "repo-a", "sha1");
+}
+
+#[cfg(feature = "hub-provenance")]
+mod provenance_gated {
+    use std::sync::Arc;
+
+    use crate::provenance::{MockSnapshotProvenanceVerifier, SnapshotProvenanceVerifier};
+
+    use super::*;
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn a_push_with_no_verifier_configured_is_unaffected_by_a_missing_signature() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(dir.path(), generous_config()).unwrap();
+        let decision = registry
+            .push("repo-a", "sha1", None, 20, None, b"payload")
+            .unwrap();
+        assert_eq!(decision, PushDecision::Accepted);
+    }
+
+    #[test]
+    fn a_correctly_signed_push_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let verifier = MockSnapshotProvenanceVerifier::with_key(42);
+        let registry = Registry::open(dir.path(), generous_config())
+            .unwrap()
+            .with_provenance_verifier(Arc::new(verifier));
+        let sig = hex(&verifier.sign_snapshot("repo-a", "sha1", b"payload"));
+
+        let decision = registry
+            .push("repo-a", "sha1", None, 20, Some(&sig), b"payload")
+            .unwrap();
+
+        assert_eq!(decision, PushDecision::Accepted);
+        assert_eq!(wait_for_commit(&registry, "repo-a", "sha1"), b"payload");
+    }
+
+    #[test]
+    fn a_missing_signature_is_rejected_once_a_verifier_is_configured() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(dir.path(), generous_config())
+            .unwrap()
+            .with_provenance_verifier(Arc::new(MockSnapshotProvenanceVerifier::with_key(42)));
+
+        let decision = registry
+            .push("repo-a", "sha1", None, 20, None, b"payload")
+            .unwrap();
+
+        assert_eq!(decision, PushDecision::SignatureInvalid);
+        assert_eq!(
+            registry.pull("repo-a", "sha1"),
+            PullResult::NotFound,
+            "a rejected push must never commit"
+        );
+    }
+
+    #[test]
+    fn a_signature_from_the_wrong_key_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(dir.path(), generous_config())
+            .unwrap()
+            .with_provenance_verifier(Arc::new(MockSnapshotProvenanceVerifier::with_key(42)));
+        let sig = hex(&MockSnapshotProvenanceVerifier::with_key(99)
+            .sign_snapshot("repo-a", "sha1", b"payload"));
+
+        let decision = registry
+            .push("repo-a", "sha1", None, 20, Some(&sig), b"payload")
+            .unwrap();
+
+        assert_eq!(decision, PushDecision::SignatureInvalid);
+    }
+
+    #[test]
+    fn a_signature_over_a_different_payload_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let verifier = MockSnapshotProvenanceVerifier::with_key(42);
+        let registry = Registry::open(dir.path(), generous_config())
+            .unwrap()
+            .with_provenance_verifier(Arc::new(verifier));
+        // Signed over "other payload", pushed with "payload" — tampered.
+        let sig = hex(&verifier.sign_snapshot("repo-a", "sha1", b"other payload"));
+
+        let decision = registry
+            .push("repo-a", "sha1", None, 20, Some(&sig), b"payload")
+            .unwrap();
+
+        assert_eq!(decision, PushDecision::SignatureInvalid);
+    }
+
+    #[test]
+    fn a_rejected_push_never_advances_the_head_or_consumes_a_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let verifier = MockSnapshotProvenanceVerifier::with_key(42);
+        let registry = Registry::open(dir.path(), generous_config())
+            .unwrap()
+            .with_provenance_verifier(Arc::new(verifier));
+
+        // Rejected first — the head must stay empty, so a later real push
+        // can still land with `base_sha: None` (first-push semantics).
+        registry
+            .push("repo-a", "bad-sha", None, 20, None, b"forged")
+            .unwrap();
+
+        let sig = hex(&verifier.sign_snapshot("repo-a", "sha1", b"payload"));
+        let decision = registry
+            .push("repo-a", "sha1", None, 20, Some(&sig), b"payload")
+            .unwrap();
+        assert_eq!(decision, PushDecision::Accepted);
+    }
+
+    #[test]
+    fn malformed_hex_in_the_signature_header_is_rejected_not_a_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Registry::open(dir.path(), generous_config())
+            .unwrap()
+            .with_provenance_verifier(Arc::new(MockSnapshotProvenanceVerifier::with_key(42)));
+
+        let decision = registry
+            .push("repo-a", "sha1", None, 20, Some("not-hex-zz"), b"payload")
+            .unwrap();
+
+        assert_eq!(decision, PushDecision::SignatureInvalid);
+    }
 }

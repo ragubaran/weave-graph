@@ -3,11 +3,13 @@
 //! bypass path. One helper module, not two copies, for the same reason
 //! M3.0 built one `RbacGuard` instead of one per consumer.
 //!
-//! **Feature-isolation precedent, followed exactly** (M3.0's own fix):
-//! [`authorize`] only engages when `rbac` is compiled in *and* an explicit
-//! `--as <subject>` was given. No `--as` means a waiver-capable build
-//! behaves byte-identical to a build without `rbac` at all — unrestricted
-//! skip, matching this milestone's own spec before any identity is bound.
+//! **Feature-isolation precedent** (M3.0's own fix), **narrowed by SEC-06**:
+//! an omitted `--as` is unrestricted — byte-identical to a build without
+//! `rbac` at all — *unless* this repo's own `[rbac.users]` config already
+//! grants the `allow-drift` role to someone, in which case an anonymous
+//! waiver is rejected outright. A repo that never configured `allow-drift`
+//! for anyone sees no behavior change; only a repo that opted into
+//! role-gated waivers gains the gate.
 
 #[cfg(feature = "federation")]
 use std::collections::HashSet;
@@ -15,13 +17,21 @@ use std::path::Path;
 
 /// Checks whether `as_subject` may invoke a waiver (`--allow-drift`,
 /// `--allow-drift-for`, `--skip`, or their `WEAVE_*` env-var
-/// equivalents). A no-op whenever `rbac` isn't compiled in, or `--as` was
-/// never given — matching M3.0's "masking only engages when an identity
-/// is actually bound" precedent, so this gate never changes behavior for
-/// a caller who hasn't opted into RBAC.
+/// equivalents). A no-op whenever `rbac` isn't compiled in. An omitted
+/// `--as` is also a no-op *unless* `[rbac.users]` grants `allow-drift` to
+/// someone (SEC-06) — only then is an anonymous waiver rejected, so a
+/// repo that never configured that role sees no behavior change.
 #[cfg(feature = "rbac")]
 pub(crate) fn authorize(root: &Path, as_subject: Option<&str>) -> Result<(), String> {
     let Some(subject) = as_subject else {
+        // SEC-06: reject anonymous waiver only when config actually grants allow-drift to someone
+        let users = crate::config::read_rbac_users(&root.join(".weave").join("config.toml"));
+        let anyone_has_allow_drift = users
+            .values()
+            .any(|roles| roles.iter().any(|r| r == "allow-drift"));
+        if anyone_has_allow_drift {
+            return Err("anonymous waivers are not permitted when this repository's RBAC config grants the 'allow-drift' role to specific identities. Use --as <subject> to authenticate.".to_string());
+        }
         return Ok(());
     };
     let guard = crate::rbac::guard_for(root, Some(subject));

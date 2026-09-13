@@ -26,16 +26,22 @@ struct Args {
     max_queue_depth_per_repo: usize,
     max_pushes_per_minute_per_repo: u32,
     auth_token: Option<String>,
+    #[cfg(feature = "hub-provenance")]
+    provenance_key: Option<u64>,
 }
 
 const USAGE: &str = "Usage: weave-registry --bind <host:port> --data-dir <path> \\\n  \
      --max-queue-depth-per-repo <n> --max-pushes-per-minute-per-repo <n> \\\n  \
-     [--auth-token <token>]\n\n\
+     [--auth-token <token>] [--provenance-key <secret-u64>]\n\n\
      Both rate limits are required — calibrate them against this deployment's \
      own observed merge rate (plan.md §3.1), not a guessed default. \
      --auth-token is optional (HUB-02): omitting it keeps the v1 unauthenticated \
      loopback-trust behavior; setting it requires every caller to send \
-     `Authorization: Bearer <token>`.";
+     `Authorization: Bearer <token>`. --provenance-key is optional (PROV-01, \
+     feature hub-provenance): omitting it keeps every push unverified, exactly \
+     as before; setting it rejects any push whose `X-Weave-Signature` (hex-encoded \
+     bytes) doesn't verify under `MockSnapshotProvenanceVerifier::with_key` and \
+     that same secret — pick a real secret, never the verifier's own default key.";
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut bind = None;
@@ -43,6 +49,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut max_queue_depth_per_repo = None;
     let mut max_pushes_per_minute_per_repo = None;
     let mut auth_token = None;
+    #[cfg(feature = "hub-provenance")]
+    let mut provenance_key = None;
 
     let mut args = args;
     while let Some(flag) = args.next() {
@@ -61,6 +69,13 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
                 })?);
             }
             "--auth-token" => auth_token = Some(value()?),
+            #[cfg(feature = "hub-provenance")]
+            "--provenance-key" => {
+                provenance_key =
+                    Some(value()?.parse().map_err(|_| {
+                        "--provenance-key must be a non-negative integer".to_string()
+                    })?);
+            }
             other => return Err(format!("unrecognized argument: {other}")),
         }
     }
@@ -85,6 +100,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
         max_queue_depth_per_repo,
         max_pushes_per_minute_per_repo,
         auth_token,
+        #[cfg(feature = "hub-provenance")]
+        provenance_key,
     })
 }
 
@@ -99,8 +116,29 @@ fn build_server(args: &Args) -> Result<RegistryServer, String> {
             args.data_dir.display()
         )
     })?;
+    #[cfg(feature = "hub-provenance")]
+    let registry = match args.provenance_key {
+        Some(key) => registry.with_provenance_verifier(std::sync::Arc::new(
+            weave_graph_hub::MockSnapshotProvenanceVerifier::with_key(key),
+        )),
+        None => registry,
+    };
     RegistryServer::bind_with_token(&args.bind, registry, args.auth_token.clone())
         .map_err(|e| format!("failed to bind {}: {e}", args.bind))
+}
+
+#[cfg(feature = "hub-provenance")]
+fn provenance_status(args: &Args) -> &'static str {
+    if args.provenance_key.is_some() {
+        ", snapshot signatures: verified"
+    } else {
+        ", snapshot signatures: unverified"
+    }
+}
+
+#[cfg(not(feature = "hub-provenance"))]
+fn provenance_status(_args: &Args) -> &'static str {
+    ""
 }
 
 fn main() {
@@ -113,14 +151,15 @@ fn main() {
         exit(1);
     });
     println!(
-        "weave-registry listening on {} (data: {}, auth: {})",
+        "weave-registry listening on {} (data: {}, auth: {}{})",
         server.local_addr().unwrap(),
         args.data_dir.display(),
         if args.auth_token.is_some() {
             "bearer token required"
         } else {
             "none — loopback trust only"
-        }
+        },
+        provenance_status(&args),
     );
     if let Err(e) = server.run(None) {
         eprintln!("registry server stopped: {e}");

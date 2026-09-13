@@ -38,6 +38,21 @@ pub(crate) fn is_safe_path_component(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
+/// Decodes an `X-Weave-Signature` header (PROV-01's hex convention) into
+/// raw bytes. `None` on odd length or a non-hex digit — malformed, not a
+/// zero-length signature, so it's rejected the same as a wrong one rather
+/// than panicking on a client typo.
+#[cfg(feature = "hub-provenance")]
+fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
 /// Operator-supplied limits — deliberately no `Default`: `plan.md` §3.1
 /// requires these calibrated against observed merge rates, not shipped as
 /// an arbitrary constant nobody actually measured.
@@ -66,6 +81,12 @@ pub enum PushDecision {
     RateLimited {
         retry_after_secs: u64,
     },
+    /// PROV-01: a `provenance_verifier` is configured and the push's
+    /// signature (missing, malformed hex, or simply wrong) didn't verify
+    /// against the spooled payload. Checked before the head/rate state
+    /// advances, so a forged push leaves no trace beyond the raw spool.
+    #[cfg(feature = "hub-provenance")]
+    SignatureInvalid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +121,14 @@ pub struct Registry {
     spool_dir: PathBuf,
     config: RegistryConfig,
     repos: Arc<Mutex<HashMap<String, Arc<RepoState>>>>,
+    /// PROV-01: verifies a push's `X-Weave-Signature` before it's
+    /// committed, when a deployment has configured one — `None` (the
+    /// default) keeps today's behavior of trusting any signature or none.
+    /// Never defaults to `MockSnapshotProvenanceVerifier::new()`'s
+    /// well-known key: that would be security theater, not verification
+    /// (see PROV-01's own feasibility note in `docs/phase3_issues.md`).
+    #[cfg(feature = "hub-provenance")]
+    provenance_verifier: Option<Arc<dyn crate::provenance::SnapshotProvenanceVerifier>>,
 }
 
 impl Registry {
@@ -117,6 +146,8 @@ impl Registry {
             spool_dir,
             config,
             repos: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(feature = "hub-provenance")]
+            provenance_verifier: None,
         };
         // Recovery: a repo with leftover spool files from a prior crash
         // gets its worker resumed before the registry serves any request.
@@ -128,6 +159,20 @@ impl Registry {
             }
         }
         Ok(registry)
+    }
+
+    /// Opts into signature verification on every push (PROV-01): a
+    /// deployment-supplied verifier bound to a secret the deployment
+    /// controls, never the mock's own well-known default key. A no-op
+    /// builder when never called, matching every other feature's
+    /// "compiled in but unused = unchanged" isolation.
+    #[cfg(feature = "hub-provenance")]
+    pub fn with_provenance_verifier(
+        mut self,
+        verifier: Arc<dyn crate::provenance::SnapshotProvenanceVerifier>,
+    ) -> Self {
+        self.provenance_verifier = Some(verifier);
+        self
     }
 
     fn repo_store_dir(&self, repo_id: &str) -> PathBuf {
@@ -276,6 +321,27 @@ impl Registry {
                 format!("unsafe repo_id or target_sha: {repo_id:?}/{target_sha:?}"),
             ));
         }
+
+        // PROV-01: checked before any rate/head state advances, same
+        // "no" happens before any state change" rule path-safety above
+        // already follows — a forged push shouldn't consume a rate-limit
+        // slot or bump `next_seq`.
+        #[cfg(feature = "hub-provenance")]
+        if let Some(verifier) = &self.provenance_verifier {
+            let tmp = self
+                .repo_spool_dir(repo_id)
+                .join(format!("{target_sha}.tmp"));
+            let payload = fs::read(&tmp)?;
+            let verified = signature.and_then(decode_hex).is_some_and(|sig| {
+                verifier
+                    .verify_snapshot(repo_id, target_sha, &payload, &sig)
+                    .is_ok()
+            });
+            if !verified {
+                return Ok(PushDecision::SignatureInvalid);
+            }
+        }
+
         let state = self.repo_state(repo_id);
 
         {

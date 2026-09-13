@@ -112,6 +112,37 @@ pub trait Storage {
     fn all_trace_spans(&self) -> Result<Vec<TraceSpan>, StorageError> {
         Ok(Vec::new())
     }
+
+    /// Ranked node ids for a backend-specific full-text query, best match
+    /// first (`weave search`). Defaulted to "unsupported" so backends
+    /// without an FTS index (Turso today) need no stub — only
+    /// `weave-graph-store-sqlite` (feature `fts`) overrides this, same
+    /// shape as `upsert_trace_span` above.
+    fn search_symbols(&self, _query: &str, _limit: usize) -> Result<Vec<NodeId>, StorageError> {
+        Err(StorageError::Backend(
+            "this storage backend does not support symbol search".to_string(),
+        ))
+    }
+
+    /// Three-stage ANN + rescore semantic search (`weave search
+    /// --semantic`). `visible`, when given, must be applied to reranked
+    /// candidates *before* the `limit` cap (Core Invariant 7, SEC-01) —
+    /// never after, or a masked top hit starves a visible runner-up.
+    /// Defaulted to "unsupported"; only `weave-graph-store-sqlite`
+    /// (feature `vector`) overrides this.
+    #[cfg(feature = "vector")]
+    fn search_vector(
+        &self,
+        _embedder: &dyn crate::embedding::EmbeddingProvider,
+        _query_text: &str,
+        _limit: usize,
+        _oversample: usize,
+        _visible: Option<&dyn Fn(&Node) -> bool>,
+    ) -> Result<Vec<NodeId>, StorageError> {
+        Err(StorageError::Backend(
+            "this storage backend does not support vector search".to_string(),
+        ))
+    }
 }
 
 #[cfg(test)]

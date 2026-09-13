@@ -2269,6 +2269,7 @@ version = "1.0.1"
 dependencies = [
  "serde",
  "serde_json",
+ "serde_yaml",
  "tempfile",
  "thiserror 2.0.20",
  "weave-graph-core",
@@ -2348,6 +2349,7 @@ dependencies = [
  "libsql",
  "tempfile",
  "weave-graph-core",
+ "weave-graph-store-sqlite",
 ]
 
 [[package]]

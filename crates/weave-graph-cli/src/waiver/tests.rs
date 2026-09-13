@@ -76,12 +76,21 @@ mod rbac_gated {
     }
 
     #[test]
-    fn authorize_is_a_no_op_when_as_subject_is_not_given() {
-        // Matches M3.0's own feature-isolation precedent: an identity-less
-        // call must behave exactly like a non-rbac build, even though the
-        // feature is compiled in.
+    fn authorize_accepts_anonymous_waiver_when_config_lacks_allow_drift() {
+        // SEC-06: identity-less calls behave like non-rbac only if nobody
+        // is granted the 'allow-drift' role in the config.
         let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "\"bob\" = [\"reader\"]");
         assert!(authorize(dir.path(), None).is_ok());
+    }
+
+    #[test]
+    fn authorize_rejects_anonymous_waiver_when_config_grants_allow_drift() {
+        // SEC-06: reject anonymous waiver if config actually grants allow-drift
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "\"alice\" = [\"allow-drift\"]");
+        let err = authorize(dir.path(), None).unwrap_err();
+        assert!(err.contains("anonymous waivers are not permitted"));
     }
 
     #[test]

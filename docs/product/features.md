@@ -144,6 +144,8 @@ and the lightweight `weave-registry` standalone server daemon.
 - **Trunk Publication**: Automated post-merge webhook or CI step that builds and publishes canonical snapshots for master/main.
 - **Deduplicated Storage**: Content-addressed snapshot storage with configurable per-repo retention limits.
 - **Zero-Cloud Dependency**: Designed for private clouds, local VPCs, or self-hosted bare metal servers.
+- **Transport Authentication**: `weave-registry --auth-token <token>` requires a matching `Authorization: Bearer` header on every request; unset by default (loopback-trust only). Client-side: `[hub] token` in `.weave/config.toml`.
+- **Snapshot Verification (`hub-provenance`)**: `weave-registry --provenance-key <secret>` rejects a push whose `X-Weave-Signature` doesn't verify against that shared secret — never the bundled verifier's public default key. Unset by default (pushes unverified, as before this existed).
 
 
 ## `slm`
@@ -199,8 +201,9 @@ Enterprise Role-Based Access Control enforcing code confidentiality and organiza
 
 - **Query-Layer Masking**: Enforces visibility directly inside the graph traversal and storage boundary. CLI queries (`weave query`), reports (`weave report`), exports (`weave export`), and MCP tools (`weave serve --mcp`) all inherit the identical security guard.
 - **Role Scoping**: Only `"internal"` is special-cased — that identity sees everything. Every other role name (`engineer`, `admin`, `contractor`, or anything else) gets identical masked behavior: public API symbols visible, internal implementation redacted. There's no per-role permission grant beyond that one bit.
-- **SCIM 2.0 Directory Server**: `weave rbac serve-scim` runs a loopback SCIM endpoint that receives push provisioning and deprovisioning events from enterprise IdPs (Okta, Azure AD, Google Workspace) and writes to `.weave/rbac-directory.toml`.
-- **Identity Invocation**: Global `--as <identity>` flag enables testing and auditing views for specific users or roles.
+- **SCIM 2.0 Directory Server**: `weave rbac serve-scim` runs a loopback SCIM endpoint that receives push provisioning and deprovisioning events from enterprise IdPs (Okta, Azure AD, Google Workspace) and writes to `.weave/rbac-directory.toml`; optionally requires an `Authorization: Bearer <token>` (`[rbac.scim] token`) on every request.
+- **Identity Invocation**: Global `--as <identity>` flag enables testing and auditing views for specific users or roles. `weave serve --mcp --require-as` (or `[rbac] require_identity = true`) refuses to start a session at all without one — for shared/multi-tenant deployments where an unmasked session by omission is unacceptable.
+- **Waiver Gating**: `"allow-drift"` is the other special-cased role — it grants permission to waive a `check-contracts`/`blast` CI gate. Once granted to anyone, an identity-less waiver attempt is rejected outright.
 
 ## `policy-lint`
 
@@ -209,6 +212,7 @@ Declarative architectural boundary enforcement and drift detection:
 - **Boundary Rules (`.weave/policy.yaml`)**: Define explicit `disallow` and `require` constraints between architectural layers (e.g., forbidding UI modules from importing database drivers directly).
 - **CI Gate (`weave policy lint`)**: Evaluates the indexed graph against declared boundary rules, exiting non-zero on any violation to block offending pull requests.
 - **Architectural Drift Analytics (`weave policy drift`)**: Uncovers structural decay over time, identifying dependency cycles (via Tarjan's SCC), orphaned files, and unreferenced internal symbols.
+- **MCP tool (`weave_policy_lint`)**: exposes the same boundary evaluation to AI agents over MCP, masked through the session's bound identity — see [MCP Integration](mcp-integration.md).
 
 ## `otel`
 
@@ -233,24 +237,32 @@ Semantic code retrieval over AST-bounded chunks:
 - **Syntactic Chunking**: Breaks code strictly along AST definitions (functions, classes, traits) rather than arbitrary byte boundaries.
 - **Vector Storage**: Integrated vector similarity search using `sqlite-vec` virtual tables.
 - **Hybrid Retrieval**: Combines BM25 lexical precision with semantic embedding similarity for agent query routing.
+- **MCP tool (`weave_search_semantic`)**: exposes the same search to AI agents over MCP; a masked top hit is filtered out before the result is truncated to `limit`, never after, so it can't starve a visible runner-up out of a size-capped response — see [MCP Integration](mcp-integration.md).
 
 ## `turso`
 
-
 An alternate `Storage` backend on embedded libSQL, implementing the exact
 same trait as the default `rusqlite` backend (same schema, same
-migrations, same transaction discipline).
+migrations, same transaction discipline) — real, tested code
+(`crates/weave-graph-store-turso`), but not wired into anything yet.
 
-- **Normal Mode Alternative (`--features turso`)**:
-  Turso is **only available for normal mode** (no vector support), replacing
-  bundled SQLite with embedded libSQL (41.1 MB stripped — statistically
-  identical to the default build). **Not yet reachable from any `weave`
-  command**: `weave-graph-cli` always opens `SqliteStorage` regardless of
-  which storage features are compiled in; `--features turso` links the
-  backend but nothing routes to it yet.
-- **SQLite Exclusivity for Default and Vector Modes**:
-  1. *Default Normal Mode (`vX.Y.Z`)* uses SQLite exclusively to keep the binary single-engine and zero-network (41.1 MB stripped, or 9.6 MB with `--no-default-features`).
-  2. *Vector Mode (`vX.Y.Z-vector`)* is SQLite-exclusive because Turso does not natively support `sqlite-vec` virtual tables yet.
+- **Not yet reachable from any `weave` command**: `weave-graph-cli` always
+  opens `SqliteStorage` regardless of which storage features are compiled
+  in; `--features turso` *adds* the backend as an optional dependency, it
+  does not replace or exclude `weave-graph-store-sqlite` (a plain,
+  non-optional dependency of `weave-graph-cli` either way). There is no
+  `[storage.turso]` config table and no CLI flag to select a backend.
+- **Why not just wire it in**: `rusqlite` and `libsql` each statically
+  link their own vendored `sqlite3.c`. A process that opens a connection
+  through one and then the other panics on libsql's own
+  threading-configuration self-check — confirmed with a real regression
+  test (`weave-graph-store-turso/tests/cross_compat.rs`), not a
+  hypothetical. Because `weave-graph-cli`'s indexing/write path always
+  uses `SqliteStorage`, any single `weave` binary that also links
+  `weave-graph-store-turso` carries this conflict — a real integration
+  needs a genuinely separate binary target (the way `weave-graph-python`'s
+  wheel, below, never links into the native `weave` binary at all), not a
+  runtime backend-selection flag inside the shared one.
 
 ## `python`
 

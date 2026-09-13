@@ -1,6 +1,24 @@
 # Release Notes
 
-## Unreleased — Corrected Binary Sizes, Tree-Sitter Feature-Gating, Federated Query Persistence
+## Unreleased — RBAC Hardening, Registry Auth & Provenance, Storage Trait Cleanup, New MCP Tools, Corrected Binary Sizes, Federated Query Persistence
+
+### RBAC, Registry Auth & Provenance, Storage Trait, New MCP Tools
+
+Security and API-surface fixes from the Phase 3 issues register (`docs/phase3_issues.md`), applied across `rbac`, `hub`, `hub-provenance`, `mcp`, and the `Storage` trait:
+
+- **`weave serve --mcp --require-as`** (feature `rbac`, new flag) and **`[rbac] require_identity = true`** (`.weave/config.toml`, new key): either refuses to start the MCP server at all if `--as <subject>` is omitted. Closes an operational footgun for shared/multi-tenant deployments (a proxy or CI runner that forgot `--as` previously got a fully unmasked session); every other RBAC-gated command's own "no `--as` == unmasked" default is unchanged.
+- **`weave check-contracts`/`weave blast` waivers**: an identity-less waiver (`--as` omitted) is now rejected outright if this repo's own `[rbac.users]` config grants the `"allow-drift"` role to *anyone* — closing a bypass where a contractor blocked by `--as carol` could simply drop `--as` and waive unrestricted. A repo that never grants `"allow-drift"` to anyone sees no behavior change.
+- **`weave rbac serve-scim` bearer-token auth** (new): optional `[rbac.scim] token` in `.weave/config.toml` requires a matching `Authorization: Bearer` header on every request; unset keeps the previous unauthenticated loopback-trust behavior.
+- **`weave-registry --auth-token`** (new): requires `Authorization: Bearer <token>` on every registry request when set; client side reads `[hub] token`. Unset keeps the previous unauthenticated behavior.
+- **`weave-registry --provenance-key`** (new, feature `hub-provenance`): verifies a push's `X-Weave-Signature` (hex-encoded bytes) against a deployment-supplied secret (`MockSnapshotProvenanceVerifier::with_key`, never its public default key) *before* the push is committed — a bad, missing, or tampered signature is rejected (`400`) and never advances the repo's head or consumes a rate-limit slot. Unset keeps every push unverified, as before.
+- **SCIM role parsing accepts RFC 7643 object arrays** (`[{"value": "internal", "primary": true}]`), not just the previous flat-string-array shape — real Okta/Azure AD/Google Workspace payloads previously resolved to silently-empty roles.
+- **`weave policy drift` orphan reports** now annotate an orphan with `(has hidden inbound edges)` when it's only an orphan because RBAC masking severed its real inbound edge — distinguishing a genuine orphan from a masking artifact.
+- **Semantic search (`weave search --semantic`, `weave_search_semantic`)**: the RBAC visibility filter is now applied to reranked candidates *before* the result is truncated to `limit`, not after — a masked top hit can no longer starve a visible runner-up out of a size-capped result (previously: the top-K could be entirely masked, returning zero results even when visible matches existed further down).
+- **`search_symbols`/`search_vector` moved onto the `Storage` trait** (`weave-graph-core`), with a default "unsupported" implementation — any current or future backend gets both without stub work; previously these were inherent methods only `SqliteStorage` had.
+- **Two new MCP tools**: `weave_search_semantic` (feature `vector`) and `weave_policy_lint` (feature `policy-lint`), both masked through the same session-bound `RbacGuard` every other tool already uses. `weave serve --mcp` now advertises up to 8 tools (4 base + 2 `notes` + 1 `vector` + 1 `policy-lint`), up from 4–6.
+- **Documentation correction**: the `turso` feature's docs previously implied a separate, isolated `weave-turso` binary variant existed. It doesn't — there is one CLI binary (`weave`), and `--features turso` only adds `weave-graph-store-turso` as an optional dependency alongside the always-linked `weave-graph-store-sqlite`. The two can't safely open a connection in the same process (confirmed by a new regression test, `weave-graph-store-turso/tests/cross_compat.rs`) — `weave-graph-cli` correctly never constructs a `TursoStorage` today, and a real integration needs a genuinely separate binary target, not a runtime flag in the shared one. See `docs/product/configuration.md` Part III and `docs/product/features.md`'s `turso` section for the corrected explanation.
+
+### Corrected Binary Sizes, Tree-Sitter Feature-Gating, Federated Query Persistence
 
 Addendum to `v1.0.1` below, not a replacement — that entry's packaging-tier
 sizes were pre-measurement estimates and are superseded by the real numbers

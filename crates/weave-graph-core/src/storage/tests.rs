@@ -84,3 +84,21 @@ fn trace_span_defaults_refuse_writes_and_read_empty() {
         .unwrap_err();
     assert!(err.to_string().contains("does not support trace spans"));
 }
+
+#[test]
+fn search_symbols_default_refuses_with_an_unsupported_error() {
+    let storage = MinimalStorage;
+    let err = storage.search_symbols("anything", 10).unwrap_err();
+    assert!(err.to_string().contains("does not support symbol search"));
+}
+
+#[cfg(feature = "vector")]
+#[test]
+fn search_vector_default_refuses_with_an_unsupported_error() {
+    let storage = MinimalStorage;
+    let embedder = crate::embedding::MockEmbeddingProvider::new();
+    let err = storage
+        .search_vector(&embedder, "anything", 10, 4, None)
+        .unwrap_err();
+    assert!(err.to_string().contains("does not support vector search"));
+}

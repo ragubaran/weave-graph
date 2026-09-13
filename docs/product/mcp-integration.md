@@ -32,6 +32,7 @@ weave serve --mcp --transport http --host 127.0.0.1 --port 8080
 | `--port <port>` | `8080` | Port for HTTP transport. |
 | `--allow-remote` | `false` | Explicit opt-in required to bind non-loopback interfaces. |
 | `--as <subject>` | *(Anonymous)* | Binds the entire session to a specific RBAC identity (`--features rbac`). |
+| `--require-as` | `false` | Refuses to start the server if `--as` is omitted (`--features rbac`). Same effect as `[rbac] require_identity = true` in `.weave/config.toml` — set either for a shared/multi-tenant deployment where an unmasked session by omission is unacceptable. |
 
 ---
 
@@ -132,7 +133,7 @@ To bind the agent session to a non-`internal` identity (sees only `pub`-visible 
 
 ## 3. Tool Specifications
 
-When initialized, `weave serve --mcp` advertises either **4 tools** (base build) or **6 tools** (when compiled with `--features notes`).
+When initialized, `weave serve --mcp` advertises **4 base tools**, plus one more per optional feature compiled in: **+2** with `--features notes` (`weave_pin_note`/`weave_recall_notes`), **+1** with `--features vector` (`weave_search_semantic`), **+1** with `--features policy-lint` (`weave_policy_lint`) — up to **8 tools** with all three enabled (`--features custom,notes`; the `custom` bundle itself includes `vector` and `policy-lint` but not `notes`, so `--features custom` alone advertises 6).
 
 ```mermaid
 flowchart LR
@@ -142,6 +143,8 @@ flowchart LR
     MCP --> Trace[weave_trace_calls]
     MCP --> Blast[weave_impact_radius]
     MCP --> Notes[weave_pin_note / recall_notes]
+    MCP --> Search[weave_search_semantic]
+    MCP --> Lint[weave_policy_lint]
 ```
 
 ### Tool Inventory
@@ -154,6 +157,8 @@ flowchart LR
 | `weave_impact_radius`| Base | Transitive topological blast radius of code edits. | Adaptive |
 | `weave_pin_note` | Knowledge (`notes`) | Pin persistent or ephemeral architectural context. | Low |
 | `weave_recall_notes` | Knowledge (`notes`) | Retrieve live pinned notes (expired notes filtered). | Low |
+| `weave_search_semantic` | Search (`vector`) | Binary-ANN-then-int8-rerank semantic search over AST-bounded chunks. | Adaptive |
+| `weave_policy_lint` | Governance (`policy-lint`) | Evaluates `.weave/policy.yaml` architectural boundary rules against the indexed graph. | Adaptive |
 
 ---
 
@@ -199,6 +204,18 @@ Leaves architectural hints, invariants, or refactoring warnings for future agent
 
 #### 6. `weave_recall_notes` *(Feature: `notes`)*
 Reads all active notes pinned to symbols across the workspace. Expired ephemeral notes are automatically excluded, and notes whose target symbols were deleted are flagged as orphaned.
+
+#### 7. `weave_search_semantic` *(Feature: `vector`)*
+Binary-ANN-then-int8-rerank semantic search over AST-bounded source chunks, using the same reference embedding provider as `weave search --semantic`.
+- **Parameters**:
+  - `query` *(string, **required**)*: Natural-language or code-shaped search query.
+  - `limit` *(integer, optional, default: 5)*: Max hits to return.
+- **RBAC Masking**: the visibility filter is applied to reranked candidates *before* the `limit` cap, not after — a masked top hit can never starve a visible runner-up out of the result set.
+
+#### 8. `weave_policy_lint` *(Feature: `policy-lint`)*
+Evaluates the boundary rules declared in `.weave/policy.yaml` against the currently indexed graph — the same rule model and evaluation `weave policy lint` uses, exposed as an MCP tool.
+- **Parameters**: none.
+- **RBAC Masking**: nodes/edges are filtered through the session's bound identity first; a restricted identity's clean result means "no violations *it* could see," not a repo-wide compliance guarantee (the same caveat `weave policy lint --as <subject>` carries).
 
 ---
 
@@ -402,7 +419,11 @@ When a non-`internal` identity calls any of the four base tools:
 - `weave_file_api`: masked files still report their real symbol *count*, but each masked symbol's name, kind, span, and signature render as `<rbac: hidden>` / `L0-0` — never silently dropped, so a caller can tell "nothing here" from "something here I can't see."
 - `weave_repo_map`: every masked file collapses into one aggregate `<rbac: hidden>` bucket (summed symbol/edge counts) rather than leaking per-file structure for paths the identity can't see; module-level mode folds the same masked files into one module entry.
 
-Because masking is enforced inside `weave-graph-core`'s traversal engine — applied once to the whole node list before any of `weave_repo_map`/`weave_file_api`/`weave_trace_calls`/`weave_impact_radius` render their response — rather than as an export-time filter, an agent cannot bypass security rules through graph hops or by picking a different tool.
+The two optional tools follow the same guard, with their own shape:
+- `weave_search_semantic` (feature `vector`): masked candidates are dropped, not redacted — filtered out of the reranked result *before* the `limit` cap, so a masked top hit never displaces a visible runner-up from a size-limited response.
+- `weave_policy_lint` (feature `policy-lint`): masked nodes and any edge touching one are dropped from the graph before linting; a clean result under a restricted identity only means "no violations that identity could see," never a repo-wide guarantee (the same caveat `weave policy lint --as <subject>` carries at the CLI).
+
+Because masking is enforced inside `weave-graph-core`'s traversal engine — applied once to the whole node list before any tool renders its response — rather than as an export-time filter, an agent cannot bypass security rules through graph hops or by picking a different tool.
 
 ---
 

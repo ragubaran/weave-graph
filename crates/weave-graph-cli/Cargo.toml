@@ -66,9 +66,9 @@ provenance = ["weave-graph-core/provenance", "weave-graph-store-sqlite/provenanc
 slm = ["dep:sha2"]
 rbac = ["weave-graph-core/rbac", "weave-graph-mcp/rbac"]
 otel = []
-policy-lint = ["dep:serde_yaml", "weave-graph-core/policy-lint"]
+policy-lint = ["dep:serde_yaml", "weave-graph-core/policy-lint", "weave-graph-mcp/policy-lint"]
 fts = ["weave-graph-core/fts", "weave-graph-store-sqlite/fts"]
-vector = ["fts", "weave-graph-core/vector", "weave-graph-store-sqlite/vector"]
+vector = ["fts", "weave-graph-core/vector", "weave-graph-store-sqlite/vector", "weave-graph-mcp/vector"]
 # Convenience bundles (plan.md §0.2), matching the two distributed release
 # variants (docs/deploy.md §1): no new code, just a named shorthand for the
 # feature list a `weave`/`weave-custom` build actually needs.

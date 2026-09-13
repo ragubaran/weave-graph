@@ -35,17 +35,31 @@ mode = "static"                     # "static" (file:// bundle) | "server" (loop
 # ==============================================================================
 # Part II: Custom Mode / Self-Hosted Enterprise Configuration (feature: custom)
 # ==============================================================================
-[rbac.users]                        # feature: rbac — the only RBAC config section that exists
+[rbac]                               # feature: rbac
+require_identity = false            # true: `weave serve --mcp` refuses to start without `--as`
+                                     # (same effect as the `--require-as` CLI flag). Does not
+                                     # change query/report/export's own masking default.
+
+[rbac.users]                        # feature: rbac
 alice = ["internal"]                # "internal" is the one role name RBAC treats specially:
                                      # bypasses masking entirely. Every other role name below gets
                                      # identical behavior — masked down to pub-visible symbols only.
 bob = ["contractor"]                # A role name with no special meaning of its own (see §6).
 service_account = ["allow-drift"]   # The other special role: permission to waive
-                                     # check-contracts/blast gates (impl.md M3.10, see §7).
+                                     # check-contracts/blast gates (impl.md M3.10, see §7). Once
+                                     # granted to anyone, an identity-less waiver (`--as` omitted)
+                                     # is refused outright — see §7.
+
+[rbac.scim]                         # feature: rbac
+token = ""                          # Optional: require `Authorization: Bearer <token>` on every
+                                     # `weave rbac serve-scim` request. Empty/absent: unauthenticated
+                                     # (loopback-only trust), unchanged from before this key existed.
 
 [hub]
 url = "http://weave-registry:8080"  # URL of centralized weave-registry server
 snapshot_retention = 20             # Maximum snapshots retained per repository on hub
+token = ""                          # Required only if weave-registry was started with --auth-token;
+                                     # value must match exactly.
 
 [slm]
 model = "qwen2.5-coder-0.5b-q4_k_m" # Model identifier in $XDG_CACHE_HOME/weave/models/
@@ -130,7 +144,14 @@ The sections below apply when Weave Graph is compiled with `--features custom` (
 
 Weave Graph enforces security masking directly at the **query layer** across the CLI, Markdown/Canvas reports, exports, and MCP tools (Core Invariant 7).
 
-There is no `[rbac]` settings table — `[rbac.users]` is the entire config surface. Masking engages purely based on whether the global `--as <subject>` flag is passed on a given command; there is no `enabled`/`anonymous_role` toggle. An identity-less call (`--as` omitted) always resolves to the built-in anonymous identity (zero roles), not a configurable fallback.
+Masking engages purely based on whether the global `--as <subject>` flag is passed on a given command; there is no `enabled`/`anonymous_role` toggle for masking itself. An identity-less call (`--as` omitted) always resolves to the built-in anonymous identity (zero roles), not a configurable fallback.
+
+The one `[rbac]`-table key that does exist governs a narrower, separate question:
+```toml
+[rbac]
+require_identity = true   # weave serve --mcp refuses to start at all without --as
+```
+This is for a shared or multi-tenant deployment (a CI runner, a proxied MCP endpoint) where an unmasked session by omission is unacceptable — it does not change `weave query`/`weave report`/`weave export`'s own masking default, only whether the MCP server process is willing to start unbound. `--require-as` on the `weave serve --mcp` command line does the same thing without a repo-wide config change.
 
 ### User & Role Mappings (`[rbac.users]`)
 Maps individual identities to role-name arrays:
@@ -145,12 +166,14 @@ release_bot = ["allow-drift"]
 
 **Only two role names carry any special meaning anywhere in the code** — every other role name (`"engineer"`, `"contractor"`, `"auditor"`, or anything else you make up) is purely a label for your own bookkeeping/audit trail and has **identical** masking behavior:
 - `"internal"` — bypasses query-layer masking entirely; the identity sees the full graph.
-- `"allow-drift"` — grants permission to invoke a `weave check-contracts`/`weave blast` waiver (`--allow-drift`, `--allow-drift-for`, `--skip`, or their `WEAVE_*` env-var equivalents — see the CLI reference). Independent of `"internal"`: an identity that sees everything isn't automatically trusted to bypass a CI gate.
+- `"allow-drift"` — grants permission to invoke a `weave check-contracts`/`weave blast` waiver (`--allow-drift`, `--allow-drift-for`, `--skip`, or their `WEAVE_*` env-var equivalents — see the CLI reference). Independent of `"internal"`: an identity that sees everything isn't automatically trusted to bypass a CI gate. Once this role is granted to *anyone* in `[rbac.users]`, an identity-less waiver (`--as` omitted) is rejected outright — a repo that never grants it sees no change in that behavior.
 
 Everyone else — any other role, multiple roles, or no roles at all — gets the exact same masked view: only symbols the language's own visibility convention marks public (`pub fn` in Rust, `export` in TS/JS, etc.), the same heuristic `weave check-contracts`'s contract hash already uses. There is no per-role custom masking pattern, no `mask = [...]` table, nothing module-scoped to a specific role.
 
 ### SCIM 2.0 Identity Directory (`.weave/rbac-directory.toml`)
-`weave rbac serve-scim --port 9292` runs a loopback-only, unauthenticated SCIM 2.0 endpoint (`POST /Users` to provision, `DELETE /{subject}` to deprovision, `POST /sync` to refresh) that an IdP pushes subject→role assignments to; results land in `.weave/rbac-directory.toml`, same `subject -> [roles]` shape as `[rbac.users]`. It has no `/Groups` endpoint and no vendor-specific integration — it's generic SCIM, and the IdP is responsible for deciding which roles to push for which subject.
+`weave rbac serve-scim --port 9292` runs a loopback-only SCIM 2.0 endpoint (`POST /Users` to provision, `DELETE /{subject}` to deprovision, `POST /sync` to refresh) that an IdP pushes subject→role assignments to; results land in `.weave/rbac-directory.toml`, same `subject -> [roles]` shape as `[rbac.users]`. It has no `/Groups` endpoint and no vendor-specific integration — it's generic SCIM, and the IdP is responsible for deciding which roles to push for which subject.
+
+Bearer-token authentication is optional (`[rbac.scim] token = "<secret>"` above) — set it and every request needs a matching `Authorization: Bearer <secret>` header or the server rejects it with `401`; leave it unset and the server accepts any local caller (loopback-only trust, same model the base MCP server uses). Worth setting on any shared host, since provisioning can elevate a subject to `"internal"`.
 - **Precedence Rule**: Directory records in `rbac-directory.toml` override static entries in `[rbac.users]` for the same subject.
 - **Identity Evaluation**: The global `--as <identity>` flag evaluates both static config and SCIM directory records to resolve active roles.
 
@@ -195,12 +218,15 @@ Configures client synchronization with a self-hosted `weave-registry` server dae
 [hub]
 url = "http://weave-registry.internal.corp:8080"
 snapshot_retention = 20
+token = ""
 ```
 
 ### Settings
 - `url` *(string, optional)*: The HTTP endpoint of the centralized registry. Leaving this unset is a fully supported permanent state for offline and local teams.
 - `snapshot_retention` *(integer, default: `20`)*: Hint header sent during `weave sync push` specifying how many historical snapshots to retain per repository branch on the hub server.
+- `token` *(string, optional)*: Sent as `Authorization: Bearer <token>` on every request. Required only if the registry was started with `weave-registry --auth-token`; a registry started without one accepts requests with or without this key set.
 - **Atomic Hydration**: `weave sync pull` downloads canonical graph snapshots and applies them via atomic file swap (`.rebuild`), so a CI runner starts from a hydrated graph instead of a cold source-tree parse.
+- **Snapshot signatures** (`weave sync push --signature <hex>`, feature `hub-provenance`): a CLI flag, not a config key — `weave` computes no signature of its own. The registry only verifies it when started with `--provenance-key`; see the [Self-Hosted Guide](self-hosted.md) §6.0.
 
 ---
 
@@ -228,31 +254,24 @@ Configures lexical and semantic code search:
 
 ---
 
-# Part III: Turso Storage Engine Configuration (`[storage.turso]`)
-
-> [!IMPORTANT]
-> **Exclusive to `weave-turso` Binary Variant**:  
-> Turso storage configuration applies **only** when using the dedicated `weave-turso` (`vX.Y.Z-turso`) binary build. It is not compiled into the default `weave` binary or the `weave-custom` bundle.
-
-## 12. Architecture & Packaging Isolation
-
-`weave-turso` replaces the default `rusqlite` bundled SQLite C library with embedded **libSQL** (`libsql = "0.9"`), providing native replication and distributed replica synchronization.
-
-### Why a Dedicated `weave-turso` Binary is Required
-- **C Symbol Conflict**: Rusqlite's bundled `libsqlite3-sys` and libSQL's `libsql-ffi` both statically define and export SQLite C symbols (`sqlite3_open`, `sqlite3_step`, etc.). Linking both storage engines into a single binary causes fatal duplicate symbol linker collisions.
-- **Normal Mode Exclusivity**: the `turso` feature replaces bundled SQLite with embedded libSQL. Measured stripped release size: **~41.1 MB** — statistically identical to the default SQLite build (linking libSQL instead of nothing extra costs, this isn't a size win). Vector mode (`vX.Y.Z-vector`) remains exclusively on SQLite because libSQL does not currently support `sqlite-vec` virtual tables.
-
-### Building the `--features turso` Binary
-```bash
-# Build with the turso backend linked in
-cargo build --release -p weave-graph-cli --no-default-features --features turso
-```
+# Part III: Turso Storage Engine (Not Yet Integrated)
 
 > [!WARNING]
-> **Not yet reachable from any `weave` command.** `TursoStorage` is a complete `Storage` trait implementation (`crates/weave-graph-store-turso`, benchmarked in its own `benches/turso_latency.rs`), but `weave-graph-cli` never constructs one — every CLI command still opens `SqliteStorage` regardless of which features are compiled in. Building with `--features turso` links the backend into the binary; it doesn't change which one gets used. There is no `[storage.turso]` config table, no `sync_url`/`auth_token`/replication config, and no CLI flag to select it — those would all be new work, not configuration this binary reads today.
+> **Corrected (2026-09-13)**: earlier revisions of this section described a "dedicated `weave-turso` binary variant" that builds separately from the default `weave` binary and safely avoids a C-symbol conflict by construction. No such binary exists anywhere in this repository — `grep -r "weave-turso"` across the workspace turns up nothing but this doc. There is exactly one CLI binary target (`weave`, `crates/weave-graph-cli`), and `--features turso` only adds `weave-graph-store-turso` as an *additional* optional dependency to that same binary — it does not replace or exclude `weave-graph-store-sqlite`, which is a plain, non-optional dependency of `weave-graph-cli` regardless of any feature flag. The paragraphs below describe what's actually true today, not what a future build could be.
+
+## 12. Why SQLite and Turso Can't Share One Process
+
+`TursoStorage` (`crates/weave-graph-store-turso`) is a complete `Storage` trait implementation — same transactional guarantees, same schema migrations as `SqliteStorage` — built on embedded **libSQL** (`libsql = "0.9"`) instead of `rusqlite`. It is real, tested code, benchmarked in its own `benches/turso_latency.rs`.
+
+The C-symbol conflict is real and reproducible: `rusqlite`'s bundled `libsqlite3-sys` and `libsql`'s bundled `libsql-ffi` each statically link their own vendored `sqlite3.c`, defining the same symbols (`sqlite3_open`, `sqlite3_step`, etc.). A process that opens a connection through one and then the other panics on libsql's own threading-configuration self-check — confirmed with a real regression test, not a hypothetical: `crates/weave-graph-store-turso/tests/cross_compat.rs::opening_turso_after_sqlite_in_the_same_process_panics`.
+
+**This is why `weave-graph-cli` never constructs a `TursoStorage` today.** Every CLI command still opens `SqliteStorage` regardless of which features are compiled in — `--features turso` links the backend into the `weave` binary, but nothing routes to it, and nothing safely could without more work:
+- There is no `[storage.turso]` config table, no `sync_url`/`auth_token`/replication config, and no CLI flag to select a backend.
+- Building such a flag today, in the shared `weave` binary, would compile clean and then panic the first time it was actually used — because `weave-graph-cli`'s indexing/write path calls `SqliteStorage::open` unconditionally, any single `weave` binary that also links `weave-graph-store-turso` carries the conflict above.
+- A real integration needs a genuinely separate binary target that never links `weave-graph-store-sqlite` at all (a new `[[bin]]`, its own CI job and release artifact) — not a runtime `if` inside the existing `weave` binary.
 
 ### What's Real Today
-`TursoStorage::open(path)` / `open_in_memory()` implement the same `Storage` trait as `SqliteStorage` — same transactional guarantees, same schema migrations — but that's a library-level capability for a future integration, not something you can point `weave` at from `.weave/config.toml` yet.
+`TursoStorage::open(path)` / `open_in_memory()` are usable as a library from other Rust code (a host application embedding `weave-graph-store-turso` directly, never alongside `weave-graph-store-sqlite` in the same process) — but there is nothing in `.weave/config.toml` or the `weave` CLI that points at it yet.
 
 ---
 

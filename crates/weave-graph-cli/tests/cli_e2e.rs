@@ -107,6 +107,45 @@ fn test_cli_serve_mcp_stdio() {
         .stdout(predicate::str::contains("weave_file_api"));
 }
 
+/// Regression test for a real bug: `weave-graph-cli`'s own `vector`/
+/// `policy-lint` Cargo features didn't forward to `weave-graph-mcp`'s
+/// matching features, so a `weave` binary built with `--features
+/// vector,policy-lint` (or `custom`) compiled fine but never actually
+/// registered `weave_search_semantic`/`weave_policy_lint` — invisible to
+/// crate-level tests (they build `weave-graph-mcp` directly with its own
+/// features set), only catchable through the real compiled binary.
+#[test]
+#[cfg(all(feature = "vector", feature = "policy-lint"))]
+fn test_cli_serve_mcp_advertises_vector_and_policy_lint_tools_when_compiled_in() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("main.rs"), "fn hello() {}").unwrap();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n";
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["serve", "--mcp"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("weave_search_semantic"))
+        .stdout(predicate::str::contains("weave_policy_lint"));
+}
+
 #[test]
 fn test_cli_serve_mcp_rejects_non_loopback_without_flag() {
     let dir = tempdir().unwrap();
@@ -174,6 +213,107 @@ fn test_cli_serve_mcp_rejects_an_unknown_transport() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("unknown transport"));
+}
+
+/// SEC-05 (Phase 4 item 8): `--require-as` refuses to start the server at
+/// all without `--as <subject>` — the narrower fix that doesn't touch
+/// every other RBAC-gated command's existing "no `--as` == unmasked"
+/// default (see `docs/phase3_issues.md`'s own SEC-05 write-up for why the
+/// literal "always construct a guard" remediation was rejected).
+#[test]
+#[cfg(feature = "rbac")]
+fn test_cli_serve_mcp_require_as_flag_refuses_to_start_without_as() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("main.rs"), "fn hello() {}").unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["serve", "--mcp", "--require-as"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("SEC-05"));
+}
+
+/// Same gate, reached through `.weave/config.toml`'s `[rbac]
+/// require_identity` instead of the `--require-as` flag — the config-driven
+/// path a shared/CI deployment would actually set once, not per-invocation.
+#[test]
+#[cfg(feature = "rbac")]
+fn test_cli_serve_mcp_require_identity_config_refuses_to_start_without_as() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("main.rs"), "fn hello() {}").unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+    std::fs::write(
+        root.join(".weave/config.toml"),
+        "mode = \"single\"\n\n[rbac]\nrequire_identity = true\n",
+    )
+    .unwrap();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["serve", "--mcp"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("SEC-05"));
+}
+
+/// The gate must not block a real, authenticated session — `--require-as`
+/// plus `--as <subject>` still serves normally.
+#[test]
+#[cfg(feature = "rbac")]
+fn test_cli_serve_mcp_require_as_flag_succeeds_with_as_given() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("main.rs"), "fn hello() {}").unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n";
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["serve", "--mcp", "--require-as", "--as", "alice"])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("weave"));
 }
 
 #[test]

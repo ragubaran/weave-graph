@@ -40,13 +40,14 @@ Displays total file count, symbol count, edge count, database size, and any defe
 ### `weave serve`
 Launches the Model Context Protocol (MCP) server for AI coding assistants (Claude Code, Cursor, Windsurf, Gemini).
 ```bash
-weave serve --mcp [--transport stdio|http] [--host <addr>] [--port <port>] [--allow-remote]
+weave serve --mcp [--transport stdio|http] [--host <addr>] [--port <port>] [--allow-remote] [--require-as]
 ```
 - `--mcp`: Starts the MCP server protocol loop.
 - `--transport stdio|http`: Communication channel *(default: `stdio`)*.
 - `--host <addr>`: Bind address for HTTP transport *(default: `127.0.0.1`)*.
 - `--port <port>`: Port for HTTP transport *(default: `8080`)*.
 - `--allow-remote`: Explicit opt-in flag required to bind non-loopback addresses. MCP exposes raw code AST structure and is loopback-restricted by default.
+- `--require-as` *(feature: `rbac`)*: Refuses to start the server at all if `--as <subject>` is omitted — for a shared/multi-tenant deployment where an unmasked session by omission is unacceptable. `.weave/config.toml`'s `[rbac] require_identity = true` does the same, repo-wide. Every other RBAC-gated command's own "no `--as` == unmasked" default is unaffected.
 
 ### `weave query`
 Executes an exact graph traversal expression against the active index.
@@ -78,7 +79,7 @@ weave blast --base <ref> [--format md|json] [--out <file>] [--depth <n>] [--dire
 - `--out <file>`: Writes report to a file instead of stdout (ideal for `gh pr comment`).
 - `--depth <n>`: Maximum transitive hops to trace from touched symbols *(default: `2`)*.
 - `--direction callers|callees|both`: Direction to walk *(default: `callers`)*.
-- `--skip`: Waives the blast-radius computation entirely (`impl.md` M3.10) — requires `--reason <text>`; emits a warning banner + a Waiver Notice in the output and exits `0`. `WEAVE_SKIP_BLAST=1` does the same via CI env var (no `--reason` required — the env var itself is the audit trail). With `--features rbac` and a bound `--as <subject>`, the identity must hold the `"allow-drift"` role or the waiver is refused.
+- `--skip`: Waives the blast-radius computation entirely (`impl.md` M3.10) — requires `--reason <text>`; emits a warning banner + a Waiver Notice in the output and exits `0`. `WEAVE_SKIP_BLAST=1` does the same via CI env var (no `--reason` required — the env var itself is the audit trail). With `--features rbac` and a bound `--as <subject>`, the identity must hold the `"allow-drift"` role or the waiver is refused. **Omitting `--as` entirely** is only unrestricted when this repo's `[rbac.users]` config grants `"allow-drift"` to nobody; if it grants that role to anyone, an identity-less waiver is refused outright (`Use --as <subject> to authenticate`) — see `weave check-contracts` below for the same rule.
 
 ### `weave report`
 Generates architectural summary reports and visualization artifacts.
@@ -135,7 +136,7 @@ weave check-contracts [--diff] [--scoped] [--allow-drift | --allow-drift-for <re
 - `--allow-drift`: Waives drift across every linked repo (`impl.md` M3.10); `--allow-drift-for <repo>` waives just one named peer. Both require `--reason <text>`; a waived repo's drift is still reported but never fails the exit code.
 - `--warn-only`: Downgrades a `strict`-policy failure to advisory (never hides *which* repos drifted) — no `--reason` needed, since it doesn't waive anything, just softens the exit code.
 - CI env-var equivalents (no `--reason` required — the env var is its own audit trail): `WEAVE_SKIP_CONTRACTS=1` skips the check entirely; `WEAVE_STALENESS_POLICY_OVERRIDE=warn|ignore` overrides the configured policy; `WEAVE_ALLOW_DRIFT_REPOS=repo-a,repo-b` waives specific repos.
-- With `--features rbac` and a bound `--as <subject>`, any of the above waivers require the identity to hold the `"allow-drift"` role, or they're refused.
+- With `--features rbac` and a bound `--as <subject>`, any of the above waivers require the identity to hold the `"allow-drift"` role, or they're refused. **Omitting `--as`** behaves like a non-`rbac` build (unrestricted) *unless* this repo's own `[rbac.users]` config already grants `"allow-drift"` to someone — in that case an anonymous waiver is rejected outright, so a repo that opted into role-gated waivers can't be bypassed by simply dropping `--as`. A repo that never configured `allow-drift` for anyone sees no change.
 
 ### `weave plan-migration`
 Generates a cross-repo migration plan for a deprecated or modified symbol.
@@ -221,7 +222,7 @@ weave sync pull [--commit <sha>] [--fallback-latest] [--path <dir>]
 weave sync push [--signature <sig>] [--path <dir>]
 ```
 - `pull`: Hydrates the exact graph snapshot for a commit via atomic file swap, bypassing cold source parsing in CI runners.
-- `push`: Publishes a canonical graph snapshot from trunk branches upon merge. `--signature <sig>` (feature `hub-provenance`): attaches a signature computed by an external signer (e.g. `weave_graph_hub::SnapshotProvenanceVerifier`) — `weave` computes none of its own.
+- `push`: Publishes a canonical graph snapshot from trunk branches upon merge. `--signature <sig>` (feature `hub-provenance`): attaches a signature computed by an external signer (e.g. `weave_graph_hub::SnapshotProvenanceVerifier`) — `weave` computes none of its own. The registry only checks it if started with `--provenance-key` (see the [Self-Hosted Guide](self-hosted.md) §6.0); the expected wire format is hex-encoded bytes, and an unconfigured registry accepts any value or none.
 
 ### `weave search` (feature: `fts` / `vector`)
 Performs hybrid code search combining BM25 full-text indexing and semantic AST embeddings.
@@ -253,7 +254,9 @@ weave journal [--since <ref>]
 | **Knowledge** | `[watch]` | `enabled = true`, `debounce_ms = 2000`, `blast_radius_ceiling = 200` |
 | | `[report]` / `[viz]` | `format = "all"`, `auto_open = false`, `mode = "static"` |
 | **Custom / Enterprise** | `[rbac.users]` | `<subject> = ["internal"]` bypasses masking; `["allow-drift"]` grants waiver permission; any other role name is an unprivileged label (see §6 in the Configuration Reference) |
-| | `[hub]` | `url = "http://weave-hub:8080"`, `snapshot_retention = 20` |
+| | `[rbac]` | `require_identity = true` — refuses to start `weave serve --mcp` without `--as` (same as `--require-as`) |
+| | `[rbac.scim]` | `token = "<secret>"` — requires a matching `Authorization: Bearer` header on every `weave rbac serve-scim` request |
+| | `[hub]` | `url = "http://weave-hub:8080"`, `snapshot_retention = 20`, `token = "<secret>"` (only if the registry was started with `--auth-token`) |
 | | `[slm]` | `model = "qwen2.5-coder-0.5b-q4_k_m"` |
 
 `[index]` bailout thresholds are compiled-in defaults, not a config section — see the full Configuration Reference for what's actually read from `.weave/config.toml`.

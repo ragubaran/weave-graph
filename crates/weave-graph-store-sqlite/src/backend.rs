@@ -212,16 +212,6 @@ impl SqliteStorage {
         crate::fts::rebuild(&self.conn)
     }
 
-    /// Ranked node ids for an FTS5 `MATCH` expression, best match first.
-    #[cfg(feature = "fts")]
-    pub fn search_symbols(
-        &self,
-        match_expr: &str,
-        limit: usize,
-    ) -> Result<Vec<NodeId>, StorageError> {
-        crate::fts::search(&self.conn, match_expr, limit)
-    }
-
     /// Rebuilds the `vec_chunks` semantic index (`impl.md` M3.7 Tier 2)
     /// from `chunks` — `(node_id, chunk_text)` pairs the caller already
     /// built from source file spans; this crate owns no file I/O.
@@ -232,32 +222,6 @@ impl SqliteStorage {
         chunks: &[(NodeId, String)],
     ) -> Result<(), StorageError> {
         crate::vector::rebuild(&self.conn, embedder, chunks)
-    }
-
-    /// Three-stage semantic search: binary ANN oversampled by
-    /// `oversample`, reranked against int8 distance, capped at `limit`.
-    /// `visible` (SEC-01), when given, is applied to the reranked
-    /// candidates before the `limit` cap — never after — so a masked hit
-    /// never displaces a visible one out of the returned set.
-    #[cfg(feature = "vector")]
-    pub fn search_vector(
-        &self,
-        embedder: &dyn weave_graph_core::embedding::EmbeddingProvider,
-        query_text: &str,
-        limit: usize,
-        oversample: usize,
-        visible: Option<&dyn Fn(&Node) -> bool>,
-    ) -> Result<Vec<NodeId>, StorageError> {
-        let node_visible = |id: NodeId| match self.get_node(id) {
-            Ok(Some(node)) => visible.is_none_or(|v| v(&node)),
-            _ => false,
-        };
-        let filter: Option<&dyn Fn(NodeId) -> bool> = if visible.is_some() {
-            Some(&node_visible as &dyn Fn(NodeId) -> bool)
-        } else {
-            None
-        };
-        crate::vector::search(&self.conn, embedder, query_text, limit, oversample, filter)
     }
 
     /// Records (or replaces) one doc link, optionally carrying a
@@ -667,6 +631,38 @@ impl Storage for SqliteStorage {
             .map_err(backend_err)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(backend_err)
+    }
+
+    /// Ranked node ids for an FTS5 `MATCH` expression, best match first.
+    #[cfg(feature = "fts")]
+    fn search_symbols(&self, match_expr: &str, limit: usize) -> Result<Vec<NodeId>, StorageError> {
+        crate::fts::search(&self.conn, match_expr, limit)
+    }
+
+    /// Three-stage semantic search: binary ANN oversampled by
+    /// `oversample`, reranked against int8 distance, capped at `limit`.
+    /// `visible` (SEC-01), when given, is applied to the reranked
+    /// candidates before the `limit` cap — never after — so a masked hit
+    /// never displaces a visible one out of the returned set.
+    #[cfg(feature = "vector")]
+    fn search_vector(
+        &self,
+        embedder: &dyn weave_graph_core::embedding::EmbeddingProvider,
+        query_text: &str,
+        limit: usize,
+        oversample: usize,
+        visible: Option<&dyn Fn(&Node) -> bool>,
+    ) -> Result<Vec<NodeId>, StorageError> {
+        let node_visible = |id: NodeId| match self.get_node(id) {
+            Ok(Some(node)) => visible.is_none_or(|v| v(&node)),
+            _ => false,
+        };
+        let filter: Option<&dyn Fn(NodeId) -> bool> = if visible.is_some() {
+            Some(&node_visible as &dyn Fn(NodeId) -> bool)
+        } else {
+            None
+        };
+        crate::vector::search(&self.conn, embedder, query_text, limit, oversample, filter)
     }
 }
 

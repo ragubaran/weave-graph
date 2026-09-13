@@ -54,6 +54,13 @@ pub struct ImpactRadiusArgs<'a> {
     pub max_tokens: Option<usize>,
 }
 
+/// Arguments for `weave_search_semantic` (CORE-03/SEC-04, feature `vector`).
+#[cfg(feature = "vector")]
+pub struct SemanticSearchArgs<'a> {
+    pub query: &'a str,
+    pub limit: usize,
+}
+
 /// Word-count token estimate (M2.16): a whitespace-split count — the same
 /// class of estimate the project's own token-reduction claims already
 /// rely on elsewhere. Deliberately NOT a real tokenizer and never claimed

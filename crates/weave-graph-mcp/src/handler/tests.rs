@@ -83,13 +83,25 @@ fn handle_tools_list() {
 
     let res = handler.handle_message(&msg).unwrap();
     let tools = res.result.unwrap()["tools"].as_array().unwrap().clone();
-    // 4 base tools, +2 with the `notes` feature (weave_pin_note/recall).
-    assert_eq!(tools.len(), if cfg!(feature = "notes") { 6 } else { 4 });
+    // 4 base tools, +2 with `notes` (weave_pin_note/recall), +1 with
+    // `vector` (weave_search_semantic), +1 with `policy-lint`
+    // (weave_policy_lint).
+    let expected = 4
+        + if cfg!(feature = "notes") { 2 } else { 0 }
+        + if cfg!(feature = "vector") { 1 } else { 0 }
+        + if cfg!(feature = "policy-lint") { 1 } else { 0 };
+    assert_eq!(tools.len(), expected);
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"weave_repo_map"));
     assert!(names.contains(&"weave_file_api"));
     assert!(names.contains(&"weave_trace_calls"));
     assert!(names.contains(&"weave_impact_radius"));
+    if cfg!(feature = "vector") {
+        assert!(names.contains(&"weave_search_semantic"));
+    }
+    if cfg!(feature = "policy-lint") {
+        assert!(names.contains(&"weave_policy_lint"));
+    }
 }
 
 #[test]
@@ -169,6 +181,66 @@ fn handle_tools_call_all_four_tools() {
         .unwrap()
         .to_string();
     assert!(text.contains("impact_radius: run"));
+}
+
+#[cfg(feature = "vector")]
+#[test]
+fn handle_tools_call_search_semantic() {
+    let storage = setup_storage();
+    let embedder = weave_graph_core::embedding::MockEmbeddingProvider::new();
+    storage
+        .rebuild_vector_index(&embedder, &[(1, "runs the whole program".to_string())])
+        .unwrap();
+    let handler = McpHandler::new(storage).unwrap();
+
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 20,
+        "method": "tools/call",
+        "params": {
+            "name": "weave_search_semantic",
+            "arguments": { "query": "runs the whole program", "limit": 5 }
+        }
+    })
+    .to_string();
+    let res = handler.handle_message(&req).unwrap();
+    let text = res.result.unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(text.contains("run"), "{text}");
+}
+
+#[cfg(feature = "policy-lint")]
+#[test]
+fn handle_tools_call_policy_lint() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("policy.yaml"),
+        "rules:\n  - disallow:\n      from: src\n      to: nonexistent\n",
+    )
+    .unwrap();
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage)
+        .unwrap()
+        .with_weave_dir(dir.path().to_path_buf());
+
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 21,
+        "method": "tools/call",
+        "params": {
+            "name": "weave_policy_lint",
+            "arguments": {}
+        }
+    })
+    .to_string();
+    let res = handler.handle_message(&req).unwrap();
+    let text = res.result.unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(text, "✓ no boundary violations");
 }
 
 #[test]

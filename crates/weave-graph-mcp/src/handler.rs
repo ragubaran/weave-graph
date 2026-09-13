@@ -2,6 +2,8 @@ use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
+#[cfg(feature = "policy-lint")]
+use weave_graph_core::Storage;
 #[cfg(feature = "rbac")]
 use weave_graph_core::rbac::RbacGuard;
 use weave_graph_core::{CsrGraph, Node, StorageError};
@@ -339,6 +341,28 @@ impl McpHandler {
                     "properties": {}
                 }),
             },
+            #[cfg(feature = "vector")]
+            ToolDefinition {
+                name: "weave_search_semantic".to_string(),
+                description: "Binary-ANN-then-int8-rerank semantic search over AST-bounded chunks (feature: vector).".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Natural-language or code-shaped search query" },
+                        "limit": { "type": "integer", "description": "Max hits to return (default: 5)" }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            #[cfg(feature = "policy-lint")]
+            ToolDefinition {
+                name: "weave_policy_lint".to_string(),
+                description: "Evaluates declared architectural boundaries (.weave/policy.yaml) against the indexed graph (feature: policy-lint).".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
         ];
 
         json!({ "tools": tools })
@@ -370,6 +394,10 @@ impl McpHandler {
             "weave_pin_note" => self.call_pin_note(&args),
             #[cfg(feature = "notes")]
             "weave_recall_notes" => CallToolResult::ok(weave_recall_notes(&*self.storage.borrow())),
+            #[cfg(feature = "vector")]
+            "weave_search_semantic" => self.call_search_semantic(&args),
+            #[cfg(feature = "policy-lint")]
+            "weave_policy_lint" => self.call_policy_lint(),
             _ => CallToolResult::err(format!("Unknown tool: {name}")),
         };
         self.append_watch_staleness(&mut tool_result);
@@ -560,6 +588,84 @@ impl McpHandler {
             CallToolResult::err(res)
         } else {
             CallToolResult::ok(res)
+        }
+    }
+
+    #[cfg(feature = "vector")]
+    fn call_search_semantic(&self, args: &Value) -> CallToolResult {
+        let Some(query) = args.get("query").and_then(|v| v.as_str()) else {
+            return CallToolResult::err("Missing 'query' parameter");
+        };
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|d| d as usize)
+            .unwrap_or(5);
+        #[cfg(feature = "rbac")]
+        let checker = self
+            .rbac_guard
+            .as_ref()
+            .map(|g| move |n: &Node| g.visible(n));
+        #[cfg(feature = "rbac")]
+        let visible: Option<&dyn Fn(&Node) -> bool> =
+            checker.as_ref().map(|c| c as &dyn Fn(&Node) -> bool);
+        #[cfg(not(feature = "rbac"))]
+        let visible: Option<&dyn Fn(&Node) -> bool> = None;
+        let hits = match crate::search_semantic::weave_search_semantic(
+            &*self.storage.borrow(),
+            crate::tools::SemanticSearchArgs { query, limit },
+            visible,
+        ) {
+            Ok(hits) => hits,
+            Err(e) => return CallToolResult::err(format!("error: {e}")),
+        };
+        if hits.is_empty() {
+            return CallToolResult::ok(format!("No visible semantic matches for \"{query}\"."));
+        }
+        let text = hits
+            .iter()
+            .map(|n| format!("{} ({}:{})", n.symbol, n.path, n.line_start))
+            .collect::<Vec<_>>()
+            .join("\n");
+        CallToolResult::ok(text)
+    }
+
+    #[cfg(feature = "policy-lint")]
+    fn call_policy_lint(&self) -> CallToolResult {
+        let storage = self.storage.borrow();
+        let (nodes, edges) = match (storage.all_nodes(), storage.all_edges()) {
+            (Ok(n), Ok(e)) => (n, e),
+            (Err(e), _) | (_, Err(e)) => return CallToolResult::err(format!("error: {e}")),
+        };
+        drop(storage);
+        // Same one-guard rule as `weave policy lint` (M3.0): a masked
+        // identity's clean run only means "no violations it could see"
+        // (POL-01) — never a repo-wide compliance guarantee.
+        #[cfg(feature = "rbac")]
+        let (nodes, edges) = match &self.rbac_guard {
+            Some(guard) => {
+                let visible_nodes: Vec<Node> =
+                    nodes.into_iter().filter(|n| guard.visible(n)).collect();
+                let visible_ids: std::collections::HashSet<_> =
+                    visible_nodes.iter().map(|n| n.id).collect();
+                let visible_edges = edges
+                    .into_iter()
+                    .filter(|e| {
+                        visible_ids.contains(&e.source_id) && visible_ids.contains(&e.target_id)
+                    })
+                    .collect();
+                (visible_nodes, visible_edges)
+            }
+            None => (nodes, edges),
+        };
+        let weave_dir = self
+            .weave_dir
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from(".weave"));
+        let policy_path = weave_dir.join("policy.yaml");
+        match crate::policy_lint::weave_policy_lint(&policy_path, &nodes, &edges) {
+            Ok(text) => CallToolResult::ok(text),
+            Err(e) => CallToolResult::err(format!("error: {e}")),
         }
     }
 }

@@ -69,7 +69,19 @@ charlie = ["contractor"]
 ci_pipeline = ["auditor"]
 ```
 
-There is no `[rbac]` table (no `enabled`/`anonymous_role` keys) — masking engages purely based on whether `--as <subject>` is passed on the command line; an identity-less call always resolves to the built-in anonymous identity.
+Masking itself engages purely based on whether `--as <subject>` is passed on the command line; an identity-less call always resolves to the built-in anonymous identity — there's no `enabled`/`anonymous_role` toggle to flip. The one `[rbac]`-table key that does exist governs a different question — not "does masking apply," but "is an identity-less session even allowed to start" (see `--require-as` below).
+
+### Requiring an Identity for Shared Sessions (`--require-as`)
+`weave serve --mcp`'s default — an omitted `--as` runs unmasked, same as any other RBAC-gated command — is correct for a human running `weave` against their own checkout, but is a real footgun for a shared or multi-tenant deployment (a CI runner, a proxied MCP endpoint serving multiple identities) where the operator forgot to pass `--as`. Two ways to close that gap, either is sufficient:
+```bash
+weave serve --mcp --require-as --as <subject>
+```
+```toml
+# .weave/config.toml — refuses to start weave serve --mcp without --as, repo-wide
+[rbac]
+require_identity = true
+```
+Neither changes `weave query`/`weave report`/`weave export`'s own masking default — this only gates whether the MCP server process is willing to start at all without a bound identity.
 
 ### Auditing & Testing Identities with `--as <identity>`
 Administrators and CI pipelines can simulate access views using the global `--as` flag:
@@ -92,7 +104,7 @@ Weave Graph accepts role assignments pushed from an enterprise IdP through a gen
 │ Enterprise IdP (any SCIM 2.0 client: Okta / Azure AD /       │
 │ Google Workspace / a custom provisioning script)             │
 └──────────────────────────────┬──────────────────────────────┘
-                               │ SCIM push (POST/DELETE, no auth)
+                               │ SCIM push (POST/DELETE, optional bearer token)
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ Weave SCIM Server: weave rbac serve-scim (loopback only)     │
@@ -109,12 +121,24 @@ Weave Graph accepts role assignments pushed from an enterprise IdP through a gen
 └─────────────────────────────────────────────────────────────┘
 ```
 
-The server is deliberately unauthenticated (no bearer-token check) — it binds `127.0.0.1` only, on the same "trusted network, not exposed" model the base MCP server uses. There is no `/Groups` endpoint and no GitHub-specific mapping code anywhere; whatever role strings the IdP pushes for a subject land verbatim in `.weave/rbac-directory.toml`, and only `"internal"` carries any special meaning once there (see §2).
+The server binds `127.0.0.1` only, on the same "trusted network, not exposed" model the base MCP server uses. Bearer-token authentication is optional, off by default: set `[rbac.scim] token = "<secret>"` in `.weave/config.toml` and every request must carry a matching `Authorization: Bearer <secret>` header, or the server rejects it with `401`; omit the key and the server accepts any local caller, exactly as before. There is no `/Groups` endpoint and no GitHub-specific mapping code anywhere; whatever role strings the IdP pushes for a subject land verbatim in `.weave/rbac-directory.toml`, and only `"internal"` carries any special meaning once there (see §2).
 
 ### 1. Running the SCIM Directory Server
 Launch the loopback SCIM 2.0 daemon:
 ```bash
 weave rbac serve-scim --port 9292
+```
+
+Requiring a token (recommended for any shared host — SCIM provisioning can elevate a subject to `"internal"`):
+```toml
+# .weave/config.toml
+[rbac.scim]
+token = "a-long-random-secret"
+```
+```bash
+curl -X POST http://127.0.0.1:9292/ \
+  -H "Authorization: Bearer a-long-random-secret" \
+  -d '{"userName": "alice", "roles": ["internal"]}'
 ```
 
 ### 2. Provisioning Role Assignments
@@ -229,6 +253,31 @@ In enterprise monorepos or multi-repo microservice fleets, parsing millions of l
 └─────────────────────────────────────────────────────────────┘
 ```
 
+### 6.0 Registry Authentication & Snapshot Provenance (`hub-provenance`)
+
+Both are opt-in, off by default, and layer independently on top of the loopback-only binding above:
+
+| Flag | Config equivalent (client) | Default | Purpose |
+| :--- | :--- | :--- | :--- |
+| `weave-registry --auth-token <token>` | `.weave/config.toml`'s `[hub] token` | none — unauthenticated | Every request must carry a matching `Authorization: Bearer <token>`, or the registry rejects it. |
+| `weave-registry --provenance-key <secret-u64>` | `weave sync push --signature <hex>` | none — unverified | Every push's `X-Weave-Signature` (hex-encoded bytes) must verify against this secret before the registry commits it; a missing, wrong, or tampered signature is rejected with `400` and never advances the repo's head. |
+
+```bash
+weave-registry --bind 0.0.0.0:8080 --data-dir /data \
+  --max-queue-depth-per-repo 1000 --max-pushes-per-minute-per-repo 600 \
+  --auth-token "$(openssl rand -hex 32)" \
+  --provenance-key 8891273649102837465
+```
+
+```toml
+# .weave/config.toml — client side
+[hub]
+url = "https://weave-registry.internal.corp"
+token = "same bearer token the registry was started with"
+```
+
+`--provenance-key` binds `MockSnapshotProvenanceVerifier::with_key(<secret>)` — a shared secret both sides must know, **never** the verifier's default key (that key is a public constant in the OSS binary; using it would look like verification while accepting anything). A deployment computes its own signature client-side and attaches it via `weave sync push --signature <hex>`; the registry only ever checks what it's configured to check — omitting `--provenance-key` keeps every push unverified, exactly as before this existed. Because the key is symmetric, this proves *integrity and shared-secret possession*, not non-repudiation — it's tamper detection, not a cryptographic signature scheme in the PKI sense.
+
 ### 6.1 Ready-to-Use Deployment Manifests (`deploy/`)
 
 The repository includes pre-configured, hardened deployment manifests in the [`deploy/`](../../deploy) directory:
@@ -259,7 +308,7 @@ docker compose up -d
 
 **Custom Response Header Forwarding**:
 Any reverse proxy (Nginx, Envoy, Traefik) terminating TLS in front of `weave-registry` must forward these custom response headers:
-- `X-Weave-Signature`: Carries the Merkle root `.sig` cryptographic signature sidecar on `pull`.
+- `X-Weave-Signature`: Carries the hex-encoded signature sidecar on `pull`, and (on `push`) is what the registry checks against `--provenance-key` when configured (see §6.0).
 - `Upload-Offset`: Enables resumable chunked snapshot uploads on `HEAD`.
 - `Retry-After`: Communicates backoff times when rate-limited.
 
@@ -394,6 +443,8 @@ Configure client repositories to sync with your deployed registry in `.weave/con
 [hub]
 url = "https://weave-registry.internal.corp"
 snapshot_retention = 20
+# Required only if the registry was started with --auth-token (§6.0).
+token = "same bearer token the registry was started with"
 ```
 
 In PR test pipelines, replace expensive full reindexing with instant snapshot hydration:

@@ -28,6 +28,14 @@ MAX_LATENCY_REGRESSION_PCT=${MAX_LATENCY_REGRESSION_PCT:-30}
 # claim covers.
 FEATURES=(${@:-docs federation provenance notes watch viz rbac fts})
 
+build() {
+    if [ "$1" = default ]; then
+        cargo build -q -p weave-graph-cli --bin weave
+    else
+        cargo build -q -p weave-graph-cli --features "$1" --bin weave
+    fi
+}
+
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 ABS_BIN="$(pwd)/target/debug/weave"
@@ -41,6 +49,12 @@ mkdir -p "$WORK/src"
         printf 'fn f%03d() { crate::f%03d(); }\n' "$i" $((i + 1))
     done
 } > "$WORK/src/lib.rs"
+
+# `target/debug/weave` doesn't exist on a fresh checkout — build the
+# default binary before using it to set up the fixture, not just before
+# measuring it. The isolation loop below rebuilds "default" again as its
+# first iteration; cargo no-ops that when nothing changed in between.
+build default
 
 # One fixture, indexed once, reused by every build — identical workload.
 (cd "$WORK" && "$ABS_BIN" init >/dev/null && "$ABS_BIN" index >/dev/null)
@@ -77,14 +91,6 @@ latency_us() { # in-process query latency: ONE MCP session, 200 impact
         /usr/bin/time -p sh -c "cd '$WORK' && '$ABS_BIN' serve --mcp < '$input' > /dev/null" 2>&1 |
             awk '/real/ {printf "%d\n", $2 * 1000000}'
     done | sort -n | head -1
-}
-
-build() {
-    if [ "$1" = default ]; then
-        cargo build -q -p weave-graph-cli --bin weave
-    else
-        cargo build -q -p weave-graph-cli --features "$1" --bin weave
-    fi
 }
 
 # Build every binary FIRST, then measure all of them back-to-back:

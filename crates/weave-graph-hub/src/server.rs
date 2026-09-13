@@ -395,6 +395,14 @@ fn handle_connection(
                         &[("Retry-After", retry_after_secs.to_string())],
                         b"rate limited",
                     ),
+                    #[cfg(feature = "hub-provenance")]
+                    Ok(PushDecision::SignatureInvalid) => write_response(
+                        &mut stream,
+                        400,
+                        "Bad Request",
+                        &[],
+                        b"snapshot signature missing or did not verify",
+                    ),
                     Err(e) => write_response(
                         &mut stream,
                         500,
