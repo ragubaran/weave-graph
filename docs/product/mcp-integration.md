@@ -40,6 +40,9 @@ weave serve --mcp --transport http --host 127.0.0.1 --port 8080
 
 MCP clients speak JSON-RPC 2.0 over standard I/O (`stdio`). `weave serve` automatically runs against the current working directory (`cwd`), requiring that the target repository has already been initialized (`weave init`) and indexed (`weave index`).
 
+> [!TIP]
+> **Zero-Config Setup with `weave init`**: When you run `weave init`, it automatically creates or non-destructively merges `.mcp.json` at the project root with the `weave` MCP server configuration. Clients supporting project-level `.mcp.json` (such as Claude Code, Cursor, Windsurf, Google Antigravity, Gemini Code Assist, GitHub Copilot, Codex, OpenCode, and Hermes Agent) require no manual configuration!
+
 ### Claude Desktop
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 

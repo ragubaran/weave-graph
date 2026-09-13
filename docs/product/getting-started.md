@@ -45,14 +45,14 @@ No optional features required. Operates 100% locally with zero cloud egress.
 
 ```bash
 cd my-repo
-weave init --mode single       # writes .weave/config.toml
+weave init --mode single       # writes .weave/config.toml, auto-registers .mcp.json, updates .gitignore/.ignore
 weave index                    # indexes 29 languages into .weave/graph.db
 weave query "callers(AuthService.verify)"
 weave report                   # writes WEAVE_REPORT.md + interactive .canvas file
 weave serve --mcp              # starts local MCP server for AI coding agents
 ```
 
-`.weave/` is where `weave` keeps its index — it is added to `.gitignore` automatically since it is a derived cache, not source of truth.
+`.weave/` is where `weave` keeps its index — `weave init` configures `.weave/*` and `!.weave/config.toml` in `.gitignore` and/or `.ignore` so that `.weave/config.toml` can be tracked in version control while derived cache databases are ignored. In addition, `weave init` automatically provisions `.mcp.json` with the `weave` MCP server configuration, enabling seamless zero-config setup for AI coding assistants (Claude Code, Cursor, Windsurf, Antigravity, Gemini, etc.) while non-destructively preserving existing servers like `graft`.
 
 ### Querying the Graph
 `weave query` provides deterministic traversal expressions:

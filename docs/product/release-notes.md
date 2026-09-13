@@ -1,6 +1,25 @@
 # Release Notes
 
-## Unreleased — RBAC Hardening, Registry Auth & Provenance, Storage Trait Cleanup, New MCP Tools, Corrected Binary Sizes, Federated Query Persistence
+## Unreleased — RBAC Hardening, Registry Auth & Provenance, Storage Trait Cleanup, New MCP Tools, Corrected Binary Sizes, Federated Query Persistence, Zero-Config MCP & Ignore Management
+
+### Zero-Config AI Agent MCP Integration & Smart Ignore Management (`weave init`)
+
+Developer experience improvements to streamline onboarding with AI coding assistants and repository ignore configurations:
+
+- **Auto-Registration of MCP Server (`.mcp.json`)**:
+  - `weave init` automatically provisions `.mcp.json` at the project root with the `weave` server configuration (`{"command": "weave", "args": ["serve", "--mcp"]}`).
+  - **Non-Destructive Merging**: If `.mcp.json` already exists (e.g. configuring `graft`, `filesystem`, or custom MCP tools), `weave init` parses the existing JSON and safely merges `weave` into `mcpServers` without altering any existing servers or options.
+  - **Universal AI Agent Support**: Compatible out of the box with Claude Code, Cursor, Windsurf, Google Antigravity, Gemini Code Assist, GitHub Copilot, Codex, OpenCode, Hermes Agent, and Kiro.
+- **Smart Ignore File Resolution (`.gitignore` & `.ignore`)**:
+  - Automatically configures `.gitignore` with `.weave/*` and `!.weave/config.toml` so all derived SQLite graphs (`.weave/graph.db`), advisory lock files, and rebuild staging directories (`.weave/graph.db.rebuild`) are ignored while `.weave/config.toml` remains trackable and committable in version control.
+  - Automatically converts existing blanket `.weave/` or `.weave` entries to `.weave/*` and `!.weave/config.toml`, avoiding Git's behavior where directory exclusions suppress contained unignore rules.
+  - If `.ignore` is present (used by `ripgrep` / `ag` to configure search visibility), configures `!.weave/`, `.weave/*`, and `!.weave/config.toml` so search tools re-admit `.weave/config.toml` without scanning binary databases.
+  - If neither exists, creates `.gitignore` with `.weave/*` and `!.weave/config.toml` by default.
+  - Idempotent: checks before writing to prevent duplicate entries across repeated `weave init` runs.
+- **AST Indexer Dotfile Filtering**:
+  - Updated `is_indexable` in `weave-graph-cli` to ignore hidden dotfiles (files whose names start with `.`). Configuration files such as `.mcp.json`, `.gitignore`, and `.ignore` will no longer be treated as source code or indexed into the symbol table.
+- **Full E2E & Unit Test Coverage**:
+  - Verified with unit tests in `crates/weave-graph-cli/src/tests.rs` (testing file creation, JSON merging, ignore file precedence) and binary E2E tests in `crates/weave-graph-cli/tests/cli_e2e.rs` using `assert_cmd` and `predicates`.
 
 ### RBAC, Registry Auth & Provenance, Storage Trait, New MCP Tools
 

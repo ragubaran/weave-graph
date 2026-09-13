@@ -7,7 +7,8 @@ fn ensure_gitignored_creates_gitignore_when_missing() {
     let dir = tempfile::tempdir().unwrap();
     ensure_gitignored(dir.path()).unwrap();
     let content = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-    assert!(content.lines().any(|l| l == ".weave/"));
+    assert!(content.lines().any(|l| l == ".weave/*"));
+    assert!(content.lines().any(|l| l == "!.weave/config.toml"));
 }
 
 #[test]
@@ -17,17 +18,18 @@ fn ensure_gitignored_appends_to_an_existing_gitignore() {
     ensure_gitignored(dir.path()).unwrap();
     let content = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
     assert!(content.lines().any(|l| l == "target/"));
-    assert!(content.lines().any(|l| l == ".weave/"));
+    assert!(content.lines().any(|l| l == ".weave/*"));
+    assert!(content.lines().any(|l| l == "!.weave/config.toml"));
 }
 
 #[test]
 fn ensure_gitignored_adds_a_trailing_newline_before_appending() {
     let dir = tempfile::tempdir().unwrap();
-    // No trailing newline — the append path must add one before ".weave/".
+    // No trailing newline — the append path must add one before ".weave/*".
     fs::write(dir.path().join(".gitignore"), "target/").unwrap();
     ensure_gitignored(dir.path()).unwrap();
     let content = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-    assert_eq!(content, "target/\n.weave/\n");
+    assert_eq!(content, "target/\n.weave/*\n!.weave/config.toml\n");
 }
 
 #[test]
@@ -36,16 +38,23 @@ fn ensure_gitignored_is_idempotent() {
     ensure_gitignored(dir.path()).unwrap();
     ensure_gitignored(dir.path()).unwrap();
     let content = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-    assert_eq!(content.lines().filter(|l| l.contains(".weave")).count(), 1);
+    assert_eq!(content.lines().filter(|l| l == &".weave/*").count(), 1);
+    assert_eq!(
+        content
+            .lines()
+            .filter(|l| l == &"!.weave/config.toml")
+            .count(),
+        1
+    );
 }
 
 #[test]
-fn ensure_gitignored_respects_an_existing_weave_entry() {
+fn ensure_gitignored_replaces_bare_weave_entry() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join(".gitignore"), ".weave\n").unwrap();
     ensure_gitignored(dir.path()).unwrap();
     let content = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-    assert_eq!(content, ".weave\n");
+    assert_eq!(content, ".weave/*\n!.weave/config.toml\n");
 }
 
 #[test]
@@ -54,7 +63,9 @@ fn ensure_ignored_updates_only_ignore_when_only_ignore_exists() {
     fs::write(dir.path().join(".ignore"), "custom_cache/\n").unwrap();
     ensure_ignored(dir.path()).unwrap();
     let ignore_content = fs::read_to_string(dir.path().join(".ignore")).unwrap();
-    assert!(ignore_content.lines().any(|l| l == ".weave/"));
+    assert!(ignore_content.lines().any(|l| l == "!.weave/"));
+    assert!(ignore_content.lines().any(|l| l == ".weave/*"));
+    assert!(ignore_content.lines().any(|l| l == "!.weave/config.toml"));
     assert!(!dir.path().join(".gitignore").exists());
 }
 
@@ -66,8 +77,24 @@ fn ensure_ignored_updates_both_when_both_exist() {
     ensure_ignored(dir.path()).unwrap();
     let gitignore_content = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
     let ignore_content = fs::read_to_string(dir.path().join(".ignore")).unwrap();
-    assert!(gitignore_content.lines().any(|l| l == ".weave/"));
-    assert!(ignore_content.lines().any(|l| l == ".weave/"));
+    assert!(gitignore_content.lines().any(|l| l == ".weave/*"));
+    assert!(
+        gitignore_content
+            .lines()
+            .any(|l| l == "!.weave/config.toml")
+    );
+    assert!(ignore_content.lines().any(|l| l == "!.weave/"));
+    assert!(ignore_content.lines().any(|l| l == ".weave/*"));
+    assert!(ignore_content.lines().any(|l| l == "!.weave/config.toml"));
+}
+
+#[test]
+fn ensure_ignored_allows_config_toml_and_ignores_db() {
+    let dir = tempfile::tempdir().unwrap();
+    ensure_ignored(dir.path()).unwrap();
+    let gitignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert!(gitignore.lines().any(|l| l == ".weave/*"));
+    assert!(gitignore.lines().any(|l| l == "!.weave/config.toml"));
 }
 
 #[test]

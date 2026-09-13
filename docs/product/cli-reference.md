@@ -14,12 +14,38 @@ Rebuild with `--features <feature>`, or install the prebuilt `weave` / `weave-cu
 These commands execute 100% deterministically with zero network calls, zero LLMs, and zero external service dependencies. Available in all builds: 41.1 MB stripped release binary by default (`cargo build --release`, all 29 languages), 9.6 MB with `--no-default-features` (8 core languages only); peak RAM stays under the 80 MB ceiling (measured ~60 MB for 500k symbols).
 
 ### `weave init`
-Initializes `.weave/config.toml` and adds `.weave/` to `.gitignore`.
+Initializes the repository for Weave Graph intelligence, registers the MCP server configuration for AI coding agents, and configures version control / search ignore rules.
 ```bash
-weave init [--mode single|multiple]
+weave init [--mode single|multiple] [--path <dir>]
 ```
-- `--mode single` *(default)*: Configures single-repository indexing.
+- `--mode single` *(default)*: Configures single-repository indexing in `.weave/config.toml`.
 - `--mode multiple`: Scaffolds a multi-repo `[federation]` configuration and CI cache templates.
+- `--path <dir>`: Target repository directory *(default: `.`)*.
+
+#### Actions Performed by `weave init`
+1. **Scaffolds `.weave/config.toml`**:
+   Writes the initial repository configuration specifying runtime mode (`single` or `multiple`), setting up indexing policies and optional federation/storage sections.
+2. **Auto-Registers MCP in `.mcp.json`**:
+   Provisions or merges into `.mcp.json` at the repository root, adding the Weave MCP server:
+   ```json
+   {
+     "mcpServers": {
+       "weave": {
+         "command": "weave",
+         "args": ["serve", "--mcp"]
+       }
+     }
+   }
+   ```
+   - **Non-destructive & Merging**: If `.mcp.json` already exists (e.g. configuring `graft`, `filesystem`, or custom servers), existing servers and properties are preserved.
+   - **Zero-Config Agent Support**: Supported out of the box by Claude Code, Cursor, Windsurf, Google Antigravity, Gemini Code Assist, GitHub Copilot, Codex, OpenCode, Hermes Agent, and Kiro.
+3. **Smart Ignore File Management (`.gitignore` & `.ignore`)**:
+   - Ensures runtime databases, locks, and rebuild staging swap files (`.weave/*`) are excluded from Git commits and fast searchers like `ripgrep`, while `.weave/config.toml` remains tracked and committable in version control.
+   - Intelligently manages ignore rules:
+     - For `.gitignore`: Configures `.weave/*` and `!.weave/config.toml`. If an existing `.gitignore` had a blanket `.weave/` or `.weave`, it is automatically converted so `config.toml` is not suppressed by directory exclusion.
+     - For `.ignore`: If present (consulted by `ripgrep` before `.gitignore`), configures `!.weave/`, `.weave/*`, and `!.weave/config.toml` so `ripgrep` searches `config.toml` without scanning binary database files.
+     - If neither exists, creates `.gitignore` with `.weave/*` and `!.weave/config.toml` by default.
+   - Idempotent: safe to run multiple times without duplicating ignore entries.
 
 ### `weave index`
 Builds or updates the SQLite code intelligence graph (`.weave/graph.db`) using Tree-sitter parsers across 29 languages.

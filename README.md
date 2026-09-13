@@ -123,12 +123,14 @@ The default. No Cargo features required.
 
 ```bash
 cd my-repo
-weave init --mode single     # writes .weave/config.toml, gitignores .weave/
+weave init --mode single     # writes .weave/config.toml, auto-configures .mcp.json, updates .gitignore/.ignore
 weave index                  # builds .weave/graph.db
 weave query "callers(AuthService.verify)"
 weave report                 # WEAVE_REPORT.md + .canvas export
 weave serve --mcp            # local MCP server for AI agents (stdio, loopback-only)
 ```
+
+**Zero-Config AI Agent Integration**: `weave init` automatically creates or merges into `.mcp.json` at your repository root (`"weave": { "command": "weave", "args": ["serve", "--mcp"] }`), ready for immediate use by Claude Code, Cursor, Windsurf, Google Antigravity, Gemini Code Assist, GitHub Copilot, Codex, OpenCode, and Hermes Agent while preserving any existing servers (like `graft`). It also configures `.gitignore` and `.ignore` with `.weave/*` and `!.weave/config.toml` so `.weave/config.toml` is tracked and committable in version control while derived database and rebuild files are cleanly ignored.
 
 ### Multiple mode — several local repos, no hosted service
 

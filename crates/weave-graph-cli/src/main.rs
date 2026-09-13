@@ -851,28 +851,87 @@ fn ci_cache_snippet() -> &'static str {
 "#
 }
 
-fn append_ignore_entry(file_path: &Path, pattern: &str) -> std::io::Result<()> {
-    let existing = fs::read_to_string(file_path).unwrap_or_default();
-    if existing
-        .lines()
-        .any(|l| l.trim() == pattern || l.trim() == pattern.trim_end_matches('/'))
+// Ignores derived database files while allowing config.toml to be committed.
+// Replaces a blanket .weave/ entry since Git suppresses unignores inside excluded dirs.
+fn update_gitignore(path: &Path) -> std::io::Result<()> {
+    let content = fs::read_to_string(path).unwrap_or_default();
+    if content.lines().any(|l| l.trim() == ".weave/*")
+        && content.lines().any(|l| l.trim() == "!.weave/config.toml")
     {
         return Ok(());
     }
-    let mut content = existing;
-    if !content.is_empty() && !content.ends_with('\n') {
-        content.push('\n');
+
+    if content
+        .lines()
+        .any(|l| l.trim() == ".weave/" || l.trim() == ".weave")
+    {
+        let lines: Vec<&str> = content.lines().collect();
+        let mut new_lines = Vec::new();
+        for line in lines {
+            if line.trim() == ".weave/" || line.trim() == ".weave" {
+                new_lines.push(".weave/*");
+                new_lines.push("!.weave/config.toml");
+            } else {
+                new_lines.push(line);
+            }
+        }
+        let mut out = new_lines.join("\n");
+        if content.ends_with('\n') {
+            out.push('\n');
+        }
+        return fs::write(path, out);
     }
-    content.push_str(pattern);
-    if !pattern.ends_with('\n') {
-        content.push('\n');
+
+    let mut out = content;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
     }
-    fs::write(file_path, content)
+    out.push_str(".weave/*\n!.weave/config.toml\n");
+    fs::write(path, out)
 }
 
-// Ensures disposable index artifacts are ignored by VCS and search tools.
-// Whichever files are present (.gitignore and/or .ignore) receive the
-// entry, defaulting to .gitignore when neither exists.
+// Re-admits .weave/ and config.toml to search while ignoring binary databases.
+// Tools like ripgrep consult .ignore before .gitignore and skip dotfiles by default.
+fn update_ignore_file(path: &Path) -> std::io::Result<()> {
+    let content = fs::read_to_string(path).unwrap_or_default();
+    if content.lines().any(|l| l.trim() == ".weave/*")
+        && content.lines().any(|l| l.trim() == "!.weave/config.toml")
+    {
+        return Ok(());
+    }
+
+    if content
+        .lines()
+        .any(|l| l.trim() == ".weave/" || l.trim() == ".weave")
+    {
+        let lines: Vec<&str> = content.lines().collect();
+        let mut new_lines = Vec::new();
+        for line in lines {
+            if line.trim() == ".weave/" || line.trim() == ".weave" {
+                new_lines.push("!.weave/");
+                new_lines.push(".weave/*");
+                new_lines.push("!.weave/config.toml");
+            } else {
+                new_lines.push(line);
+            }
+        }
+        let mut out = new_lines.join("\n");
+        if content.ends_with('\n') {
+            out.push('\n');
+        }
+        return fs::write(path, out);
+    }
+
+    let mut out = content;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("!.weave/\n.weave/*\n!.weave/config.toml\n");
+    fs::write(path, out)
+}
+
+// Ensures disposable index artifacts are ignored while preserving config.toml.
+// Updates .gitignore and/or .ignore when present, defaulting to .gitignore.
 fn ensure_ignored(root: &Path) -> std::io::Result<()> {
     let gitignore_path = root.join(".gitignore");
     let ignore_path = root.join(".ignore");
@@ -881,13 +940,13 @@ fn ensure_ignored(root: &Path) -> std::io::Result<()> {
     let has_ignore = ignore_path.exists();
 
     if !has_gitignore && !has_ignore {
-        append_ignore_entry(&gitignore_path, ".weave/")?;
+        update_gitignore(&gitignore_path)?;
     } else {
         if has_gitignore {
-            append_ignore_entry(&gitignore_path, ".weave/")?;
+            update_gitignore(&gitignore_path)?;
         }
         if has_ignore {
-            append_ignore_entry(&ignore_path, ".weave/")?;
+            update_ignore_file(&ignore_path)?;
         }
     }
     Ok(())

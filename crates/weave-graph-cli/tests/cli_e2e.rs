@@ -60,7 +60,9 @@ fn test_cli_init_configures_mcp_and_default_gitignore() {
         .success();
 
     let gitignore = std::fs::read_to_string(root.join(".gitignore")).unwrap();
-    assert!(gitignore.lines().any(|l| l == ".weave/"));
+    assert!(gitignore.lines().any(|l| l == ".weave/*"));
+    assert!(gitignore.lines().any(|l| l == "!.weave/config.toml"));
+    assert!(!gitignore.lines().any(|l| l == ".weave/"));
 
     let mcp = std::fs::read_to_string(root.join(".mcp.json")).unwrap();
     let json: serde_json::Value = serde_json::from_str(&mcp).unwrap();
@@ -95,13 +97,54 @@ fn test_cli_init_preserves_existing_mcp_and_updates_ignore() {
         .success();
 
     let ignore = std::fs::read_to_string(root.join(".ignore")).unwrap();
-    assert!(ignore.lines().any(|l| l == ".weave/"));
+    assert!(ignore.lines().any(|l| l == "!.weave/"));
+    assert!(ignore.lines().any(|l| l == ".weave/*"));
+    assert!(ignore.lines().any(|l| l == "!.weave/config.toml"));
     assert!(!root.join(".gitignore").exists());
 
     let mcp = std::fs::read_to_string(root.join(".mcp.json")).unwrap();
     let json: serde_json::Value = serde_json::from_str(&mcp).unwrap();
     assert!(json["mcpServers"]["graft"].is_object());
     assert!(json["mcpServers"]["weave"].is_object());
+}
+
+#[test]
+fn test_cli_init_allows_git_tracking_of_config_toml() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    let init_res = std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(root)
+        .output();
+    if init_res.is_err() || !init_res.as_ref().unwrap().status.success() {
+        return;
+    }
+
+    let mut cmd = Command::cargo_bin("weave").unwrap();
+    cmd.current_dir(root)
+        .arg("init")
+        .arg("--mode")
+        .arg("single")
+        .assert()
+        .success();
+
+    std::fs::write(root.join(".weave/graph.db"), "binary db").unwrap();
+    std::fs::write(root.join(".weave/index.lock"), "lock").unwrap();
+
+    let check_cfg = std::process::Command::new("git")
+        .args(["check-ignore", ".weave/config.toml"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert_eq!(check_cfg.status.code(), Some(1));
+
+    let check_db = std::process::Command::new("git")
+        .args(["check-ignore", ".weave/graph.db"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert_eq!(check_db.status.code(), Some(0));
 }
 
 #[test]
