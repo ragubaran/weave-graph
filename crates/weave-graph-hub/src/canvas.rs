@@ -88,18 +88,36 @@ fn module_node(module: &Module) -> CanvasNode {
     }
 }
 
+fn retain_visible_files(module: &mut Module, exclude: &[String]) -> bool {
+    if exclude
+        .iter()
+        .any(|prefix| module.label.starts_with(prefix))
+    {
+        return false;
+    }
+    module
+        .files
+        .retain(|path| !exclude.iter().any(|prefix| path.starts_with(prefix)));
+    !module.files.is_empty()
+}
+
 /// Builds the module-level canvas directly from an already-opened
 /// snapshot's nodes/edges — split from [`from_snapshot_bytes`] so it's
 /// testable against an in-process `Storage` without round-tripping
 /// through a temp file.
 pub fn build_module_canvas(
     storage: &dyn Storage,
+    exclude: &[String],
 ) -> Result<Canvas, weave_graph_core::StorageError> {
     let nodes = storage.all_nodes()?;
     let edges = storage.all_edges()?;
     let file_of: HashMap<NodeId, String> = nodes.iter().map(|n| (n.id, n.path.clone())).collect();
     let file_edges = aggregate_file_edges(&edges, &file_of);
     let mut modules = build_modules(&nodes, &file_edges);
+
+    // Match labels and paths because root files share the `(root)` label.
+    modules.retain_mut(|module| retain_visible_files(module, exclude));
+
     modules.sort_by(|a, b| a.label.cmp(&b.label));
 
     let overflow_count = modules.len().saturating_sub(MODULE_BUDGET);
@@ -119,7 +137,7 @@ pub fn build_module_canvas(
 /// file, opens it read-only, renders the canvas, then always removes the
 /// scratch file — even on error, since a registry serving many requests
 /// must not accumulate one temp file per canvas fetch.
-pub fn from_snapshot_bytes(bytes: &[u8]) -> Result<Canvas, String> {
+pub fn from_snapshot_bytes(bytes: &[u8], exclude: &[String]) -> Result<Canvas, String> {
     let scratch = std::env::temp_dir().join(format!(
         "weave-hub-canvas-{}-{}.db",
         std::process::id(),
@@ -128,7 +146,7 @@ pub fn from_snapshot_bytes(bytes: &[u8]) -> Result<Canvas, String> {
     let result = (|| {
         std::fs::write(&scratch, bytes).map_err(|e| e.to_string())?;
         let storage = SqliteStorage::open_read_only(&scratch).map_err(|e| e.to_string())?;
-        build_module_canvas(&storage).map_err(|e| e.to_string())
+        build_module_canvas(&storage, exclude).map_err(|e| e.to_string())
     })();
     let _ = std::fs::remove_file(&scratch);
     result

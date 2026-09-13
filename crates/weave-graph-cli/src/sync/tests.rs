@@ -5,6 +5,13 @@ use std::path::Path;
 
 use super::{cmd_sync_pull, cmd_sync_push};
 
+#[cfg(feature = "vector")]
+use weave_graph_core::embedding::MockEmbeddingProvider;
+#[cfg(feature = "vector")]
+use weave_graph_core::{Node, Storage};
+#[cfg(feature = "vector")]
+use weave_graph_store_sqlite::SqliteStorage;
+
 fn init_repo(name: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let weave_dir = dir.path().join(".weave");
@@ -23,6 +30,63 @@ fn write_config(root: &Path, hub_url: &str) {
         format!("[hub]\nurl = \"{hub_url}\"\nsnapshot_retention = 5\n"),
     )
     .unwrap();
+}
+
+#[cfg(feature = "vector")]
+#[test]
+fn push_snapshot_excludes_configured_vector_paths() {
+    let repo = init_repo("vector_snapshot");
+    let db_path = repo.path().join(".weave/graph.db");
+    let mut storage = SqliteStorage::open(&db_path).unwrap();
+    let secret_id = storage
+        .upsert_node(&Node {
+            id: 0,
+            repo_id: "local".to_string(),
+            path: "private/secret.rs".to_string(),
+            symbol: "secret".to_string(),
+            kind: "function".to_string(),
+            line_start: 1,
+            line_end: 1,
+            signature: "fn secret()".to_string(),
+        })
+        .unwrap();
+    let public_id = storage
+        .upsert_node(&Node {
+            id: 0,
+            repo_id: "local".to_string(),
+            path: "public/api.rs".to_string(),
+            symbol: "public_api".to_string(),
+            kind: "function".to_string(),
+            line_start: 1,
+            line_end: 1,
+            signature: "fn public_api()".to_string(),
+        })
+        .unwrap();
+    let embedder = MockEmbeddingProvider::new();
+    storage
+        .rebuild_vector_index(
+            &embedder,
+            &[
+                (secret_id, "private secret credential".to_string()),
+                (public_id, "public api credential".to_string()),
+            ],
+        )
+        .unwrap();
+    drop(storage);
+    fs::write(
+        repo.path().join(".weave/config.toml"),
+        "[vector]\nexclude = [\"private\"]\n",
+    )
+    .unwrap();
+
+    let snapshot = super::snapshot_for_push(repo.path(), &db_path).unwrap();
+    let storage = SqliteStorage::open(&snapshot.path).unwrap();
+    let hits = storage
+        .search_vector(&embedder, "credential", 5, 4, None)
+        .unwrap();
+
+    assert!(!hits.contains(&secret_id));
+    assert!(hits.contains(&public_id));
 }
 
 #[test]

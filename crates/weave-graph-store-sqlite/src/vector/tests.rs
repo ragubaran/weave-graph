@@ -63,6 +63,38 @@ fn rebuild_clears_stale_entries_from_a_previous_rebuild() {
 }
 
 #[test]
+fn purge_vector_paths_removes_rows_by_node_rowid() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let embedder = MockEmbeddingProvider::new();
+    let secret_id = storage.upsert_node(&node("secret.rs")).unwrap();
+    let public_id = storage.upsert_node(&node("public.rs")).unwrap();
+    storage
+        .rebuild_vector_index(
+            &embedder,
+            &[
+                (
+                    secret_id,
+                    "secret authentication implementation".to_string(),
+                ),
+                (public_id, "public authentication interface".to_string()),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(
+        storage
+            .purge_vector_paths(&["secret.rs".to_string()])
+            .unwrap(),
+        1
+    );
+    let hits = storage
+        .search_vector(&embedder, "authentication", 5, 4, None)
+        .unwrap();
+    assert!(!hits.contains(&secret_id));
+    assert!(hits.contains(&public_id));
+}
+
+#[test]
 fn search_respects_the_limit() {
     let storage = SqliteStorage::open_in_memory().unwrap();
     let embedder = MockEmbeddingProvider::new();

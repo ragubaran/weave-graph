@@ -144,6 +144,68 @@ fn http_transport_handles_post_jsonrpc() {
 }
 
 #[test]
+fn http_transport_rejects_a_body_over_the_limit_before_reading_it() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+    let transport = HttpTransport::new("127.0.0.1", 8080, false);
+    let req = format!(
+        "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n",
+        MAX_HTTP_REQUEST_BODY_BYTES + 1
+    );
+    let mut stream = MockStream::new(req.as_bytes());
+
+    transport.handle_client(&mut stream, &handler).unwrap();
+
+    let out = String::from_utf8(stream.write_buf).unwrap();
+    assert!(out.starts_with("HTTP/1.1 413 Payload Too Large"));
+}
+
+#[cfg(feature = "rbac")]
+#[test]
+fn http_transport_maps_bearer_authentication_to_request_metadata() {
+    use std::rc::Rc;
+
+    use weave_graph_core::rbac::{Identity, RbacGuard};
+
+    let storage = setup_storage();
+    let provider = Rc::new(|token: &str| {
+        (token == "transport-secret").then(|| {
+            RbacGuard::new(
+                Identity {
+                    subject: "alice".to_string(),
+                    roles: vec!["internal".to_string()],
+                },
+                |_| false,
+            )
+        })
+    });
+    let handler = McpHandler::new(storage)
+        .unwrap()
+        .with_token_auth(provider)
+        .with_require_auth(true);
+    let transport = HttpTransport::new("127.0.0.1", 8080, false);
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": { "name": "weave_repo_map", "arguments": {} }
+    })
+    .to_string();
+    let raw = format!(
+        "POST / HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer transport-secret\r\nContent-Length: {}\r\n\r\n{request}",
+        request.len(),
+    );
+    let mut stream = MockStream::new(raw.as_bytes());
+
+    transport.handle_client(&mut stream, &handler).unwrap();
+
+    let out = String::from_utf8(stream.write_buf).unwrap();
+    assert!(out.starts_with("HTTP/1.1 200 OK"));
+    assert!(out.contains("src/main.rs"));
+    assert!(!out.contains("transport-secret"));
+}
+
+#[test]
 fn http_transport_handle_empty_stream() {
     let storage = setup_storage();
     let handler = McpHandler::new(storage).unwrap();

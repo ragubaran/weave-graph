@@ -243,3 +243,26 @@ fn open_on_a_corrupt_file_surfaces_a_backend_error() {
         Ok(_) => panic!("expected a Backend error, got Ok"),
     }
 }
+
+#[test]
+fn backend_err_mapping_on_invalid_query() {
+    let storage = TursoStorage::open_in_memory().unwrap();
+    // Drop a table to force a query error during a normal operation.
+    futures::executor::block_on(storage.conn.execute("DROP TABLE nodes", ())).unwrap();
+    let res = storage.get_node(1);
+    assert!(matches!(res, Err(StorageError::Backend(_))));
+}
+
+#[test]
+fn query_path_avoids_cycles_and_redundant_paths() {
+    let mut storage = TursoStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    let b = storage.upsert_node(&node("r", "b.rs", "b", 1)).unwrap();
+    let c = storage.upsert_node(&node("r", "c.rs", "c", 1)).unwrap();
+
+    storage.upsert_edge(&edge(a, b, "CALLS")).unwrap();
+    storage.upsert_edge(&edge(a, c, "CALLS")).unwrap();
+    storage.upsert_edge(&edge(b, c, "CALLS")).unwrap();
+
+    assert_eq!(storage.query_path(a, c).unwrap(), Some(vec![a, c]));
+}

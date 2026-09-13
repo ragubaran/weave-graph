@@ -5,11 +5,17 @@
 
 use std::path::Path;
 
+#[cfg(feature = "vector")]
+use weave_graph_core::Storage;
 use weave_graph_core::synonym::expand_query;
-use weave_graph_core::{Node, Storage, StorageError};
+use weave_graph_core::{MAX_SEARCH_LIMIT, Node, StorageError};
 use weave_graph_store_sqlite::SqliteStorage;
 
 use crate::open_storage_for_read;
+
+fn bounded_limit(limit: usize) -> usize {
+    limit.min(MAX_SEARCH_LIMIT)
+}
 
 /// Ranked, RBAC-filtered hits for `query` — split out from `cmd_search` so
 /// tests assert on real data, not just "didn't panic while printing."
@@ -20,16 +26,7 @@ pub(crate) fn run(
     visible: Option<&dyn Fn(&Node) -> bool>,
 ) -> Result<Vec<Node>, StorageError> {
     let expanded = expand_query(query);
-    let mut nodes = Vec::new();
-    for id in storage.search_symbols(&expanded, limit)? {
-        let Some(node) = storage.get_node(id)? else {
-            continue;
-        };
-        if visible.is_none_or(|v| v(&node)) {
-            nodes.push(node);
-        }
-    }
-    Ok(nodes)
+    storage.search_symbol_nodes(&expanded, bounded_limit(limit), visible)
 }
 
 pub(crate) fn cmd_search(
@@ -79,7 +76,7 @@ pub(crate) fn run_semantic(
 ) -> Result<Vec<Node>, StorageError> {
     let embedder = weave_graph_core::embedding::MockEmbeddingProvider::new();
     let mut nodes = Vec::new();
-    for id in storage.search_vector(&embedder, query, limit, OVERSAMPLE, visible)? {
+    for id in storage.search_vector(&embedder, query, bounded_limit(limit), OVERSAMPLE, visible)? {
         let Some(node) = storage.get_node(id)? else {
             continue;
         };

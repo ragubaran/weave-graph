@@ -1,8 +1,13 @@
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, TcpListener};
+use std::time::Duration;
 
 use crate::error::McpError;
 use crate::handler::McpHandler;
+
+const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
+const MAX_HTTP_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Provider trait isolating the evolving MCP transport wire protocol (`plan.md` §0.4).
 pub trait McpTransport {
@@ -108,53 +113,117 @@ impl HttpTransport {
         handler: &McpHandler,
     ) -> Result<(), McpError> {
         let mut reader = BufReader::new(&mut stream);
-        let mut request_line = String::new();
-        if reader.read_line(&mut request_line)? == 0 {
+        let Some(request_line) = read_limited_line(&mut reader, MAX_HTTP_HEADER_BYTES)? else {
+            return Ok(());
+        };
+
+        let mut header_bytes = request_line.len();
+        let mut content_length = None;
+        let mut authorization = None;
+        while let Some(header_line) = read_limited_line(&mut reader, MAX_HTTP_HEADER_BYTES)? {
+            header_bytes += header_line.len();
+            if header_bytes > MAX_HTTP_HEADER_BYTES {
+                return Err(
+                    io::Error::new(io::ErrorKind::InvalidData, "HTTP headers too large").into(),
+                );
+            }
+            if header_line == "\r\n" || header_line == "\n" {
+                break;
+            }
+            let Some((name, value)) = header_line.split_once(':') else {
+                continue;
+            };
+            if name.eq_ignore_ascii_case("content-length") {
+                content_length = Some(value.trim().parse::<usize>().map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "invalid Content-Length")
+                })?);
+            } else if name.eq_ignore_ascii_case("authorization") {
+                authorization = Some(value.trim().to_string());
+            }
+        }
+
+        let bearer_token = authorization
+            .as_deref()
+            .and_then(|value| value.strip_prefix("Bearer "));
+        if !handler.accepts_request_token(bearer_token) {
+            drop(reader);
+            write_http_response(
+                &mut stream,
+                401,
+                "Unauthorized",
+                r#"{"error":"unauthorized"}"#,
+            )?;
             return Ok(());
         }
 
-        let mut content_length: usize = 0;
-        let mut header_line = String::new();
-        loop {
-            header_line.clear();
-            if reader.read_line(&mut header_line)? == 0
-                || header_line == "\r\n"
-                || header_line == "\n"
-            {
-                break;
-            }
-            let lower = header_line.to_ascii_lowercase();
-            if lower.starts_with("content-length:")
-                && let Some(val) = header_line.split(':').nth(1)
-            {
-                content_length = val.trim().parse().unwrap_or(0);
-            }
+        let content_length = content_length.unwrap_or(0);
+        if content_length > MAX_HTTP_REQUEST_BODY_BYTES {
+            drop(reader);
+            write_http_response(
+                &mut stream,
+                413,
+                "Payload Too Large",
+                r#"{"error":"request body exceeds limit"}"#,
+            )?;
+            return Ok(());
         }
 
-        let is_post = request_line.starts_with("POST");
+        let is_post = request_line.starts_with("POST ");
         let body_response = if is_post && content_length > 0 {
             let mut body_bytes = vec![0u8; content_length];
             reader.read_exact(&mut body_bytes)?;
             let body_str = String::from_utf8_lossy(&body_bytes);
-            handler.handle_message(&body_str)
+            handler.handle_message_with_token(&body_str, bearer_token)
         } else {
             None
         };
+        drop(reader);
 
         let response_body = match body_response {
             Some(res) => serde_json::to_string(&res)?,
             None => r#"{"status":"ok"}"#.to_string(),
         };
-
-        let http_response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            response_body.len(),
-            response_body
-        );
-        stream.write_all(http_response.as_bytes())?;
-        stream.flush()?;
+        write_http_response(&mut stream, 200, "OK", &response_body)?;
         Ok(())
     }
+
+    fn set_client_timeouts(stream: &std::net::TcpStream) -> Result<(), McpError> {
+        stream.set_read_timeout(Some(CLIENT_IO_TIMEOUT))?;
+        stream.set_write_timeout(Some(CLIENT_IO_TIMEOUT))?;
+        Ok(())
+    }
+}
+
+fn read_limited_line<R: BufRead>(reader: &mut R, limit: usize) -> io::Result<Option<String>> {
+    let mut bytes = Vec::with_capacity(limit.min(1024));
+    let mut limited = reader.by_ref().take((limit + 1) as u64);
+    let read = limited.read_until(b'\n', &mut bytes)?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if bytes.len() > limit || !bytes.ends_with(b"\n") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "HTTP line too large",
+        ));
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-UTF-8 HTTP headers"))
+}
+
+fn write_http_response<S: Write>(
+    stream: &mut S,
+    status: u16,
+    reason: &str,
+    body: &str,
+) -> io::Result<()> {
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes())?;
+    stream.flush()
 }
 
 impl McpTransport for HttpTransport {
@@ -166,6 +235,7 @@ impl McpTransport for HttpTransport {
         let mut count = 0;
         for stream in listener.incoming() {
             let stream = stream?;
+            Self::set_client_timeouts(&stream)?;
             self.handle_client(stream, handler)?;
             count += 1;
             if let Some(max) = self.max_requests

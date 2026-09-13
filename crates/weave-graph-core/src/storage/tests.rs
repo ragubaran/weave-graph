@@ -88,7 +88,7 @@ fn trace_span_defaults_refuse_writes_and_read_empty() {
 #[test]
 fn search_symbols_default_refuses_with_an_unsupported_error() {
     let storage = MinimalStorage;
-    let err = storage.search_symbols("anything", 10).unwrap_err();
+    let err = storage.search_symbols("anything", 10, None).unwrap_err();
     assert!(err.to_string().contains("does not support symbol search"));
 }
 

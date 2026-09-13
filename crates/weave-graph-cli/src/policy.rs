@@ -89,6 +89,7 @@ fn validate_boundary(boundary: &Boundary) -> Result<(), String> {
 pub(crate) fn cmd_policy_lint(
     root: &Path,
     as_subject: Option<&str>,
+    fail_on_masked: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (storage, _db) = crate::open_storage_for_read(root)?;
     let rules = load_rules(&root.join(POLICY_FILE))?;
@@ -134,6 +135,13 @@ pub(crate) fn cmd_policy_lint(
             violations.len()
         )
         .into());
+    }
+
+    if fail_on_masked && (view.hidden_nodes > 0 || view.skipped_edges > 0) {
+        return Err(
+            "Masked violations possible: nodes or edges were skipped due to RBAC masking, and --fail-on-masked was provided."
+            .into()
+        );
     }
     Ok(())
 }

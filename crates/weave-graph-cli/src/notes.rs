@@ -197,7 +197,8 @@ pub(crate) fn carry_over_and_prune(
     old_db: &Path,
     root: &Path,
     files: &[std::path::PathBuf],
-    moniker_to_id: &HashMap<String, NodeId>,
+    project_index: &weave_graph_parse::ProjectIndex,
+    moniker_id_to_node: &HashMap<u32, NodeId>,
 ) -> Result<(), StorageError> {
     let old_storage = SqliteStorage::open(old_db)?;
     let notes = old_storage.all_notes()?;
@@ -205,7 +206,9 @@ pub(crate) fn carry_over_and_prune(
     let mut sources: HashMap<String, String> = HashMap::new();
 
     for note in &notes {
-        let target = moniker_to_id.get(&note.moniker).copied();
+        let target = project_index
+            .get_moniker_id(&note.moniker)
+            .and_then(|id| moniker_id_to_node.get(&id).copied());
         let stale = match (note.tier, note.content_hash.as_ref(), target) {
             (NoteTier::Crystallized, Some(old_hash), Some(_)) => match (
                 spans.get(&note.moniker),

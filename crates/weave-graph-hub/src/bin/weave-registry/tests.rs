@@ -9,7 +9,7 @@ fn args(pairs: &[&str]) -> impl Iterator<Item = String> + use<> {
 }
 
 #[test]
-fn parse_args_accepts_all_four_required_flags() {
+fn parse_args_accepts_all_required_flags() {
     let parsed = parse_args(args(&[
         "--bind",
         "127.0.0.1:8080",
@@ -19,6 +19,8 @@ fn parse_args_accepts_all_four_required_flags() {
         "50",
         "--max-pushes-per-minute-per-repo",
         "20",
+        "--max-snapshot-bytes",
+        "10485760",
     ]))
     .unwrap();
     assert_eq!(
@@ -28,7 +30,10 @@ fn parse_args_accepts_all_four_required_flags() {
             data_dir: PathBuf::from("/tmp/registry-data"),
             max_queue_depth_per_repo: 50,
             max_pushes_per_minute_per_repo: 20,
+            max_snapshot_bytes: 10_485_760,
             auth_token: None,
+            config_path: None,
+            canvas_exclude: vec![],
             #[cfg(feature = "hub-provenance")]
             provenance_key: None,
         }
@@ -47,6 +52,8 @@ fn parse_args_accepts_an_optional_provenance_key() {
         "50",
         "--max-pushes-per-minute-per-repo",
         "20",
+        "--max-snapshot-bytes",
+        "10485760",
         "--provenance-key",
         "42",
     ]))
@@ -65,6 +72,8 @@ fn parse_args_accepts_an_optional_auth_token() {
         "50",
         "--max-pushes-per-minute-per-repo",
         "20",
+        "--max-snapshot-bytes",
+        "10485760",
         "--auth-token",
         "s3cr3t",
     ]))
@@ -81,6 +90,8 @@ fn parse_args_accepts_flags_in_any_order() {
         "/data",
         "--max-queue-depth-per-repo",
         "50",
+        "--max-snapshot-bytes",
+        "10485760",
         "--bind",
         "0.0.0.0:9000",
     ]))
@@ -147,7 +158,10 @@ fn build_server_opens_a_real_registry_and_binds_a_real_loopback_port() {
         data_dir: dir.path().to_path_buf(),
         max_queue_depth_per_repo: 10,
         max_pushes_per_minute_per_repo: 10,
+        max_snapshot_bytes: 10_485_760,
         auth_token: None,
+        config_path: None,
+        canvas_exclude: vec![],
         #[cfg(feature = "hub-provenance")]
         provenance_key: None,
     };
@@ -163,10 +177,28 @@ fn build_server_reports_a_clear_error_for_an_unbindable_address() {
         data_dir: dir.path().to_path_buf(),
         max_queue_depth_per_repo: 10,
         max_pushes_per_minute_per_repo: 10,
+        max_snapshot_bytes: 10_485_760,
         auth_token: None,
+        config_path: None,
+        canvas_exclude: vec![],
         #[cfg(feature = "hub-provenance")]
         provenance_key: None,
     };
     let err = build_server(&args).err().expect("expected a bind error");
     assert!(err.contains("failed to bind"), "got: {err}");
+}
+
+#[test]
+fn read_canvas_exclude_reads_hub_canvas_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        "[hub.canvas]\nexclude = [\"internal\", \"generated\"]\n",
+    )
+    .unwrap();
+    assert_eq!(
+        read_canvas_exclude(&config_path).unwrap(),
+        vec!["internal".to_string(), "generated".to_string()]
+    );
 }

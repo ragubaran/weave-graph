@@ -293,7 +293,12 @@ fn directory_parsing_is_tolerant_of_malformed_content() {
     fs::write(&path, "[nope]\nx = 1\n").unwrap();
     assert!(load_directory(&path).is_empty());
     fs::write(&path, "[users]\njane = [\"internal\"]\n").unwrap();
-    assert_eq!(load_directory(&path).get("jane").map(Vec::len), Some(1));
+    assert_eq!(
+        load_directory(&path)
+            .get("jane")
+            .map(|user| user.roles.len()),
+        Some(1)
+    );
 }
 
 #[test]

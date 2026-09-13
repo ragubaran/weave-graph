@@ -14,7 +14,8 @@
 //! is the only place that actually calls `exit`, so everything else is a
 //! unit test away without spawning a real process.
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 
 use weave_graph_hub::{Registry, RegistryConfig, RegistryServer};
@@ -25,19 +26,23 @@ struct Args {
     data_dir: PathBuf,
     max_queue_depth_per_repo: usize,
     max_pushes_per_minute_per_repo: u32,
+    max_snapshot_bytes: u64,
     auth_token: Option<String>,
+    config_path: Option<PathBuf>,
+    canvas_exclude: Vec<String>,
     #[cfg(feature = "hub-provenance")]
     provenance_key: Option<u64>,
 }
 
 const USAGE: &str = "Usage: weave-registry --bind <host:port> --data-dir <path> \\\n  \
      --max-queue-depth-per-repo <n> --max-pushes-per-minute-per-repo <n> \\\n  \
-     [--auth-token <token>] [--provenance-key <secret-u64>]\n\n\
+     --max-snapshot-bytes <n> [--auth-token <token>] [--config <path>] [--provenance-key <secret-u64>]\n\n\
      Both rate limits are required — calibrate them against this deployment's \
      own observed merge rate (plan.md §3.1), not a guessed default. \
      --auth-token is optional (HUB-02): omitting it keeps the v1 unauthenticated \
      loopback-trust behavior; setting it requires every caller to send \
-     `Authorization: Bearer <token>`. --provenance-key is optional (PROV-01, \
+     `Authorization: Bearer <token>`. --canvas-exclude is optional (HUB-01): comma-separated \
+     list of modules to drop from canvas endpoints. --provenance-key is optional (PROV-01, \
      feature hub-provenance): omitting it keeps every push unverified, exactly \
      as before; setting it rejects any push whose `X-Weave-Signature` (hex-encoded \
      bytes) doesn't verify under `MockSnapshotProvenanceVerifier::with_key` and \
@@ -48,7 +53,10 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut data_dir = None;
     let mut max_queue_depth_per_repo = None;
     let mut max_pushes_per_minute_per_repo = None;
+    let mut max_snapshot_bytes = None;
     let mut auth_token = None;
+    let mut config_path = None;
+    let mut canvas_exclude = Vec::new();
     #[cfg(feature = "hub-provenance")]
     let mut provenance_key = None;
 
@@ -68,7 +76,20 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
                     "--max-pushes-per-minute-per-repo must be a non-negative integer".to_string()
                 })?);
             }
+            "--max-snapshot-bytes" => {
+                max_snapshot_bytes = Some(value()?.parse().map_err(|_| {
+                    "--max-snapshot-bytes must be a non-negative integer".to_string()
+                })?);
+            }
             "--auth-token" => auth_token = Some(value()?),
+            "--config" => config_path = Some(PathBuf::from(value()?)),
+            "--canvas-exclude" => {
+                canvas_exclude = value()?
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
             #[cfg(feature = "hub-provenance")]
             "--provenance-key" => {
                 provenance_key =
@@ -85,11 +106,13 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
         Some(data_dir),
         Some(max_queue_depth_per_repo),
         Some(max_pushes_per_minute_per_repo),
+        Some(max_snapshot_bytes),
     ) = (
         bind,
         data_dir,
         max_queue_depth_per_repo,
         max_pushes_per_minute_per_repo,
+        max_snapshot_bytes,
     )
     else {
         return Err("missing one or more required arguments".to_string());
@@ -99,16 +122,30 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
         data_dir,
         max_queue_depth_per_repo,
         max_pushes_per_minute_per_repo,
+        max_snapshot_bytes,
         auth_token,
+        config_path,
+        canvas_exclude,
         #[cfg(feature = "hub-provenance")]
         provenance_key,
     })
 }
 
 fn build_server(args: &Args) -> Result<RegistryServer, String> {
+    let canvas_exclude = if args.canvas_exclude.is_empty() {
+        args.config_path
+            .as_deref()
+            .map(read_canvas_exclude)
+            .transpose()?
+            .unwrap_or_default()
+    } else {
+        args.canvas_exclude.clone()
+    };
     let config = RegistryConfig {
         max_queue_depth_per_repo: args.max_queue_depth_per_repo,
         max_pushes_per_minute_per_repo: args.max_pushes_per_minute_per_repo,
+        max_snapshot_bytes: args.max_snapshot_bytes,
+        canvas_exclude,
     };
     let registry = Registry::open(&args.data_dir, config).map_err(|e| {
         format!(
@@ -125,6 +162,26 @@ fn build_server(args: &Args) -> Result<RegistryServer, String> {
     };
     RegistryServer::bind_with_token(&args.bind, registry, args.auth_token.clone())
         .map_err(|e| format!("failed to bind {}: {e}", args.bind))
+}
+
+fn read_canvas_exclude(config_path: &Path) -> Result<Vec<String>, String> {
+    let content = fs::read_to_string(config_path)
+        .map_err(|error| format!("failed to read {}: {error}", config_path.display()))?;
+    let table: toml::Table = content
+        .parse()
+        .map_err(|error| format!("invalid {}: {error}", config_path.display()))?;
+    Ok(table
+        .get("hub")
+        .and_then(|value| value.get("canvas"))
+        .and_then(|value| value.get("exclude"))
+        .and_then(toml::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 #[cfg(feature = "hub-provenance")]

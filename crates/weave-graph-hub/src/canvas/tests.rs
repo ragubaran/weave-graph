@@ -44,7 +44,7 @@ fn fixture() -> SqliteStorage {
 #[test]
 fn build_module_canvas_covers_every_file_with_a_node() {
     let storage = fixture();
-    let canvas = build_module_canvas(&storage).unwrap();
+    let canvas = build_module_canvas(&storage, &[]).unwrap();
 
     let total_files: usize = canvas
         .nodes
@@ -65,7 +65,7 @@ fn build_module_canvas_covers_every_file_with_a_node() {
 #[test]
 fn build_module_canvas_lays_nodes_out_on_a_grid_without_overlap() {
     let storage = fixture();
-    let canvas = build_module_canvas(&storage).unwrap();
+    let canvas = build_module_canvas(&storage, &[]).unwrap();
     let mut positions: Vec<(i32, i32)> = canvas.nodes.iter().map(|n| (n.x, n.y)).collect();
     positions.sort();
     positions.dedup();
@@ -79,8 +79,24 @@ fn build_module_canvas_lays_nodes_out_on_a_grid_without_overlap() {
 #[test]
 fn build_module_canvas_reports_zero_overflow_under_budget() {
     let storage = fixture();
-    let canvas = build_module_canvas(&storage).unwrap();
+    let canvas = build_module_canvas(&storage, &[]).unwrap();
     assert_eq!(canvas.overflow_count, 0);
+}
+
+#[test]
+fn build_module_canvas_excludes_matching_modules() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    storage.upsert_node(&node(1, "internal.rs")).unwrap();
+    storage.upsert_node(&node(2, "public.rs")).unwrap();
+    // Root-level files share the `(root)` module label, so the exclusion
+    // must also match member paths.
+    let canvas_exact = build_module_canvas(&storage, &["internal".to_string()]).unwrap();
+    assert_eq!(canvas_exact.nodes.len(), 1);
+    assert!(canvas_exact.nodes[0].text.contains("1 file(s)"));
+
+    let canvas_prefix = build_module_canvas(&storage, &["int".to_string()]).unwrap();
+    assert_eq!(canvas_prefix.nodes.len(), 1);
+    assert!(canvas_prefix.nodes[0].text.contains("1 file(s)"));
 }
 
 #[test]
@@ -98,13 +114,13 @@ fn from_snapshot_bytes_round_trips_a_real_sqlite_file() {
     }
     let bytes = std::fs::read(&db_path).unwrap();
 
-    let canvas = from_snapshot_bytes(&bytes).unwrap();
+    let canvas = from_snapshot_bytes(&bytes, &[]).unwrap();
     assert!(!canvas.nodes.is_empty());
 }
 
 #[test]
 fn from_snapshot_bytes_reports_malformed_input_as_an_error_not_a_panic() {
-    let err = from_snapshot_bytes(b"not a sqlite file").unwrap_err();
+    let err = from_snapshot_bytes(b"not a sqlite file", &[]).unwrap_err();
     assert!(!err.is_empty());
 }
 

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -110,7 +110,64 @@ impl SqliteStorage {
                 params![kind],
             )
             .map_err(backend_err)?;
+        #[cfg(feature = "fts")]
+        crate::fts::purge_missing_nodes(&self.conn)?;
         Ok(rows as u64)
+    }
+
+    pub fn source_paths_for_target_paths(
+        &self,
+        repo_id: &str,
+        paths: &[String],
+    ) -> Result<HashSet<String>, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT DISTINCT source.path
+                 FROM edges
+                 JOIN nodes AS source ON source.id = edges.source_id
+                 JOIN nodes AS target ON target.id = edges.target_id
+                 WHERE target.repo_id = ?1 AND target.path = ?2",
+            )
+            .map_err(backend_err)?;
+        let mut source_paths = HashSet::new();
+        for path in paths {
+            let rows = stmt
+                .query_map(params![repo_id, path], |row| row.get::<_, String>(0))
+                .map_err(backend_err)?;
+            for row in rows {
+                source_paths.insert(row.map_err(backend_err)?);
+            }
+        }
+        Ok(source_paths)
+    }
+
+    pub fn short_symbol_names_for_paths(
+        &self,
+        repo_id: &str,
+        paths: &[String],
+    ) -> Result<HashSet<String>, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT symbol FROM nodes WHERE repo_id = ?1 AND path = ?2")
+            .map_err(backend_err)?;
+        let mut names = HashSet::new();
+        for path in paths {
+            let rows = stmt
+                .query_map(params![repo_id, path], |row| row.get::<_, String>(0))
+                .map_err(backend_err)?;
+            for row in rows {
+                let symbol = row.map_err(backend_err)?;
+                names.insert(
+                    symbol
+                        .rsplit("::")
+                        .next()
+                        .unwrap_or(symbol.as_str())
+                        .to_string(),
+                );
+            }
+        }
+        Ok(names)
     }
 
     /// Opens an explicit transaction around a bulk sequence of
@@ -212,6 +269,35 @@ impl SqliteStorage {
         crate::fts::rebuild(&self.conn)
     }
 
+    pub fn search_symbol_nodes(
+        &self,
+        match_expr: &str,
+        limit: usize,
+        visible: Option<&dyn Fn(&Node) -> bool>,
+    ) -> Result<Vec<Node>, StorageError> {
+        #[cfg(feature = "fts")]
+        {
+            let candidate_limit = if visible.is_some() {
+                limit.saturating_mul(4).max(limit)
+            } else {
+                limit
+            };
+            let mut nodes = crate::fts::search_nodes(&self.conn, match_expr, candidate_limit)?;
+            if let Some(visible) = visible {
+                nodes.retain(visible);
+            }
+            nodes.truncate(limit);
+            Ok(nodes)
+        }
+        #[cfg(not(feature = "fts"))]
+        {
+            let _ = (match_expr, limit, visible);
+            Err(StorageError::Backend(
+                "this storage backend does not support symbol search".to_string(),
+            ))
+        }
+    }
+
     /// Rebuilds the `vec_chunks` semantic index (`impl.md` M3.7 Tier 2)
     /// from `chunks` — `(node_id, chunk_text)` pairs the caller already
     /// built from source file spans; this crate owns no file I/O.
@@ -222,6 +308,44 @@ impl SqliteStorage {
         chunks: &[(NodeId, String)],
     ) -> Result<(), StorageError> {
         crate::vector::rebuild(&self.conn, embedder, chunks)
+    }
+
+    /// Rebuilds vectors without retaining every source chunk in memory.
+    #[cfg(feature = "vector")]
+    pub fn rebuild_vector_index_streaming(
+        &self,
+        embedder: &dyn weave_graph_core::embedding::EmbeddingProvider,
+        produce: impl FnOnce(
+            &mut dyn FnMut(NodeId, &str) -> Result<(), StorageError>,
+        ) -> Result<(), StorageError>,
+    ) -> Result<(), StorageError> {
+        crate::vector::rebuild_streaming(&self.conn, embedder, produce)
+    }
+
+    /// Deletes vector rows for paths that must not leave the repository.
+    #[cfg(feature = "vector")]
+    pub fn purge_vector_paths(&self, excluded_paths: &[String]) -> Result<u64, StorageError> {
+        crate::vector::purge_excluded_paths(&self.conn, excluded_paths)
+    }
+
+    /// Visits nodes grouped by path so a caller can retain one source file.
+    #[cfg(feature = "vector")]
+    pub fn for_each_node_by_path(
+        &self,
+        f: &mut dyn FnMut(Node) -> Result<(), StorageError>,
+    ) -> Result<(), StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, repo_id, path, symbol, kind, line_start, line_end, signature \
+                 FROM nodes ORDER BY path, line_start, id",
+            )
+            .map_err(backend_err)?;
+        let mut rows = stmt.query([]).map_err(backend_err)?;
+        while let Some(row) = rows.next().map_err(backend_err)? {
+            f(row_to_node(row).map_err(backend_err)?)?;
+        }
+        Ok(())
     }
 
     /// Records (or replaces) one doc link, optionally carrying a
@@ -380,6 +504,13 @@ impl Storage for SqliteStorage {
             .map_err(backend_err)
     }
 
+    fn edge_count(&self) -> Result<usize, StorageError> {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get::<_, i64>(0))
+            .map(|count| count as usize)
+            .map_err(backend_err)
+    }
+
     fn for_each_node(&self, f: &mut dyn FnMut(Node)) -> Result<(), StorageError> {
         let mut stmt = self
             .conn
@@ -407,8 +538,9 @@ impl Storage for SqliteStorage {
     }
 
     fn upsert_node(&mut self, node: &Node) -> Result<NodeId, StorageError> {
-        self.conn
-            .query_row(
+        let mut stmt = self
+            .conn
+            .prepare_cached(
                 "INSERT INTO nodes (repo_id, path, symbol, kind, line_start, line_end, signature)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(repo_id, path, symbol, line_start) DO UPDATE SET
@@ -416,6 +548,11 @@ impl Storage for SqliteStorage {
                     line_end = excluded.line_end,
                     signature = excluded.signature
                  RETURNING id",
+            )
+            .map_err(backend_err)?;
+
+        let id = stmt
+            .query_row(
                 params![
                     node.repo_id,
                     node.path,
@@ -428,22 +565,32 @@ impl Storage for SqliteStorage {
                 |row| row.get::<_, i64>(0),
             )
             .map(|id| id as NodeId)
-            .map_err(backend_err)
+            .map_err(backend_err)?;
+
+        #[cfg(feature = "fts")]
+        crate::fts::replace_row(&self.conn, id as i64, &node.symbol, &node.signature)?;
+
+        Ok(id)
     }
 
     fn upsert_edge(&mut self, edge: &Edge) -> Result<u32, StorageError> {
-        self.conn
-            .query_row(
+        let mut stmt = self
+            .conn
+            .prepare_cached(
                 "INSERT INTO edges (source_id, target_id, kind, weight)
                  VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(source_id, target_id, kind) DO UPDATE SET
                     weight = excluded.weight
                  RETURNING id",
-                params![edge.source_id, edge.target_id, edge.kind, edge.weight],
-                |row| row.get::<_, i64>(0),
             )
-            .map(|id| id as EdgeId)
-            .map_err(backend_err)
+            .map_err(backend_err)?;
+
+        stmt.query_row(
+            params![edge.source_id, edge.target_id, edge.kind, edge.weight],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|id| id as EdgeId)
+        .map_err(backend_err)
     }
 
     fn query_path(&self, from: NodeId, to: NodeId) -> Result<Option<Vec<NodeId>>, StorageError> {
@@ -497,6 +644,8 @@ impl Storage for SqliteStorage {
     }
 
     fn purge_file_nodes(&mut self, repo_id: &str, path: &str) -> Result<u64, StorageError> {
+        #[cfg(feature = "fts")]
+        crate::fts::purge_path(&self.conn, repo_id, path)?;
         let rows = self
             .conn
             .execute(
@@ -505,6 +654,59 @@ impl Storage for SqliteStorage {
             )
             .map_err(backend_err)?;
         Ok(rows as u64)
+    }
+
+    fn upsert_unresolved_refs(
+        &mut self,
+        repo_id: &str,
+        path: &str,
+        refs: &[String],
+    ) -> Result<(), StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare_cached(
+                "INSERT INTO unresolved_refs (repo_id, path, short_name) VALUES (?1, ?2, ?3)",
+            )
+            .map_err(backend_err)?;
+        for r in refs {
+            stmt.execute(params![repo_id, path, r])
+                .map_err(backend_err)?;
+        }
+        Ok(())
+    }
+
+    fn purge_file_unresolved_refs(
+        &mut self,
+        repo_id: &str,
+        path: &str,
+    ) -> Result<u64, StorageError> {
+        let rows = self
+            .conn
+            .execute(
+                "DELETE FROM unresolved_refs WHERE repo_id = ?1 AND path = ?2",
+                params![repo_id, path],
+            )
+            .map_err(backend_err)?;
+        Ok(rows as u64)
+    }
+
+    fn get_files_with_unresolved_refs(
+        &self,
+        repo_id: &str,
+        short_name: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare_cached(
+                "SELECT path FROM unresolved_refs WHERE repo_id = ?1 AND short_name = ?2",
+            )
+            .map_err(backend_err)?;
+        let paths = stmt
+            .query_map(params![repo_id, short_name], |row| row.get(0))
+            .map_err(backend_err)?
+            .collect::<Result<Vec<String>, _>>()
+            .map_err(backend_err)?;
+        Ok(paths)
     }
 
     fn pin_note(&self, note: &Note) -> Result<i64, StorageError> {
@@ -635,8 +837,14 @@ impl Storage for SqliteStorage {
 
     /// Ranked node ids for an FTS5 `MATCH` expression, best match first.
     #[cfg(feature = "fts")]
-    fn search_symbols(&self, match_expr: &str, limit: usize) -> Result<Vec<NodeId>, StorageError> {
-        crate::fts::search(&self.conn, match_expr, limit)
+    fn search_symbols(
+        &self,
+        match_expr: &str,
+        limit: usize,
+        visible: Option<&dyn Fn(&Node) -> bool>,
+    ) -> Result<Vec<NodeId>, StorageError> {
+        self.search_symbol_nodes(match_expr, limit, visible)
+            .map(|nodes| nodes.into_iter().map(|node| node.id).collect())
     }
 
     /// Three-stage semantic search: binary ANN oversampled by

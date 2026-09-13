@@ -117,21 +117,25 @@ fn cmd_lint_blocks_violation_and_passes_compliance() {
         root.path(),
         "rules:\n  - disallow:\n      from: src/ui\n      to: src/db\n",
     );
-    let err = cmd_policy_lint(root.path(), None).unwrap_err().to_string();
+    let err = cmd_policy_lint(root.path(), None, false)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("1 policy violation"), "{err}");
 
     write_policy(
         root.path(),
         "rules:\n  - disallow:\n      from: src/db\n      to: src/ui\n",
     );
-    cmd_policy_lint(root.path(), None).unwrap();
+    cmd_policy_lint(root.path(), None, false).unwrap();
 }
 
 #[test]
 fn cmd_lint_requires_an_existing_index() {
     let root = tempfile::tempdir().unwrap();
     write_policy(root.path(), "rules: []\n");
-    let err = cmd_policy_lint(root.path(), None).unwrap_err().to_string();
+    let err = cmd_policy_lint(root.path(), None, false)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("No graph database found"), "{err}");
 }
 
@@ -154,7 +158,7 @@ fn cmd_lint_surfaces_confirmed_adr_obligations_advisory() {
         "[[confirmed]]\nfile = \"docs/adr.md\"\nline = 3\ntext = \"handlers must validate request ids\"\n",
     )
     .unwrap();
-    cmd_policy_lint(root.path(), None).unwrap();
+    cmd_policy_lint(root.path(), None, false).unwrap();
 }
 
 /// M3.0 dependency: a linted view under an rbac-masked identity skips
@@ -176,7 +180,13 @@ fn cmd_lint_skips_rbac_masked_edges_and_says_so() {
     // `render`/`save` are Rust `fn`s with no `pub` — anonymous sees
     // nothing, so the ui->db edge is unclassifiable and must not become
     // a violation.
-    cmd_policy_lint(root.path(), Some("anonymous")).unwrap();
+    cmd_policy_lint(root.path(), Some("anonymous"), false).unwrap();
+
+    // But if --fail-on-masked is provided, it should fail.
+    let err = cmd_policy_lint(root.path(), Some("anonymous"), true)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("Masked violations possible"));
 }
 
 /// A two-file ring gives drift both remaining branches: a cycle *and*

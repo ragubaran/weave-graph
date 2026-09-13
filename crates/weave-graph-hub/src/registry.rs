@@ -21,6 +21,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+const UPLOAD_RESERVATION_TTL: Duration = Duration::from_secs(15 * 60);
+
 /// `repo_id` and every sha this module handles become filesystem path
 /// components (`store_dir.join(repo_id)`, `format!("{sha}.tar.zst")`) —
 /// rejecting anything but a conservative charset is what stops a crafted
@@ -56,7 +58,7 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
 /// Operator-supplied limits — deliberately no `Default`: `plan.md` §3.1
 /// requires these calibrated against observed merge rates, not shipped as
 /// an arbitrary constant nobody actually measured.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RegistryConfig {
     /// Backpressure watermark: pending (unprocessed) pushes per repo at or
     /// above this get `429` instead of enqueuing.
@@ -66,6 +68,10 @@ pub struct RegistryConfig {
     /// since a fast worker could otherwise let a misbehaving CI job push
     /// as fast as the queue drains.
     pub max_pushes_per_minute_per_repo: u32,
+    /// Maximum bytes accepted for one snapshot, across all upload chunks.
+    pub max_snapshot_bytes: u64,
+    /// HUB-01: Exclude these modules from the canvas endpoints.
+    pub canvas_exclude: Vec<String>,
 }
 
 /// What an accept-time decision resolved to. Never means "committed to
@@ -108,6 +114,7 @@ struct RepoHead {
     sha: Option<String>,
     next_seq: u64,
     pending: usize,
+    uploads: HashMap<String, Instant>,
 }
 
 struct RepoState {
@@ -217,6 +224,7 @@ impl Registry {
                 sha,
                 next_seq,
                 pending,
+                uploads: HashMap::new(),
             }),
             rate: Mutex::new(RateWindow {
                 window_start: Instant::now(),
@@ -246,9 +254,140 @@ impl Registry {
         if !is_safe_path_component(repo_id) || !is_safe_path_component(target_sha) {
             return Ok(0);
         }
-        let spool_dir = self.repo_spool_dir(repo_id);
-        let tmp = spool_dir.join(format!("{target_sha}.tmp"));
+        let tmp = self.upload_path(repo_id, target_sha);
         Ok(fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0))
+    }
+
+    /// Reserves rate and queue capacity before the first upload chunk is spooled.
+    pub fn begin_upload(
+        &self,
+        repo_id: &str,
+        target_sha: &str,
+        base_sha: Option<&str>,
+    ) -> std::io::Result<PushDecision> {
+        if !is_safe_path_component(repo_id) || !is_safe_path_component(target_sha) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unsafe repo_id or target_sha: {repo_id:?}/{target_sha:?}"),
+            ));
+        }
+        let state = self.repo_state(repo_id);
+        self.expire_uploads(repo_id, &state);
+
+        {
+            let head = state
+                .head
+                .lock()
+                .map_err(|_| std::io::Error::other("head lock poisoned"))?;
+            if head.uploads.contains_key(target_sha) {
+                return Ok(PushDecision::Accepted);
+            }
+            if head.pending + head.uploads.len() >= self.config.max_queue_depth_per_repo {
+                return Ok(PushDecision::RateLimited {
+                    retry_after_secs: 5,
+                });
+            }
+            if let Some(base) = base_sha
+                && head.sha.is_some()
+                && head.sha.as_deref() != Some(base)
+            {
+                return Ok(PushDecision::Conflict);
+            }
+        }
+
+        let mut rate = state
+            .rate
+            .lock()
+            .map_err(|_| std::io::Error::other("rate lock poisoned"))?;
+        if rate.window_start.elapsed() >= Duration::from_secs(60) {
+            rate.window_start = Instant::now();
+            rate.count = 0;
+        }
+        if rate.count >= self.config.max_pushes_per_minute_per_repo {
+            return Ok(PushDecision::RateLimited {
+                retry_after_secs: 60,
+            });
+        }
+        rate.count += 1;
+        drop(rate);
+
+        let mut head = state
+            .head
+            .lock()
+            .map_err(|_| std::io::Error::other("head lock poisoned"))?;
+        if head.pending + head.uploads.len() >= self.config.max_queue_depth_per_repo {
+            return Ok(PushDecision::RateLimited {
+                retry_after_secs: 5,
+            });
+        }
+        if let Some(base) = base_sha
+            && head.sha.is_some()
+            && head.sha.as_deref() != Some(base)
+        {
+            return Ok(PushDecision::Conflict);
+        }
+        head.uploads.insert(target_sha.to_string(), Instant::now());
+        Ok(PushDecision::Accepted)
+    }
+
+    /// Drops an incomplete upload and releases its queue reservation.
+    pub fn abandon_upload(&self, repo_id: &str, target_sha: &str) {
+        if !is_safe_path_component(repo_id) || !is_safe_path_component(target_sha) {
+            return;
+        }
+        if let Some(state) = self
+            .repos
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(repo_id)
+            .cloned()
+            && let Ok(mut head) = state.head.lock()
+        {
+            head.uploads.remove(target_sha);
+        }
+        let _ = fs::remove_file(self.upload_path(repo_id, target_sha));
+    }
+
+    pub fn max_snapshot_bytes(&self) -> u64 {
+        self.config.max_snapshot_bytes
+    }
+
+    fn upload_path(&self, repo_id: &str, target_sha: &str) -> PathBuf {
+        self.repo_spool_dir(repo_id)
+            .join(format!("{target_sha}.tmp"))
+    }
+
+    fn expire_uploads(&self, repo_id: &str, state: &RepoState) {
+        let now = Instant::now();
+        let expired = state
+            .head
+            .lock()
+            .map(|mut head| {
+                let expired: Vec<String> = head
+                    .uploads
+                    .iter()
+                    .filter(|(_, started)| now.duration_since(**started) >= UPLOAD_RESERVATION_TTL)
+                    .map(|(sha, _)| sha.clone())
+                    .collect();
+                for sha in &expired {
+                    head.uploads.remove(sha);
+                }
+                expired
+            })
+            .unwrap_or_default();
+        for target_sha in expired {
+            let _ = fs::remove_file(self.upload_path(repo_id, &target_sha));
+        }
+    }
+
+    fn take_upload_reservation(&self, repo_id: &str, target_sha: &str) -> bool {
+        self.repos
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(repo_id)
+            .cloned()
+            .and_then(|state| state.head.lock().ok()?.uploads.remove(target_sha))
+            .is_some()
     }
 
     pub fn spool_chunk(
@@ -265,8 +404,26 @@ impl Registry {
             ));
         }
         let spool_dir = self.repo_spool_dir(repo_id);
-        let _ = fs::create_dir_all(&spool_dir);
-        let tmp = spool_dir.join(format!("{target_sha}.tmp"));
+        let tmp = self.upload_path(repo_id, target_sha);
+        let existing_len = fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+        if start_offset != 0 && existing_len != start_offset {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("offset mismatch: expected {existing_len}, got {start_offset}"),
+            ));
+        }
+        let next_len = start_offset
+            .checked_add(chunk.len() as u64)
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "upload too large")
+            })?;
+        if next_len > self.config.max_snapshot_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "snapshot exceeds configured byte limit",
+            ));
+        }
+        fs::create_dir_all(&spool_dir)?;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
@@ -274,15 +431,6 @@ impl Registry {
             .open(&tmp)?;
         if start_offset == 0 {
             file.set_len(0)?;
-        } else if file.metadata()?.len() != start_offset {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "offset mismatch: expected {}, got {}",
-                    file.metadata()?.len(),
-                    start_offset
-                ),
-            ));
         }
         use std::io::{Seek, Write};
         file.seek(std::io::SeekFrom::End(0))?;
@@ -303,7 +451,14 @@ impl Registry {
         signature: Option<&str>,
         payload: &[u8],
     ) -> std::io::Result<PushDecision> {
-        self.spool_chunk(repo_id, target_sha, 0, payload)?;
+        let decision = self.begin_upload(repo_id, target_sha, base_sha)?;
+        if decision != PushDecision::Accepted {
+            return Ok(decision);
+        }
+        if let Err(error) = self.spool_chunk(repo_id, target_sha, 0, payload) {
+            self.abandon_upload(repo_id, target_sha);
+            return Err(error);
+        }
         self.push_complete(repo_id, target_sha, base_sha, retention, signature)
     }
 
@@ -314,6 +469,25 @@ impl Registry {
         base_sha: Option<&str>,
         retention: usize,
         signature: Option<&str>,
+    ) -> std::io::Result<PushDecision> {
+        let reserved = self.take_upload_reservation(repo_id, target_sha);
+        let result = self.finish_upload(
+            repo_id, target_sha, base_sha, retention, signature, reserved,
+        );
+        if !matches!(&result, Ok(PushDecision::Accepted)) {
+            self.abandon_upload(repo_id, target_sha);
+        }
+        result
+    }
+
+    fn finish_upload(
+        &self,
+        repo_id: &str,
+        target_sha: &str,
+        base_sha: Option<&str>,
+        retention: usize,
+        signature: Option<&str>,
+        reserved: bool,
     ) -> std::io::Result<PushDecision> {
         if !is_safe_path_component(repo_id) || !is_safe_path_component(target_sha) {
             return Err(std::io::Error::new(
@@ -344,7 +518,7 @@ impl Registry {
 
         let state = self.repo_state(repo_id);
 
-        {
+        if !reserved {
             let mut rate = state
                 .rate
                 .lock()
@@ -439,9 +613,10 @@ impl Registry {
     #[cfg(feature = "hub-canvas")]
     pub fn canvas(&self, repo_id: &str) -> Option<Result<crate::canvas::Canvas, String>> {
         match self.pull(repo_id, "latest") {
-            PullResult::Found(bytes, _signature) => {
-                Some(crate::canvas::from_snapshot_bytes(&bytes))
-            }
+            PullResult::Found(bytes, _signature) => Some(crate::canvas::from_snapshot_bytes(
+                &bytes,
+                &self.config.canvas_exclude,
+            )),
             PullResult::NotFound => None,
         }
     }

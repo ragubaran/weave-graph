@@ -16,13 +16,15 @@ fn file_of(moniker: &str) -> &str {
     moniker.split('#').next().unwrap_or(moniker)
 }
 
+use std::rc::Rc;
+
 /// String interner for mapping monikers and symbol names to 32-bit integer IDs.
 /// Invariant 4: Peak memory must stay under 80MB for 500k symbols;
 /// integer IDs cut candidate vector memory by over 60% compared to String.
 #[derive(Debug, Default, Clone)]
 pub struct StringInterner {
-    strings: Vec<String>,
-    indices: HashMap<String, u32>,
+    strings: Vec<Rc<str>>,
+    indices: HashMap<Rc<str>, u32>,
 }
 
 impl StringInterner {
@@ -36,8 +38,9 @@ impl StringInterner {
             id
         } else {
             let id = self.strings.len() as u32;
-            self.strings.push(s.to_string());
-            self.indices.insert(s.to_string(), id);
+            let rc: Rc<str> = s.into();
+            self.strings.push(rc.clone());
+            self.indices.insert(rc, id);
             id
         }
     }
@@ -67,13 +70,22 @@ impl ProjectIndex {
     pub fn add_file(&mut self, file: &ParsedFile) {
         for symbol in &file.symbols {
             let short_name = symbol.symbol.rsplit("::").next().unwrap_or(&symbol.symbol);
-            let name_id = self.interner.intern(short_name);
-            let moniker_id = self.interner.intern(&symbol.moniker);
-            self.by_short_name
-                .entry(name_id)
-                .or_default()
-                .push(moniker_id);
+            self.add_symbol(&symbol.moniker, short_name);
         }
+    }
+
+    pub fn add_symbol(&mut self, moniker: &str, short_name: &str) -> u32 {
+        let name_id = self.interner.intern(short_name);
+        let moniker_id = self.interner.intern(moniker);
+        self.by_short_name
+            .entry(name_id)
+            .or_default()
+            .push(moniker_id);
+        moniker_id
+    }
+
+    pub fn get_moniker_id(&self, moniker: &str) -> Option<u32> {
+        self.interner.get_id(moniker)
     }
 
     fn candidates(&self, short_name: &str) -> &[u32] {
@@ -119,13 +131,17 @@ impl ProjectIndex {
             .collect()
     }
 
-    pub fn resolve(&self, file: &ParsedFile) -> Vec<ResolvedEdge> {
+    pub fn resolve(&self, file: &ParsedFile) -> (Vec<ResolvedEdge>, Vec<String>) {
         let mut edges = Vec::new();
+        let mut unresolved = Vec::new();
 
         for call in &file.calls {
-            for (target, kind) in
-                self.resolve_one(&call.caller_moniker, &call.callee_name, call.is_member_call)
-            {
+            let resolved =
+                self.resolve_one(&call.caller_moniker, &call.callee_name, call.is_member_call);
+            if resolved.is_empty() {
+                unresolved.push(call.callee_name.clone());
+            }
+            for (target, kind) in resolved {
                 edges.push(ResolvedEdge {
                     source_moniker: call.caller_moniker.clone(),
                     target_moniker: target,
@@ -135,7 +151,11 @@ impl ProjectIndex {
         }
 
         for structural in &file.structural_edges {
-            for &candidate_id in self.candidates(&structural.target_name) {
+            let candidates = self.candidates(&structural.target_name);
+            if candidates.is_empty() {
+                unresolved.push(structural.target_name.clone());
+            }
+            for &candidate_id in candidates {
                 edges.push(ResolvedEdge {
                     source_moniker: structural.source_moniker.clone(),
                     target_moniker: self.interner.resolve(candidate_id).to_string(),
@@ -144,7 +164,10 @@ impl ProjectIndex {
             }
         }
 
-        edges
+        // Deduplicate unresolved references.
+        unresolved.sort();
+        unresolved.dedup();
+        (edges, unresolved)
     }
 
     /// Only the references `self` alone can't resolve (an empty candidate

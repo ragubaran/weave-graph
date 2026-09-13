@@ -3,6 +3,8 @@ use crate::model::{Edge, Node, NodeId};
 use crate::notes::Note;
 use crate::trace::TraceSpan;
 
+pub const MAX_SEARCH_LIMIT: usize = 100;
+
 /// Backend-agnostic persistence trait (`plan.md` §0.4, §1.1). No core logic
 /// references a concrete backend — `weave-graph-store-sqlite` is the
 /// default implementation; `weave-graph-store-turso` is an alternative
@@ -40,6 +42,11 @@ pub trait Storage {
     /// Every edge, ordered by `(source_id, target_id)`.
     fn all_edges(&self) -> Result<Vec<Edge>, StorageError>;
 
+    /// Counts edges without forcing callers to retain the complete graph.
+    fn edge_count(&self) -> Result<usize, StorageError> {
+        Ok(self.all_edges()?.len())
+    }
+
     /// Streams every node to `f` instead of materializing a `Vec<Node>`.
     /// Default forwards to `all_nodes` for backends that don't override it;
     /// `weave-graph-store-sqlite` overrides this to stream row-by-row —
@@ -69,6 +76,37 @@ pub trait Storage {
 
     /// Purge all nodes for the given file. Call only after `purge_file_edges`.
     fn purge_file_nodes(&mut self, repo_id: &str, path: &str) -> Result<u64, StorageError>;
+
+    /// Upserts unresolved references for a file.
+    fn upsert_unresolved_refs(
+        &mut self,
+        repo_id: &str,
+        path: &str,
+        refs: &[String],
+    ) -> Result<(), StorageError> {
+        let _ = (repo_id, path, refs);
+        Ok(())
+    }
+
+    /// Purges unresolved references for a file.
+    fn purge_file_unresolved_refs(
+        &mut self,
+        repo_id: &str,
+        path: &str,
+    ) -> Result<u64, StorageError> {
+        let _ = (repo_id, path);
+        Ok(0)
+    }
+
+    /// Returns files that have an unresolved reference to the given short name.
+    fn get_files_with_unresolved_refs(
+        &self,
+        repo_id: &str,
+        short_name: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        let _ = (repo_id, short_name);
+        Ok(Vec::new())
+    }
 
     /// Persist one pinned note (M2.10); returns its id. Writes through
     /// `&self` — both backends' connections allow SQL writes on a shared
@@ -118,7 +156,12 @@ pub trait Storage {
     /// without an FTS index (Turso today) need no stub — only
     /// `weave-graph-store-sqlite` (feature `fts`) overrides this, same
     /// shape as `upsert_trace_span` above.
-    fn search_symbols(&self, _query: &str, _limit: usize) -> Result<Vec<NodeId>, StorageError> {
+    fn search_symbols(
+        &self,
+        _query: &str,
+        _limit: usize,
+        _visible: Option<&dyn Fn(&Node) -> bool>,
+    ) -> Result<Vec<NodeId>, StorageError> {
         Err(StorageError::Backend(
             "this storage backend does not support symbol search".to_string(),
         ))

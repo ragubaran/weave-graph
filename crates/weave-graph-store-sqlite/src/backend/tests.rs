@@ -379,3 +379,47 @@ fn reattach_moves_the_target_and_sets_staleness() {
     assert_eq!(recalled[0].target_node_id, None);
     assert!(!recalled[0].stale);
 }
+
+#[test]
+fn open_rebuild_creates_a_new_db_in_wal_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let rebuild_path = dir.path().join("graph.db.rebuild");
+    let storage = SqliteStorage::open_rebuild(&rebuild_path).unwrap();
+    assert_eq!(storage.schema_version().unwrap(), LATEST_SCHEMA_VERSION);
+}
+
+#[test]
+fn purge_orphaned_nodes_by_kind_removes_unreferenced_nodes_of_kind() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    let b = storage.upsert_node(&node("r", "b.rs", "b", 1)).unwrap();
+    let c = storage.upsert_node(&node("r", "c.rs", "c", 1)).unwrap();
+
+    // Connect 'b' to 'c'. 'a' and 'b' have no incoming edges.
+    // 'c' has an incoming edge.
+    // We cannot connect 'a' to 'c' and then delete 'a', because 'a' would have an outgoing edge, violating FK constraints on edges.source_id.
+    // So 'a' is completely disconnected, 'b' has an outgoing edge, wait no! 'b' cannot have an outgoing edge either.
+    // Let's connect 'c' to 'c' to give 'c' an incoming edge, and leave 'a' and 'b' disconnected.
+    storage.upsert_edge(&edge(c, c, "CALLS")).unwrap();
+
+    let removed = storage.purge_orphaned_nodes_by_kind("function").unwrap();
+    assert_eq!(removed, 2);
+    assert!(storage.get_node(a).unwrap().is_none());
+    assert!(storage.get_node(b).unwrap().is_none());
+    assert!(storage.get_node(c).unwrap().is_some());
+}
+
+#[test]
+fn query_path_avoids_cycles_and_redundant_paths() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    let b = storage.upsert_node(&node("r", "b.rs", "b", 1)).unwrap();
+    let c = storage.upsert_node(&node("r", "c.rs", "c", 1)).unwrap();
+
+    // Diamond pattern: a -> b, a -> c, b -> c
+    storage.upsert_edge(&edge(a, b, "CALLS")).unwrap();
+    storage.upsert_edge(&edge(a, c, "CALLS")).unwrap();
+    storage.upsert_edge(&edge(b, c, "CALLS")).unwrap();
+
+    assert_eq!(storage.query_path(a, c).unwrap(), Some(vec![a, c]));
+}

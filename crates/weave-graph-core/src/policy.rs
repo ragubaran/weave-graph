@@ -49,7 +49,7 @@ pub struct Violation {
 
 /// Boundary-safe module membership: `path` is `prefix` itself, or lives
 /// under `prefix/` — never a sibling whose name merely starts with it.
-fn in_module(path: &str, prefix: &str) -> bool {
+pub fn in_module(path: &str, prefix: &str) -> bool {
     path == prefix || prefix.is_empty() || path.starts_with(&format!("{prefix}/"))
 }
 

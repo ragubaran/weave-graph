@@ -23,7 +23,7 @@ fn same_file_call_resolves_exact_even_when_name_exists_elsewhere_too() {
     index.add_file(&b);
 
     let edges = index.resolve(&a);
-    let calls_edges: Vec<_> = edges.iter().filter(|e| e.kind == "CALLS_EXACT").collect();
+    let calls_edges: Vec<_> = edges.0.iter().filter(|e| e.kind == "CALLS_EXACT").collect();
     assert_eq!(calls_edges.len(), 1);
     assert_eq!(
         calls_edges[0].target_moniker, "a.rs#helper",
@@ -41,6 +41,7 @@ fn method_call_is_always_dynamic_and_fans_out_to_every_candidate() {
 
     let edges = index.resolve(&a);
     let mut targets: Vec<&str> = edges
+        .0
         .iter()
         .filter(|e| e.kind == "CALLS_DYNAMIC")
         .map(|e| e.target_moniker.as_str())
@@ -63,7 +64,7 @@ fn unresolvable_call_produces_no_edge() {
     let mut index = ProjectIndex::new();
     index.add_file(&a);
 
-    assert!(index.resolve(&a).is_empty());
+    assert!(index.resolve(&a).0.is_empty());
 }
 
 #[test]
@@ -79,7 +80,7 @@ fn implements_edge_resolves_to_the_trait_symbol() {
     // `trait Greet {}` has no `fn`, so our extractor (functions/structs
     // only) won't have indexed it as a symbol — this documents that:
     // no candidate, no edge, not a crash.
-    assert!(index.resolve(&a).iter().all(|e| e.kind != "IMPLEMENTS"));
+    assert!(index.resolve(&a).0.iter().all(|e| e.kind != "IMPLEMENTS"));
 }
 
 #[test]
@@ -95,6 +96,7 @@ fn inherits_edge_resolves_when_the_base_class_is_indexed() {
     let edges = index.resolve(&a);
     assert!(
         edges
+            .0
             .iter()
             .any(|e| e.kind == "INHERITS" && e.target_moniker == "a.py#Base")
     );
@@ -109,7 +111,7 @@ fn plain_call_with_no_same_file_match_falls_back_to_the_unique_global_candidate(
     index.add_file(&b);
 
     assert_eq!(
-        index.resolve(&a),
+        index.resolve(&a).0,
         vec![ResolvedEdge {
             source_moniker: "a.rs#caller".into(),
             target_moniker: "b.rs#shared_helper".into(),
@@ -132,10 +134,14 @@ fn plain_call_ambiguous_across_other_files_fans_out_as_dynamic() {
     index.add_file(&c);
 
     let resolved = index.resolve(&a);
-    let mut targets: Vec<&str> = resolved.iter().map(|e| e.target_moniker.as_str()).collect();
+    let mut targets: Vec<&str> = resolved
+        .0
+        .iter()
+        .map(|e| e.target_moniker.as_str())
+        .collect();
     targets.sort_unstable();
     assert_eq!(targets, vec!["b.rs#shared_helper", "c.rs#shared_helper"]);
-    assert!(resolved.iter().all(|e| e.kind == "CALLS_DYNAMIC"));
+    assert!(resolved.0.iter().all(|e| e.kind == "CALLS_DYNAMIC"));
 }
 
 #[test]
@@ -151,7 +157,7 @@ fn resolve_cross_repo_falls_back_to_the_other_index_when_self_has_no_candidate()
     index_b.add_file(&b);
 
     assert!(
-        index_a.resolve(&a).is_empty(),
+        index_a.resolve(&a).0.is_empty(),
         "plain resolve must not find helper — it doesn't exist in repo A"
     );
 
@@ -217,7 +223,7 @@ fn resolve_cross_repo_resolves_a_structural_edge_against_the_fallback_index() {
     index_b.add_file(&b);
 
     assert!(
-        index_a.resolve(&a).is_empty(),
+        index_a.resolve(&a).0.is_empty(),
         "Animal isn't in repo A's own index"
     );
 

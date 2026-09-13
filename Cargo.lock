@@ -1132,7 +1132,6 @@ dependencies = [
  "fixedbitset",
  "hashbrown 0.15.5",
  "indexmap",
- "serde",
 ]
 
 [[package]]
@@ -2237,7 +2236,6 @@ dependencies = [
  "weave-graph-mcp",
  "weave-graph-parse",
  "weave-graph-store-sqlite",
- "weave-graph-store-turso",
 ]
 
 [[package]]
@@ -2259,6 +2257,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
+ "toml",
  "weave-graph-core",
  "weave-graph-store-sqlite",
 ]
@@ -2349,7 +2348,6 @@ dependencies = [
  "libsql",
  "tempfile",
  "weave-graph-core",
- "weave-graph-store-sqlite",
 ]
 
 [[package]]

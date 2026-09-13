@@ -3,8 +3,10 @@
 //! dependencies. `http://` base URLs only; `https://` is explicit follow-on
 //! scope (see crate docs).
 
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::TcpStream;
+use std::path::Path;
 use std::time::Duration;
 
 use thiserror::Error;
@@ -152,12 +154,74 @@ impl HubClient {
         signature: Option<&str>,
         payload: &[u8],
     ) -> Result<PushOutcome, HubError> {
+        self.push_chunks(
+            target_commit_sha,
+            base_commit_sha,
+            retention,
+            signature,
+            payload.len() as u64,
+            |offset, length| {
+                let start = usize::try_from(offset).map_err(|_| {
+                    HubError::MalformedResponse(
+                        "payload offset exceeds platform limits".to_string(),
+                    )
+                })?;
+                let end = start.checked_add(length).ok_or_else(|| {
+                    HubError::MalformedResponse("payload chunk exceeds platform limits".to_string())
+                })?;
+                payload
+                    .get(start..end)
+                    .map(|chunk| chunk.to_vec())
+                    .ok_or_else(|| {
+                        HubError::MalformedResponse("payload range is invalid".to_string())
+                    })
+            },
+        )
+    }
+
+    /// Publishes a snapshot from disk, retaining at most one transport chunk.
+    pub fn push_file(
+        &self,
+        target_commit_sha: &str,
+        base_commit_sha: Option<&str>,
+        retention: usize,
+        signature: Option<&str>,
+        path: &Path,
+    ) -> Result<PushOutcome, HubError> {
+        let mut file = File::open(path)?;
+        let total = file.metadata()?.len();
+        self.push_chunks(
+            target_commit_sha,
+            base_commit_sha,
+            retention,
+            signature,
+            total,
+            |offset, length| {
+                file.seek(SeekFrom::Start(offset))?;
+                let mut chunk = vec![0; length];
+                file.read_exact(&mut chunk)?;
+                Ok(chunk)
+            },
+        )
+    }
+
+    fn push_chunks<F>(
+        &self,
+        target_commit_sha: &str,
+        base_commit_sha: Option<&str>,
+        retention: usize,
+        signature: Option<&str>,
+        total: u64,
+        mut chunk_at: F,
+    ) -> Result<PushOutcome, HubError>
+    where
+        F: FnMut(u64, usize) -> Result<Vec<u8>, HubError>,
+    {
         let path = format!(
             "{}/snapshots/{}/{}.tar.zst",
             self.url.prefix, self.repo_id, target_commit_sha
         );
 
-        let total = payload.len() as u64;
         if total == 0 {
             let mut headers = self.base_headers(retention, base_commit_sha, signature);
             headers.push(("Content-Range".to_string(), "bytes 0-0/0".to_string()));
@@ -180,7 +244,15 @@ impl HubClient {
 
         while offset < total {
             let end = (offset + chunk_size).min(total);
-            let chunk = &payload[offset as usize..end as usize];
+            let chunk_len = usize::try_from(end - offset).map_err(|_| {
+                HubError::MalformedResponse("snapshot chunk exceeds platform limits".to_string())
+            })?;
+            let chunk = chunk_at(offset, chunk_len)?;
+            if chunk.len() != chunk_len {
+                return Err(HubError::MalformedResponse(
+                    "snapshot source returned an incomplete chunk".to_string(),
+                ));
+            }
 
             let mut headers = self.base_headers(retention, base_commit_sha, signature);
             headers.push((
@@ -188,7 +260,7 @@ impl HubClient {
                 format!("bytes {}-{}/{}", offset, end - 1, total),
             ));
 
-            match self.request("PUT", &path, &headers, chunk) {
+            match self.request("PUT", &path, &headers, &chunk) {
                 Ok((status, hdrs, _)) => {
                     match status {
                         200 | 201 | 204 => return Ok(PushOutcome::Published),

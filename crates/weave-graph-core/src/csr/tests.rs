@@ -210,7 +210,7 @@ fn callers_within_bounds_by_hop_count_over_the_reverse_direction() {
 }
 
 fn graph_index(graph: &CsrGraph, id: NodeId) -> u32 {
-    *graph.id_to_index.get(&id).unwrap()
+    graph.index_to_id.binary_search(&id).unwrap() as u32
 }
 
 #[test]

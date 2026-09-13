@@ -8,6 +8,13 @@ use weave_graph_core::Storage;
 use weave_graph_core::rbac::RbacGuard;
 use weave_graph_core::{CsrGraph, Node, StorageError};
 
+#[cfg(feature = "rbac")]
+type GuardRef<'a> = Option<&'a RbacGuard>;
+#[cfg(feature = "rbac")]
+type TokenAuthProvider = std::rc::Rc<dyn Fn(&str) -> Option<RbacGuard>>;
+#[cfg(not(feature = "rbac"))]
+type GuardRef<'a> = Option<&'a ()>;
+
 use crate::file_api::weave_file_api;
 use crate::impact_radius::weave_impact_radius;
 #[cfg(feature = "notes")]
@@ -78,6 +85,10 @@ pub struct McpHandler {
     /// identity (`plan.md` §3.1).
     #[cfg(feature = "rbac")]
     rbac_guard: Option<RbacGuard>,
+    #[cfg(feature = "rbac")]
+    token_auth_provider: Option<TokenAuthProvider>,
+    #[cfg(feature = "rbac")]
+    require_auth: bool,
 }
 
 impl McpHandler {
@@ -96,6 +107,10 @@ impl McpHandler {
             recheck_interval: Duration::from_millis(500),
             #[cfg(feature = "rbac")]
             rbac_guard: None,
+            #[cfg(feature = "rbac")]
+            token_auth_provider: None,
+            #[cfg(feature = "rbac")]
+            require_auth: false,
         })
     }
 
@@ -132,6 +147,10 @@ impl McpHandler {
             recheck_interval: Duration::from_millis(500),
             #[cfg(feature = "rbac")]
             rbac_guard: None,
+            #[cfg(feature = "rbac")]
+            token_auth_provider: None,
+            #[cfg(feature = "rbac")]
+            require_auth: false,
         })
     }
 
@@ -144,6 +163,18 @@ impl McpHandler {
     #[cfg(feature = "rbac")]
     pub fn with_identity(mut self, guard: RbacGuard) -> Self {
         self.rbac_guard = Some(guard);
+        self
+    }
+
+    #[cfg(feature = "rbac")]
+    pub fn with_token_auth(mut self, provider: TokenAuthProvider) -> Self {
+        self.token_auth_provider = Some(provider);
+        self
+    }
+
+    #[cfg(feature = "rbac")]
+    pub fn with_require_auth(mut self, require_auth: bool) -> Self {
+        self.require_auth = require_auth;
         self
     }
 
@@ -243,6 +274,56 @@ impl McpHandler {
                     None
                 }
             }
+        }
+    }
+
+    /// Applies a transport credential as request metadata before dispatch.
+    pub fn handle_message_with_token(
+        &self,
+        raw: &str,
+        token: Option<&str>,
+    ) -> Option<JsonRpcResponse> {
+        let Some(token) = token else {
+            return self.handle_message(raw);
+        };
+        let Ok(mut request) = serde_json::from_str::<Value>(raw) else {
+            return self.handle_message(raw);
+        };
+        if request.get("method").and_then(Value::as_str) != Some("tools/call") {
+            return self.handle_message(raw);
+        }
+        let Some(params) = request.get_mut("params").and_then(Value::as_object_mut) else {
+            return self.handle_message(raw);
+        };
+        let arguments = params.entry("arguments").or_insert_with(|| json!({}));
+        let Some(arguments) = arguments.as_object_mut() else {
+            return self.handle_message(raw);
+        };
+        arguments.insert("_meta".to_string(), json!({ "token": token }));
+        serde_json::to_string(&request)
+            .ok()
+            .and_then(|request| self.handle_message(&request))
+    }
+
+    /// Checks whether a transport credential can satisfy required RBAC auth.
+    pub fn accepts_request_token(&self, token: Option<&str>) -> bool {
+        #[cfg(feature = "rbac")]
+        {
+            if !self.require_auth || self.rbac_guard.is_some() {
+                true
+            } else {
+                token.is_some_and(|token| {
+                    self.token_auth_provider
+                        .as_ref()
+                        .and_then(|provider| provider(token))
+                        .is_some()
+                })
+            }
+        }
+        #[cfg(not(feature = "rbac"))]
+        {
+            let _ = token;
+            true
         }
     }
 
@@ -384,20 +465,54 @@ impl McpHandler {
         };
 
         let args = params.get("arguments").cloned().unwrap_or(json!({}));
+        #[cfg(feature = "rbac")]
+        let mut args = args;
+
+        #[cfg(feature = "rbac")]
+        let mut resolved_guard = None;
+
+        #[cfg(feature = "rbac")]
+        {
+            let token = args
+                .as_object_mut()
+                .and_then(|obj| obj.remove("_meta"))
+                .and_then(|meta| meta.get("token").cloned())
+                .and_then(|v| v.as_str().map(String::from));
+
+            if let Some(t) = token
+                && self.rbac_guard.is_none()
+                && let Some(provider) = &self.token_auth_provider
+            {
+                resolved_guard = provider(&t);
+            }
+
+            if self.require_auth && self.rbac_guard.is_none() && resolved_guard.is_none() {
+                return JsonRpcResponse::error(
+                    id,
+                    -32000,
+                    "Unauthorized: valid _meta.token required (SEC-07)",
+                );
+            }
+        }
+
+        #[cfg(feature = "rbac")]
+        let guard_ref = resolved_guard.as_ref().or(self.rbac_guard.as_ref());
+        #[cfg(not(feature = "rbac"))]
+        let guard_ref = None;
 
         let mut tool_result = match name {
-            "weave_repo_map" => self.call_repo_map(&args),
-            "weave_file_api" => self.call_file_api(&args),
-            "weave_trace_calls" => self.call_trace_calls(&args),
-            "weave_impact_radius" => self.call_impact_radius(&args),
+            "weave_repo_map" => self.call_repo_map(&args, guard_ref),
+            "weave_file_api" => self.call_file_api(&args, guard_ref),
+            "weave_trace_calls" => self.call_trace_calls(&args, guard_ref),
+            "weave_impact_radius" => self.call_impact_radius(&args, guard_ref),
             #[cfg(feature = "notes")]
             "weave_pin_note" => self.call_pin_note(&args),
             #[cfg(feature = "notes")]
             "weave_recall_notes" => CallToolResult::ok(weave_recall_notes(&*self.storage.borrow())),
             #[cfg(feature = "vector")]
-            "weave_search_semantic" => self.call_search_semantic(&args),
+            "weave_search_semantic" => self.call_search_semantic(&args, guard_ref),
             #[cfg(feature = "policy-lint")]
-            "weave_policy_lint" => self.call_policy_lint(),
+            "weave_policy_lint" => self.call_policy_lint(guard_ref),
             _ => CallToolResult::err(format!("Unknown tool: {name}")),
         };
         self.append_watch_staleness(&mut tool_result);
@@ -437,7 +552,11 @@ impl McpHandler {
         }
     }
 
-    fn call_repo_map(&self, args: &Value) -> CallToolResult {
+    fn call_repo_map(
+        &self,
+        args: &Value,
+        #[allow(unused_variables)] guard: GuardRef,
+    ) -> CallToolResult {
         let max_files = args
             .get("max_files")
             .and_then(|v| v.as_u64())
@@ -449,10 +568,7 @@ impl McpHandler {
             .and_then(|v| v.as_u64())
             .map(|d| d as usize);
         #[cfg(feature = "rbac")]
-        let masker = self
-            .rbac_guard
-            .as_ref()
-            .map(|g| move |n: &Node| g.mask_node(n));
+        let masker = guard.map(|g| move |n: &Node| g.mask_node(n));
         #[cfg(feature = "rbac")]
         let mask: Option<&dyn Fn(&Node) -> Node> =
             masker.as_ref().map(|c| c as &dyn Fn(&Node) -> Node);
@@ -471,7 +587,11 @@ impl McpHandler {
         as_tool_result(res.text)
     }
 
-    fn call_file_api(&self, args: &Value) -> CallToolResult {
+    fn call_file_api(
+        &self,
+        args: &Value,
+        #[allow(unused_variables)] guard: GuardRef,
+    ) -> CallToolResult {
         let paths_vec: Vec<&str> = match args.get("paths").and_then(|v| v.as_array()) {
             Some(arr) => arr.iter().filter_map(|v| v.as_str()).collect(),
             None => vec![],
@@ -481,10 +601,7 @@ impl McpHandler {
             .and_then(|v| v.as_u64())
             .map(|d| d as usize);
         #[cfg(feature = "rbac")]
-        let masker = self
-            .rbac_guard
-            .as_ref()
-            .map(|g| move |n: &Node| g.mask_node(n));
+        let masker = guard.map(|g| move |n: &Node| g.mask_node(n));
         #[cfg(feature = "rbac")]
         let mask: Option<&dyn Fn(&Node) -> Node> =
             masker.as_ref().map(|c| c as &dyn Fn(&Node) -> Node);
@@ -501,7 +618,11 @@ impl McpHandler {
         CallToolResult::ok(crate::file_api::render_cards(&res.cards, max_tokens))
     }
 
-    fn call_trace_calls(&self, args: &Value) -> CallToolResult {
+    fn call_trace_calls(
+        &self,
+        args: &Value,
+        #[allow(unused_variables)] guard: GuardRef,
+    ) -> CallToolResult {
         let symbol = match args.get("symbol").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return CallToolResult::err("Missing 'symbol' parameter"),
@@ -516,10 +637,7 @@ impl McpHandler {
             .and_then(|v| v.as_u64())
             .map(|d| d as usize);
         #[cfg(feature = "rbac")]
-        let masker = self
-            .rbac_guard
-            .as_ref()
-            .map(|g| move |n: &Node| g.mask_node(n));
+        let masker = guard.map(|g| move |n: &Node| g.mask_node(n));
         #[cfg(feature = "rbac")]
         let mask: Option<&dyn Fn(&Node) -> Node> =
             masker.as_ref().map(|c| c as &dyn Fn(&Node) -> Node);
@@ -538,7 +656,11 @@ impl McpHandler {
         as_tool_result(res.text)
     }
 
-    fn call_impact_radius(&self, args: &Value) -> CallToolResult {
+    fn call_impact_radius(
+        &self,
+        args: &Value,
+        #[allow(unused_variables)] guard: GuardRef,
+    ) -> CallToolResult {
         let symbol = match args.get("symbol").and_then(|v| v.as_str()) {
             Some(s) => s,
             None => return CallToolResult::err("Missing 'symbol' parameter"),
@@ -548,10 +670,7 @@ impl McpHandler {
             .and_then(|v| v.as_u64())
             .map(|d| d as usize);
         #[cfg(feature = "rbac")]
-        let masker = self
-            .rbac_guard
-            .as_ref()
-            .map(|g| move |n: &Node| g.mask_node(n));
+        let masker = guard.map(|g| move |n: &Node| g.mask_node(n));
         #[cfg(feature = "rbac")]
         let mask: Option<&dyn Fn(&Node) -> Node> =
             masker.as_ref().map(|c| c as &dyn Fn(&Node) -> Node);
@@ -592,7 +711,11 @@ impl McpHandler {
     }
 
     #[cfg(feature = "vector")]
-    fn call_search_semantic(&self, args: &Value) -> CallToolResult {
+    fn call_search_semantic(
+        &self,
+        args: &Value,
+        #[allow(unused_variables)] guard: GuardRef,
+    ) -> CallToolResult {
         let Some(query) = args.get("query").and_then(|v| v.as_str()) else {
             return CallToolResult::err("Missing 'query' parameter");
         };
@@ -602,10 +725,7 @@ impl McpHandler {
             .map(|d| d as usize)
             .unwrap_or(5);
         #[cfg(feature = "rbac")]
-        let checker = self
-            .rbac_guard
-            .as_ref()
-            .map(|g| move |n: &Node| g.visible(n));
+        let checker = guard.map(|g| move |n: &Node| g.visible(n));
         #[cfg(feature = "rbac")]
         let visible: Option<&dyn Fn(&Node) -> bool> =
             checker.as_ref().map(|c| c as &dyn Fn(&Node) -> bool);
@@ -631,7 +751,7 @@ impl McpHandler {
     }
 
     #[cfg(feature = "policy-lint")]
-    fn call_policy_lint(&self) -> CallToolResult {
+    fn call_policy_lint(&self, #[allow(unused_variables)] guard: GuardRef) -> CallToolResult {
         let storage = self.storage.borrow();
         let (nodes, edges) = match (storage.all_nodes(), storage.all_edges()) {
             (Ok(n), Ok(e)) => (n, e),
@@ -642,7 +762,7 @@ impl McpHandler {
         // identity's clean run only means "no violations it could see"
         // (POL-01) — never a repo-wide compliance guarantee.
         #[cfg(feature = "rbac")]
-        let (nodes, edges) = match &self.rbac_guard {
+        let (nodes, edges) = match guard {
             Some(guard) => {
                 let visible_nodes: Vec<Node> =
                     nodes.into_iter().filter(|n| guard.visible(n)).collect();

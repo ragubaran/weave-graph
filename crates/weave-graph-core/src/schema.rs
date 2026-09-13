@@ -7,7 +7,7 @@
 
 /// Highest schema version any migration in `MIGRATIONS` brings a database
 /// to — round-trip tests assert against it.
-pub const LATEST_SCHEMA_VERSION: u32 = 6;
+pub const LATEST_SCHEMA_VERSION: u32 = 7;
 
 /// Base schema: `nodes`, `edges`, `doc_links`, `contracts`,
 /// `schema_version`. Unique indices on each table's natural key make
@@ -136,6 +136,16 @@ pub const V6_CONTRACT_ENTRIES: &str = "
 ALTER TABLE contracts ADD COLUMN entries_blob TEXT;
 ";
 
+pub const V7_RESOLVER_INPUTS: &str = "
+CREATE TABLE unresolved_refs (
+    repo_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    short_name TEXT NOT NULL
+);
+CREATE INDEX idx_unresolved_refs_name ON unresolved_refs(short_name);
+CREATE INDEX idx_unresolved_refs_path ON unresolved_refs(repo_id, path);
+";
+
 /// Ordered migration history. Each backend replays every `(version, sql)`
 /// newer than the database's recorded version, in its own transaction.
 pub const MIGRATIONS: &[(u32, &str)] = &[
@@ -145,4 +155,5 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (4, V4_NOTES_TABLE),
     (5, V5_TRACE_SPANS_TABLE),
     (6, V6_CONTRACT_ENTRIES),
+    (7, V7_RESOLVER_INPUTS),
 ];

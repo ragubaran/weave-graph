@@ -27,6 +27,8 @@ fn generous_config() -> RegistryConfig {
     RegistryConfig {
         max_queue_depth_per_repo: 1_000,
         max_pushes_per_minute_per_repo: 1_000,
+        max_snapshot_bytes: 10 * 1024 * 1024,
+        canvas_exclude: vec![],
     }
 }
 
@@ -201,6 +203,8 @@ fn push_past_the_watermark_returns_429_with_retry_after() {
     let (base, _guard) = spawn_server(RegistryConfig {
         max_queue_depth_per_repo: 0,
         max_pushes_per_minute_per_repo: 1_000,
+        max_snapshot_bytes: 10 * 1024 * 1024,
+        canvas_exclude: vec![],
     });
     raw_request(&base, "PUT", "/snapshots/my-repo/sha1.tar.zst", &[], b"v1");
     let (status, headers, _body) =

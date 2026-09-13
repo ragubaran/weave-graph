@@ -14,7 +14,6 @@ weave-graph-core = { path = "../weave-graph-core" }
 [dev-dependencies]
 criterion = "0.5"
 tempfile = "3.27.0"
-weave-graph-store-sqlite = { path = "../weave-graph-store-sqlite" }
 
 [[bench]]
 name = "turso_latency"

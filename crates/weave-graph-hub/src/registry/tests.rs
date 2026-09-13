@@ -6,6 +6,8 @@ fn config(max_queue_depth_per_repo: usize, max_pushes_per_minute_per_repo: u32) 
     RegistryConfig {
         max_queue_depth_per_repo,
         max_pushes_per_minute_per_repo,
+        max_snapshot_bytes: 10 * 1024 * 1024,
+        canvas_exclude: vec![],
     }
 }
 
@@ -69,6 +71,59 @@ fn push_and_pull_refuse_a_traversal_repo_id_or_sha_at_the_sink() {
         PullResult::NotFound,
         "pull with traversal sha must not touch the filesystem"
     );
+}
+
+#[test]
+fn rejected_or_oversized_uploads_leave_no_temporary_spool() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut limits = generous_config();
+    limits.max_snapshot_bytes = 3;
+    let registry = Registry::open(dir.path(), limits).unwrap();
+
+    assert!(
+        registry
+            .push("repo-a", "too-large", None, 20, None, b"four")
+            .is_err()
+    );
+    assert!(
+        !dir.path().join("spool/repo-a/too-large.tmp").exists(),
+        "an oversized upload must not create a temporary file"
+    );
+
+    registry
+        .push("repo-a", "sha1", None, 20, None, b"one")
+        .unwrap();
+    assert_eq!(
+        registry
+            .push("repo-a", "conflict", Some("wrong"), 20, None, b"two")
+            .unwrap(),
+        PushDecision::Conflict
+    );
+    assert!(
+        !dir.path().join("spool/repo-a/conflict.tmp").exists(),
+        "a rejected conflict must not leave upload data on disk"
+    );
+}
+
+#[test]
+fn unfinished_uploads_consume_queue_capacity_before_spooling() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(dir.path(), config(1, 100)).unwrap();
+    assert_eq!(
+        registry.begin_upload("repo-a", "in-flight", None).unwrap(),
+        PushDecision::Accepted
+    );
+    assert_eq!(
+        registry.begin_upload("repo-a", "second", None).unwrap(),
+        PushDecision::RateLimited {
+            retry_after_secs: 5
+        }
+    );
+    assert!(
+        !dir.path().join("spool/repo-a/second.tmp").exists(),
+        "queue rejection must happen before any spool file exists"
+    );
+    registry.abandon_upload("repo-a", "in-flight");
 }
 
 #[test]
@@ -391,11 +446,11 @@ fn restart_recovers_a_leftover_spool_job_from_a_prior_crash() {
 
     let registry = Registry::open(dir.path(), generous_config()).unwrap();
     assert_eq!(
-        wait_for_commit(&registry, "repo-a", "sha1"),
+        wait_for_commit(&registry, "repo-a", "latest"),
         b"recovered payload"
     );
     assert_eq!(
-        registry.pull("repo-a", "latest"),
+        registry.pull("repo-a", "sha1"),
         PullResult::Found(b"recovered payload".to_vec(), None)
     );
 }

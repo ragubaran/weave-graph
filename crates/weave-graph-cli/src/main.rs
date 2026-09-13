@@ -346,6 +346,9 @@ enum PolicyAction {
     Lint {
         #[arg(long, default_value = ".")]
         path: PathBuf,
+        /// If true, fail the lint if any edges were masked by RBAC (meaning violations might be hidden)
+        #[arg(long)]
+        fail_on_masked: bool,
     },
     /// Report architecture drift: dependency cycles, orphaned files
     Drift {
@@ -690,7 +693,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Traces { .. } => feature_not_compiled("weave traces", "otel"),
         #[cfg(feature = "policy-lint")]
         Commands::Policy { action } => match action {
-            PolicyAction::Lint { path } => policy::cmd_policy_lint(&path, as_subject.as_deref())?,
+            PolicyAction::Lint {
+                path,
+                fail_on_masked,
+            } => policy::cmd_policy_lint(&path, as_subject.as_deref(), fail_on_masked)?,
             PolicyAction::Drift { path } => policy::cmd_policy_drift(&path, as_subject.as_deref())?,
         },
         #[cfg(not(feature = "policy-lint"))]
@@ -1498,7 +1504,42 @@ fn cmd_serve(
     #[cfg(feature = "rbac")]
     let handler = match as_subject {
         Some(subject) => handler.with_identity(rbac::guard_for(root, Some(subject))),
-        None => handler,
+        None => {
+            let config_path = root.join(".weave").join("config.toml");
+            let users = crate::config::read_rbac_users(&config_path);
+            let mut token_to_subject = std::collections::HashMap::new();
+            for (subject, user_cfg) in users {
+                if let Some(token) = user_cfg.token
+                    && token_to_subject.insert(token, subject.clone()).is_some()
+                {
+                    eprintln!(
+                        "Error: duplicate token found for multiple subjects in [rbac.users] (SEC-07)."
+                    );
+                    std::process::exit(1);
+                }
+            }
+            let require_auth = !token_to_subject.is_empty();
+
+            let root_path = root.to_path_buf();
+            let auth_provider = std::rc::Rc::new(
+                move |token: &str| -> Option<weave_graph_core::rbac::RbacGuard> {
+                    let mut matched_subject: Option<&String> = None;
+                    for (configured_token, subject) in token_to_subject.iter() {
+                        if weave_graph_core::auth::constant_time_eq(
+                            configured_token.as_bytes(),
+                            token.as_bytes(),
+                        ) {
+                            matched_subject = Some(subject);
+                        }
+                    }
+
+                    matched_subject.map(|s| crate::rbac::guard_for(&root_path, Some(s)))
+                },
+            );
+            handler
+                .with_token_auth(auth_provider)
+                .with_require_auth(require_auth)
+        }
     };
     #[cfg(not(feature = "rbac"))]
     let _ = as_subject;

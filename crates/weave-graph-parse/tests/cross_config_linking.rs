@@ -29,18 +29,18 @@ DATABASE_URL=postgres://localhost:5432/db
 
     let edges = index.resolve(&ts_file);
     assert!(
-        !edges.is_empty(),
+        !edges.0.is_empty(),
         "must produce resolved edges from TS to .env"
     );
 
-    let linked_to_port = edges.iter().any(|e| {
+    let linked_to_port = edges.0.iter().any(|e| {
         e.source_moniker == "server.ts#startServer"
             && e.target_moniker == ".env#PORT"
             && e.kind == "IMPORTS"
     });
     assert!(linked_to_port, "must link startServer to .env#PORT");
 
-    let linked_to_db = edges.iter().any(|e| {
+    let linked_to_db = edges.0.iter().any(|e| {
         e.source_moniker == "server.ts#startServer"
             && e.target_moniker == ".env#DATABASE_URL"
             && e.kind == "IMPORTS"
@@ -71,7 +71,7 @@ PORT=8080
     index.add_file(&env_file);
 
     let edges = index.resolve(&rs_file);
-    let linked_to_port = edges.iter().any(|e| {
+    let linked_to_port = edges.0.iter().any(|e| {
         e.source_moniker == "main.rs#get_config"
             && e.target_moniker == ".env#PORT"
             && e.kind == "IMPORTS"
@@ -98,7 +98,7 @@ services:
     index.add_file(&compose_file);
 
     let edges = index.resolve(&compose_file);
-    let has_dep = edges.iter().any(|e| {
+    let has_dep = edges.0.iter().any(|e| {
         e.source_moniker == "docker-compose.yml#depends_on"
             && e.target_moniker == "docker-compose.yml#db"
             && e.kind == "IMPORTS"

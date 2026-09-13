@@ -3,6 +3,7 @@
 //! definitions. No I/O backend, no network — every other crate depends on
 //! this one, never the reverse.
 
+pub mod auth;
 mod cluster;
 mod csr;
 #[cfg(feature = "vector")]
@@ -32,5 +33,5 @@ pub use error::StorageError;
 pub use indexer::{ReindexConfig, should_bail_out};
 pub use model::{Edge, EdgeId, Node, NodeId};
 pub use notes::{Note, NoteTier};
-pub use storage::Storage;
+pub use storage::{MAX_SEARCH_LIMIT, Storage};
 pub use trace::TraceSpan;

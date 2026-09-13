@@ -75,7 +75,7 @@ main_routine <- function(input) {
     project.add_file(&parsed_b);
 
     let edges = project.resolve(&parsed_b);
-    let helper_call = edges.iter().find(|e| {
+    let helper_call = edges.0.iter().find(|e| {
         e.source_moniker == "R/main.R#main_routine" && e.target_moniker == "R/helper.R#helper_calc"
     });
 

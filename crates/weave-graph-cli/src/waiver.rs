@@ -28,7 +28,7 @@ pub(crate) fn authorize(root: &Path, as_subject: Option<&str>) -> Result<(), Str
         let users = crate::config::read_rbac_users(&root.join(".weave").join("config.toml"));
         let anyone_has_allow_drift = users
             .values()
-            .any(|roles| roles.iter().any(|r| r == "allow-drift"));
+            .any(|user| user.roles.iter().any(|role| role == "allow-drift"));
         if anyone_has_allow_drift {
             return Err("anonymous waivers are not permitted when this repository's RBAC config grants the 'allow-drift' role to specific identities. Use --as <subject> to authenticate.".to_string());
         }

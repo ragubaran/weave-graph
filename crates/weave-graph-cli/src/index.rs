@@ -1,11 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
 
-use weave_graph_core::{Edge, Node, NodeId, Storage, StorageError};
-use weave_graph_parse::{ParsedFile, ProjectIndex, moniker, parse_file};
+use weave_graph_core::{Node, NodeId, Storage, StorageError};
+use weave_graph_parse::{ParsedFile, ProjectIndex, parse_file};
 use weave_graph_store_sqlite::SqliteStorage;
 
 pub(crate) struct IndexStats {
@@ -41,13 +41,23 @@ pub(crate) fn rel_path(root: &Path, path: &Path) -> String {
 /// (`path#qualified.symbol`) are built from whatever path is passed here,
 /// and `full_moniker_map` reconstructs those same monikers later from the
 /// relative `Node.path` column — an absolute path here would never match.
-pub(crate) fn build_project_index(root: &Path, files: &[PathBuf]) -> ProjectIndex {
+pub(crate) fn build_project_index_from_storage(
+    storage: &dyn weave_graph_core::Storage,
+) -> Result<(ProjectIndex, HashMap<u32, NodeId>), weave_graph_core::StorageError> {
     let mut project_index = ProjectIndex::new();
-    let _ = parse_files_bounded(root, files, |_rel, parsed| {
-        project_index.add_file(parsed);
-        Ok(())
-    });
-    project_index
+    let mut moniker_to_node_id = HashMap::new();
+    storage.for_each_node(&mut |node| {
+        let moniker = weave_graph_parse::moniker::build(&node.path, &node.symbol);
+        let short_name = node
+            .symbol
+            .rsplit("::")
+            .next()
+            .unwrap_or(&node.symbol)
+            .to_string();
+        let moniker_id = project_index.add_symbol(&moniker, &short_name);
+        moniker_to_node_id.insert(moniker_id, node.id);
+    })?;
+    Ok((project_index, moniker_to_node_id))
 }
 
 /// Files parsed concurrently — the parallel-parse bound (L10, `plan.md`
@@ -67,26 +77,28 @@ fn parse_files_bounded(
     files: &[PathBuf],
     mut fold: impl FnMut(&str, &ParsedFile) -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
-    for batch in files.chunks(PARSE_CHUNK) {
-        let parsed: Vec<(String, ParsedFile)> = batch
-            .par_iter()
-            .filter_map(|file_path| {
-                let source = fs::read_to_string(file_path).ok()?;
-                let rel = rel_path(root, file_path);
-                match parse_file(Path::new(&rel), &source) {
-                    Some(Ok(parsed)) => Some((rel, parsed)),
-                    Some(Err(err)) => {
-                        eprintln!("skipping {}: {err}", file_path.display());
-                        None
-                    }
-                    None => None,
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(String, ParsedFile)>(PARSE_CHUNK);
+    let root = root.to_owned();
+    let files = files.to_vec();
+
+    let producer = std::thread::spawn(move || {
+        files.par_iter().for_each(|file_path| {
+            if let Ok(source) = fs::read_to_string(file_path) {
+                let rel = rel_path(&root, file_path);
+                if let Some(Ok(parsed)) = parse_file(Path::new(&rel), &source) {
+                    let _ = tx.send((rel, parsed));
+                } else if let Some(Err(err)) = parse_file(Path::new(&rel), &source) {
+                    eprintln!("skipping {}: {err}", file_path.display());
                 }
-            })
-            .collect();
-        for (rel, parsed) in &parsed {
-            fold(rel, parsed)?;
-        }
+            }
+        });
+    });
+
+    for (rel, parsed) in rx {
+        fold(&rel, &parsed)?;
     }
+
+    let _ = producer.join();
     Ok(())
 }
 
@@ -143,36 +155,26 @@ fn upsert_all_nodes(
     Ok(total_symbols)
 }
 
-/// Every currently-stored node's moniker, reconstructed from its `path`/
-/// `symbol` columns (`path#qualified.symbol`) rather than a stored column —
-/// cheap, and always in sync with the nodes actually on disk.
-fn full_moniker_map(storage: &SqliteStorage) -> Result<HashMap<String, NodeId>, StorageError> {
-    Ok(storage
-        .all_nodes()?
-        .into_iter()
-        .map(|n| (moniker::build(&n.path, &n.symbol), n.id))
-        .collect())
-}
-
 fn upsert_all_edges(
     storage: &mut SqliteStorage,
     root: &Path,
     project_index: &ProjectIndex,
     files: &[PathBuf],
-    moniker_to_id: &HashMap<String, NodeId>,
-) -> Result<usize, StorageError> {
-    // `upsert_edge`'s natural key is (source_id, target_id, kind) — a repeat
-    // resolve (the same call site re-parsed, or CALLS_DYNAMIC fanning out to
-    // a candidate already reached another way) upserts the same row rather
-    // than adding one. Dedup here too, so the reported count matches what's
-    // actually stored instead of counting write attempts.
-    let mut distinct_edges = HashSet::new();
-    parse_files_bounded(root, files, |_rel, parsed| {
-        for edge in project_index.resolve(parsed) {
-            if let (Some(&src_id), Some(&tgt_id)) = (
-                moniker_to_id.get(&edge.source_moniker),
-                moniker_to_id.get(&edge.target_moniker),
-            ) {
+    moniker_id_to_node: &HashMap<u32, NodeId>,
+) -> Result<(), StorageError> {
+    parse_files_bounded(root, files, |rel, parsed| {
+        let (edges, unresolved) = project_index.resolve(parsed);
+        for edge in edges {
+            if let (Some(src_mid), Some(tgt_mid)) = (
+                project_index.get_moniker_id(&edge.source_moniker),
+                project_index.get_moniker_id(&edge.target_moniker),
+            )
+                && let (Some(&src_id), Some(&tgt_id)) = (
+                    moniker_id_to_node.get(&src_mid),
+                    moniker_id_to_node.get(&tgt_mid),
+                )
+            {
+                use weave_graph_core::Edge;
                 storage.upsert_edge(&Edge {
                     id: 0,
                     source_id: src_id,
@@ -180,12 +182,14 @@ fn upsert_all_edges(
                     kind: edge.kind.clone(),
                     weight: 1.0,
                 })?;
-                distinct_edges.insert((src_id, tgt_id, edge.kind));
             }
         }
+        use weave_graph_core::Storage;
+        storage.purge_file_unresolved_refs("local", rel)?;
+        storage.upsert_unresolved_refs("local", rel, &unresolved)?;
         Ok(())
     })?;
-    Ok(distinct_edges.len())
+    Ok(())
 }
 
 /// AST-bounded chunk text per node (`impl.md` M3.7 Tier 2): the node's own
@@ -194,28 +198,45 @@ fn upsert_all_edges(
 /// symbol name if the source file can't be read or the span is empty —
 /// never fails the reindex over a missing chunk.
 #[cfg(feature = "vector")]
-fn build_vector_chunks(
-    root: &Path,
-    storage: &SqliteStorage,
-) -> Result<Vec<(NodeId, String)>, StorageError> {
-    let mut file_lines: HashMap<String, Vec<String>> = HashMap::new();
-    let mut chunks = Vec::new();
-    storage.for_each_node(&mut |node| {
-        let lines = file_lines.entry(node.path.clone()).or_insert_with(|| {
-            fs::read_to_string(root.join(&node.path))
-                .map(|s| s.lines().map(str::to_string).collect())
-                .unwrap_or_default()
-        });
-        let start = (node.line_start.saturating_sub(1)) as usize;
-        let end = (node.line_end as usize).min(lines.len());
-        let text = if start < end {
-            lines[start..end].join("\n")
-        } else {
-            node.symbol.clone()
-        };
-        chunks.push((node.id, text));
-    })?;
-    Ok(chunks)
+fn rebuild_vector_index(root: &Path, storage: &SqliteStorage) -> Result<(), StorageError> {
+    let config_path = root.join(".weave").join("config.toml");
+    let excluded_paths = crate::config::read_vector_exclude(&config_path);
+    let embedder = weave_graph_core::embedding::MockEmbeddingProvider::new();
+    let mut current_path = None;
+    let mut lines = Vec::new();
+    storage.rebuild_vector_index_streaming(&embedder, |insert| {
+        storage.for_each_node_by_path(&mut |node| {
+            if excluded_paths
+                .iter()
+                .any(|prefix| path_is_excluded(&node.path, prefix))
+            {
+                return Ok(());
+            }
+            if current_path.as_deref() != Some(node.path.as_str()) {
+                current_path = Some(node.path.clone());
+                lines = fs::read_to_string(root.join(&node.path))
+                    .map(|source| source.lines().map(str::to_string).collect())
+                    .unwrap_or_default();
+            }
+            let start = (node.line_start.saturating_sub(1)) as usize;
+            let end = (node.line_end as usize).min(lines.len());
+            let text = if start < end {
+                lines[start..end].join("\n")
+            } else {
+                node.symbol.clone()
+            };
+            insert(node.id, &text)
+        })
+    })
+}
+
+#[cfg(feature = "vector")]
+fn path_is_excluded(path: &str, prefix: &str) -> bool {
+    prefix.is_empty()
+        || path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 /// Full rebuild: parse everything, write into a fresh `.rebuild` file, then
@@ -263,8 +284,15 @@ pub(crate) fn full_reindex(
         Ok(())
     })?;
 
-    let moniker_to_id = full_moniker_map(&storage)?;
-    let total_edges = upsert_all_edges(&mut storage, root, &project_index, files, &moniker_to_id)?;
+    let (project_index, moniker_id_to_node) = build_project_index_from_storage(&storage)?;
+    upsert_all_edges(
+        &mut storage,
+        root,
+        &project_index,
+        files,
+        &moniker_id_to_node,
+    )?;
+    let total_edges = storage.edge_count()?;
     #[cfg(feature = "docs")]
     {
         let parsed_md = crate::docs::parse_markdown_files(files);
@@ -275,8 +303,14 @@ pub(crate) fn full_reindex(
     #[cfg(feature = "notes")]
     {
         // Carry notes over from the old database the rebuild is replacing,
-        // re-attaching by moniker (M2.10) — inside the same transaction.
-        crate::notes::carry_over_and_prune(&storage, active_db, root, files, &moniker_to_id)?;
+        crate::notes::carry_over_and_prune(
+            &storage,
+            active_db,
+            root,
+            files,
+            &project_index,
+            &moniker_id_to_node,
+        )?;
     }
     #[cfg(feature = "otel")]
     {
@@ -287,17 +321,9 @@ pub(crate) fn full_reindex(
             crate::traces::carry_over(active_db, &storage)?;
         }
     }
-    #[cfg(feature = "fts")]
-    // Full rebuild from the just-written `nodes` table (M3.7 Tier 1) —
-    // `symbol_fts` is a derived index, never its own source of truth.
-    storage.rebuild_fts_index()?;
     #[cfg(feature = "vector")]
     {
-        let chunks = build_vector_chunks(root, &storage)?;
-        storage.rebuild_vector_index(
-            &weave_graph_core::embedding::MockEmbeddingProvider::new(),
-            &chunks,
-        )?;
+        rebuild_vector_index(root, &storage)?;
     }
     storage.commit_bulk_write()?;
     storage.checkpoint_wal()?;
@@ -324,8 +350,6 @@ pub(crate) fn incremental_reindex(
     files: &[PathBuf],
     changed: &[String],
 ) -> Result<IndexStats, Box<dyn std::error::Error>> {
-    let project_index = build_project_index(root, files);
-
     let rebuild_db = weave_dir.join("graph.db.rebuild");
     if rebuild_db.exists() {
         fs::remove_file(&rebuild_db)?;
@@ -333,21 +357,105 @@ pub(crate) fn incremental_reindex(
     fs::copy(active_db, &rebuild_db)?;
     let mut storage = SqliteStorage::open(&rebuild_db)?;
 
-    storage.begin_bulk_write()?;
-    for rel in changed {
-        storage.purge_file_edges("local", rel)?;
-        storage.purge_file_nodes("local", rel)?;
-    }
+    use weave_graph_core::Storage;
 
-    let changed_files: Vec<PathBuf> = files
+    // --- 1. Compute Affected File Closure BEFORE Deletion ---
+    let mut affected_files = changed.to_vec();
+    let mut short_names = std::collections::HashSet::new();
+
+    // 1a. Collect short names of OLD symbols and callers of OLD symbols
+    storage.for_each_node(&mut |node| {
+        if changed.iter().any(|c| c == &node.path) {
+            short_names.insert(
+                node.symbol
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(&node.symbol)
+                    .to_string(),
+            );
+            if let Ok(callers) = storage.get_callers(node.id) {
+                for edge in callers {
+                    if let Ok(Some(src_node)) = storage.get_node(edge.source_id) {
+                        affected_files.push(src_node.path);
+                    }
+                }
+            }
+        }
+    })?;
+
+    // 1b. Collect short names of NEW symbols
+    let changed_pathbufs: Vec<PathBuf> = files
         .iter()
         .filter(|path| changed.iter().any(|c| c == &rel_path(root, path)))
         .cloned()
         .collect();
-    upsert_all_nodes(&mut storage, root, &changed_files)?;
 
-    let moniker_to_id = full_moniker_map(&storage)?;
-    let total_edges = upsert_all_edges(&mut storage, root, &project_index, files, &moniker_to_id)?;
+    let _ = parse_files_bounded(root, &changed_pathbufs, |_rel, parsed| {
+        for symbol in &parsed.symbols {
+            short_names.insert(
+                symbol
+                    .symbol
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(&symbol.symbol)
+                    .to_string(),
+            );
+        }
+        Ok(())
+    });
+
+    // 1c. Find files with unresolved refs to any of these short names
+    for short_name in short_names {
+        if let Ok(paths) = storage.get_files_with_unresolved_refs("local", &short_name) {
+            affected_files.extend(paths);
+        }
+    }
+
+    affected_files.sort();
+    affected_files.dedup();
+
+    let affected_pathbufs: Vec<PathBuf> = files
+        .iter()
+        .filter(|path| affected_files.iter().any(|a| a == &rel_path(root, path)))
+        .cloned()
+        .collect();
+
+    // --- 2. Purge Changed Files (Nodes, Edges, Unresolved Refs) ---
+    storage.begin_bulk_write()?;
+    for rel in changed {
+        storage.purge_file_edges("local", rel)?;
+        storage.purge_file_nodes("local", rel)?;
+        storage.purge_file_unresolved_refs("local", rel)?;
+    }
+
+    // --- 3. Upsert New Nodes for Changed Files ---
+    upsert_all_nodes(&mut storage, root, &changed_pathbufs)?;
+
+    // Core Invariant 3/4: We rebuild the project index from the database AFTER
+    // upserting the changed nodes. This avoids parsing the entire repository just
+    // to build the resolver.
+    let (project_index, moniker_id_to_node) = build_project_index_from_storage(&storage)?;
+
+    // --- 4. Re-resolve Edges ONLY for Affected Files ---
+    // We purge their old edges/unresolved_refs inside `upsert_all_edges` if needed,
+    // but wait! `upsert_all_edges` currently just APPENDS edges.
+    // We MUST purge edges for `affected_files` before re-resolving them!
+    for rel in &affected_files {
+        if !changed.iter().any(|c| c == rel) {
+            // Changed files already purged above. Purge the rest.
+            storage.purge_file_edges("local", rel)?;
+            storage.purge_file_unresolved_refs("local", rel)?;
+        }
+    }
+
+    upsert_all_edges(
+        &mut storage,
+        root,
+        &project_index,
+        &affected_pathbufs,
+        &moniker_id_to_node,
+    )?;
+    let total_edges = storage.edge_count()?;
     #[cfg(feature = "docs")]
     {
         let all_parsed_md = crate::docs::parse_markdown_files(files);
@@ -368,15 +476,9 @@ pub(crate) fn incremental_reindex(
         // explicitly nulling out anything that no longer resolves (M2.10).
         crate::notes::reattach_and_prune(&storage, root, files, &moniker_to_id)?;
     }
-    #[cfg(feature = "fts")]
-    storage.rebuild_fts_index()?;
     #[cfg(feature = "vector")]
     {
-        let chunks = build_vector_chunks(root, &storage)?;
-        storage.rebuild_vector_index(
-            &weave_graph_core::embedding::MockEmbeddingProvider::new(),
-            &chunks,
-        )?;
+        rebuild_vector_index(root, &storage)?;
     }
     storage.commit_bulk_write()?;
     let total_symbols = storage.all_nodes()?.len();

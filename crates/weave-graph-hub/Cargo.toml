@@ -8,6 +8,7 @@ description = "Optional delta ingestion/publish service for weave-graph. Never l
 
 [dependencies]
 thiserror = "2.0.20"
+toml = "1.1.5"
 weave-graph-core = { path = "../weave-graph-core" }
 weave-graph-store-sqlite = { path = "../weave-graph-store-sqlite", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }

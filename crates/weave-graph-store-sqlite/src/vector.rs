@@ -96,6 +96,48 @@ pub(crate) fn rebuild(
     Ok(())
 }
 
+pub(crate) fn rebuild_streaming(
+    conn: &Connection,
+    embedder: &dyn EmbeddingProvider,
+    produce: impl FnOnce(
+        &mut dyn FnMut(NodeId, &str) -> Result<(), StorageError>,
+    ) -> Result<(), StorageError>,
+) -> Result<(), StorageError> {
+    conn.execute("DELETE FROM vec_chunks", [])
+        .map_err(backend_err)?;
+    let mut insert = conn
+        .prepare(
+            "INSERT INTO vec_chunks(rowid, binary_vec, int8_vec) \
+             VALUES (?1, vec_quantize_binary(?2), vec_quantize_int8(?2, 'unit'))",
+        )
+        .map_err(backend_err)?;
+    let mut insert_chunk = |id: NodeId, text: &str| {
+        let bytes = embedding_bytes(embedder, text);
+        insert.execute(params![id, bytes]).map_err(backend_err)?;
+        Ok(())
+    };
+    produce(&mut insert_chunk)
+}
+
+pub(crate) fn purge_excluded_paths(
+    conn: &Connection,
+    excluded_paths: &[String],
+) -> Result<u64, StorageError> {
+    let mut deleted = 0;
+    for prefix in excluded_paths {
+        let like_pattern = format!("{prefix}/%");
+        deleted += conn
+            .execute(
+                "DELETE FROM vec_chunks WHERE rowid IN (\
+                 SELECT id FROM nodes WHERE path = ?1 OR ?2 = '' OR path LIKE ?3\
+                 )",
+                params![prefix, prefix, like_pattern],
+            )
+            .map_err(backend_err)?;
+    }
+    Ok(deleted as u64)
+}
+
 /// Three-stage funnel: binary ANN oversampled by `oversample`, reranked
 /// against the int8 column, capped at `limit` — never queries the binary
 /// index standalone (recall drops ~7-18% without this rerank per

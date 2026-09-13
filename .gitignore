@@ -1,6 +1,7 @@
 # Rust
 /target/
 **/*.rs.bk
+*.info
 
 # Runtime index data a `weave init` project writes locally — not this repo's own state
 .weave/
@@ -9,6 +10,7 @@
 /graft/
 .ignore
 .mcp.json
+.vscode/
 
 # OS / editor
 .DS_Store

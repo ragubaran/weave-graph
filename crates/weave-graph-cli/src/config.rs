@@ -96,14 +96,19 @@ pub(crate) fn add_linked_repo(
     Ok(())
 }
 
-/// `[rbac.users]` (`impl.md` M3.0): a static subject -> roles map, e.g.
-/// `alice = ["internal"]`. Missing file, missing section, or a malformed
-/// entry all read as "no configured users" — every subject then resolves
-/// to the anonymous (no-roles) identity, the safe default.
 #[cfg(any(test, feature = "rbac"))]
-pub(crate) fn read_rbac_users(
-    config_path: &Path,
-) -> std::collections::HashMap<String, Vec<String>> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UserConfig {
+    pub roles: Vec<String>,
+    pub token: Option<String>,
+}
+
+/// `[rbac.users]` (`impl.md` M3.0): a static subject -> roles map, e.g.
+/// `alice = ["internal"]` or `alice = { roles = ["internal"], token = "sec-123" }`.
+/// Missing file, missing section, or a malformed entry all read as "no configured users" —
+/// every subject then resolves to the anonymous (no-roles) identity, the safe default.
+#[cfg(any(test, feature = "rbac"))]
+pub(crate) fn read_rbac_users(config_path: &Path) -> std::collections::HashMap<String, UserConfig> {
     let content = match fs::read_to_string(config_path) {
         Ok(content) => content,
         Err(_) => return std::collections::HashMap::new(),
@@ -121,15 +126,46 @@ pub(crate) fn read_rbac_users(
     };
     users
         .iter()
-        .filter_map(|(subject, roles)| {
-            let roles: Vec<String> = roles
-                .as_array()?
+        .filter_map(|(subject, value)| {
+            let (roles_val, token_val) = match value {
+                toml::Value::Array(arr) => (Some(arr), None),
+                toml::Value::Table(tbl) => (
+                    tbl.get("roles").and_then(|v| v.as_array()),
+                    tbl.get("token").and_then(|v| v.as_str()),
+                ),
+                _ => (None, None),
+            };
+
+            let roles: Vec<String> = roles_val?
                 .iter()
                 .filter_map(|r| r.as_str().map(String::from))
                 .collect();
-            Some((subject.clone(), roles))
+
+            let token = token_val.map(String::from);
+
+            Some((subject.clone(), UserConfig { roles, token }))
         })
         .collect()
+}
+
+#[cfg(feature = "vector")]
+pub(crate) fn read_vector_exclude(config_path: &Path) -> Vec<String> {
+    let content = match fs::read_to_string(config_path) {
+        Ok(content) => content,
+        Err(_) => return Vec::new(),
+    };
+    let table: toml::Table = match content.parse() {
+        Ok(table) => table,
+        Err(_) => return Vec::new(),
+    };
+    get_dotted(&table, "vector.exclude")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn get_dotted<'a>(table: &'a toml::Table, key: &str) -> Option<&'a toml::Value> {

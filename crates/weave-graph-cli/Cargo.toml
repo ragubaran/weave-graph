@@ -26,7 +26,6 @@ weave-graph-core = { path = "../weave-graph-core" }
 weave-graph-parse = { path = "../weave-graph-parse", default-features = false }
 weave-graph-store-sqlite = { path = "../weave-graph-store-sqlite" }
 weave-graph-mcp = { path = "../weave-graph-mcp" }
-weave-graph-store-turso = { path = "../weave-graph-store-turso", optional = true }
 weave-graph-hub = { path = "../weave-graph-hub", optional = true }
 clap = { version = "=4.5.55", features = ["derive"] }
 walkdir = "2.5"
@@ -57,7 +56,6 @@ notes = ["weave-graph-core/notes", "weave-graph-mcp/notes"]
 # of there being something in `default` to opt out of for the first time.
 default = ["lang-extended"]
 lang-extended = ["weave-graph-parse/lang-extended"]
-turso = ["dep:weave-graph-store-turso"]
 hub = ["dep:weave-graph-hub"]
 hub-provenance = ["hub", "weave-graph-hub/hub-provenance"]
 docs = ["weave-graph-parse/docs"]

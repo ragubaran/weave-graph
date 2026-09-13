@@ -11,9 +11,10 @@
 //! client republishes once and never rebases server-side.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use weave_graph_hub::{HubClient, PullOutcome, PushOutcome};
+use weave_graph_store_sqlite::SqliteStorage;
 
 use crate::cache;
 use crate::config;
@@ -64,6 +65,58 @@ fn data_db_path(root: &Path) -> Result<std::path::PathBuf, Box<dyn std::error::E
     let weave_home_env = std::env::var("WEAVE_HOME").ok();
     let data_dir = crate::storage_location::resolve_data_dir(root, weave_home_env.as_deref());
     Ok(data_dir.path.join("graph.db"))
+}
+
+struct PushSnapshot {
+    path: PathBuf,
+}
+
+impl Drop for PushSnapshot {
+    fn drop(&mut self) {
+        remove_snapshot(&self.path);
+    }
+}
+
+fn remove_snapshot(path: &Path) {
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(format!("{}-wal", path.display()));
+    let _ = fs::remove_file(format!("{}-shm", path.display()));
+}
+
+fn snapshot_for_push(
+    root: &Path,
+    db_path: &Path,
+) -> Result<PushSnapshot, Box<dyn std::error::Error>> {
+    let snapshot_path = db_path.with_extension("db.push-tmp");
+    remove_snapshot(&snapshot_path);
+    let source = SqliteStorage::open(db_path)?;
+    source.export_read_only_snapshot(&snapshot_path)?;
+    drop(source);
+
+    #[cfg(not(feature = "vector"))]
+    let _ = root;
+
+    #[cfg(feature = "vector")]
+    {
+        let excluded_paths =
+            crate::config::read_vector_exclude(&root.join(".weave").join("config.toml"));
+        if !excluded_paths.is_empty() {
+            let sanitized_path = db_path.with_extension("db.push-sanitized");
+            remove_snapshot(&sanitized_path);
+            let snapshot = SqliteStorage::open(&snapshot_path)?;
+            snapshot.purge_vector_paths(&excluded_paths)?;
+            snapshot.export_read_only_snapshot(&sanitized_path)?;
+            drop(snapshot);
+            remove_snapshot(&snapshot_path);
+            return Ok(PushSnapshot {
+                path: sanitized_path,
+            });
+        }
+    }
+
+    Ok(PushSnapshot {
+        path: snapshot_path,
+    })
 }
 
 /// `weave sync pull [--commit <sha>] [--fallback-latest]`: hydrate the hub's
@@ -186,7 +239,9 @@ pub(crate) fn cmd_sync_push(
     let target = crate::git::current_sha(root)
         .ok_or("Cannot determine HEAD commit — refusing to publish without a commit sha")?;
     let base = cache::read_last_indexed_sha(&root.join(".weave"));
-    let payload = fs::read(data_db_path(root)?)?;
+    let db_path = data_db_path(root)?;
+
+    let snapshot = snapshot_for_push(root, &db_path)?;
 
     let outcome = push_with_backoff(
         &client,
@@ -194,7 +249,7 @@ pub(crate) fn cmd_sync_push(
         base.as_deref(),
         retention(root),
         signature,
-        &payload,
+        &snapshot.path,
     )?;
     match outcome {
         PushOutcome::Published | PushOutcome::Accepted => {
@@ -215,7 +270,7 @@ pub(crate) fn cmd_sync_push(
                     None,
                     retention(root),
                     signature,
-                    &payload,
+                    &snapshot.path,
                 )?;
                 if !matches!(outcome, PushOutcome::Conflict) {
                     break;
@@ -283,10 +338,11 @@ fn push_with_backoff(
     base_sha: Option<&str>,
     retention: usize,
     signature: Option<&str>,
-    payload: &[u8],
+    snapshot_path: &Path,
 ) -> Result<PushOutcome, Box<dyn std::error::Error>> {
     for attempt in 0..MAX_PUSH_ATTEMPTS {
-        let outcome = client.push(target_sha, base_sha, retention, signature, payload)?;
+        let outcome =
+            client.push_file(target_sha, base_sha, retention, signature, snapshot_path)?;
         let PushOutcome::RateLimited { retry_after_secs } = outcome else {
             return Ok(outcome);
         };

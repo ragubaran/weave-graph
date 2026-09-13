@@ -1,6 +1,7 @@
 use std::fs;
 
-use super::{cmd_search, run};
+use super::{bounded_limit, cmd_search, run};
+use weave_graph_core::MAX_SEARCH_LIMIT;
 use weave_graph_store_sqlite::SqliteStorage;
 
 fn init_repo() -> tempfile::TempDir {
@@ -61,6 +62,11 @@ fn search_respects_the_limit_argument() {
 
     assert_eq!(run(&storage, "auth", 10, None).unwrap().len(), 3);
     assert_eq!(run(&storage, "auth", 1, None).unwrap().len(), 1);
+}
+
+#[test]
+fn search_limit_is_bounded_before_storage_work() {
+    assert_eq!(bounded_limit(usize::MAX), MAX_SEARCH_LIMIT);
 }
 
 #[test]

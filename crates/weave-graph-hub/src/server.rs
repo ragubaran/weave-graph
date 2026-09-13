@@ -10,14 +10,31 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
+use std::time::Duration;
+
+use weave_graph_core::auth::bearer_token_matches;
 
 use crate::registry::{PullResult, PushDecision, Registry, is_safe_path_component};
+
+const MAX_HUB_HEADER_BYTES: usize = 16 * 1024;
+const MAX_HUB_CHUNK_BYTES: usize = 5 * 1024 * 1024;
+const MAX_CONCURRENT_CONNECTIONS: usize = 64;
+const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct RegistryServer {
     listener: TcpListener,
     registry: Arc<Registry>,
     auth_token: Option<Arc<str>>,
+}
+
+struct ConnectionSlot(Arc<AtomicUsize>);
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
 }
 
 impl RegistryServer {
@@ -49,14 +66,32 @@ impl RegistryServer {
     /// N accepted connections instead of running forever) — a real
     /// deployment passes `None`.
     pub fn run(&self, max_connections: Option<usize>) -> std::io::Result<()> {
+        let active_connections = Arc::new(AtomicUsize::new(0));
         for (served, stream) in self.listener.incoming().enumerate() {
-            let stream = stream?;
+            let mut stream = stream?;
+            let reached_max_connections = max_connections.is_some_and(|max| served + 1 >= max);
+            if active_connections.fetch_add(1, Ordering::AcqRel) >= MAX_CONCURRENT_CONNECTIONS {
+                active_connections.fetch_sub(1, Ordering::Release);
+                write_response(
+                    &mut stream,
+                    503,
+                    "Service Unavailable",
+                    &[],
+                    b"too many active connections",
+                );
+                if reached_max_connections {
+                    break;
+                }
+                continue;
+            }
             let registry = Arc::clone(&self.registry);
             let auth_token = self.auth_token.clone();
+            let active_connections = Arc::clone(&active_connections);
             thread::spawn(move || {
+                let _slot = ConnectionSlot(active_connections);
                 let _ = handle_connection(stream, &registry, auth_token.as_deref());
             });
-            if max_connections.is_some_and(|max| served + 1 >= max) {
+            if reached_max_connections {
                 break;
             }
         }
@@ -68,10 +103,11 @@ struct Request {
     method: String,
     path: String,
     headers: Vec<(String, String)>,
+    content_length: usize,
     body: Vec<u8>,
 }
 
-fn read_request(stream: &mut TcpStream) -> std::io::Result<Option<Request>> {
+fn read_request_head(stream: &mut TcpStream) -> std::io::Result<Option<Request>> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     let header_end = loop {
@@ -79,12 +115,15 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<Option<Request>> {
         if n == 0 {
             return Ok(None);
         }
+        if buf.len() + n > MAX_HUB_HEADER_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "HTTP headers too large",
+            ));
+        }
         buf.extend_from_slice(&chunk[..n]);
         if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
             break pos + 4;
-        }
-        if buf.len() > 16 * 1024 * 1024 {
-            return Ok(None);
         }
     };
     let head = String::from_utf8_lossy(&buf[..header_end]).into_owned();
@@ -101,27 +140,43 @@ fn read_request(stream: &mut TcpStream) -> std::io::Result<Option<Request>> {
             let name = name.trim().to_string();
             let value = value.trim().to_string();
             if name.eq_ignore_ascii_case("content-length") {
-                content_length = value.parse().unwrap_or(0);
+                content_length = value.parse().map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid Content-Length")
+                })?;
             }
             headers.push((name, value));
         }
     }
 
-    let mut body = buf[header_end..].to_vec();
-    while body.len() < content_length {
-        let n = stream.read(&mut chunk)?;
-        if n == 0 {
-            break;
-        }
-        body.extend_from_slice(&chunk[..n]);
-    }
-    body.truncate(content_length);
     Ok(Some(Request {
         method,
         path,
         headers,
-        body,
+        content_length,
+        body: buf[header_end..].to_vec(),
     }))
+}
+
+fn read_request_body(stream: &mut TcpStream, req: &mut Request) -> std::io::Result<()> {
+    if req.body.len() > req.content_length {
+        req.body.truncate(req.content_length);
+        return Ok(());
+    }
+    req.body.reserve(req.content_length - req.body.len());
+    let mut chunk = [0u8; 8192];
+    while req.body.len() < req.content_length {
+        let remaining = req.content_length - req.body.len();
+        let read_len = remaining.min(chunk.len());
+        let n = stream.read(&mut chunk[..read_len])?;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "request body ended before Content-Length",
+            ));
+        }
+        req.body.extend_from_slice(&chunk[..n]);
+    }
+    Ok(())
 }
 
 fn header<'a>(req: &'a Request, name: &str) -> Option<&'a str> {
@@ -275,12 +330,14 @@ fn handle_connection(
     registry: &Registry,
     auth_token: Option<&str>,
 ) -> std::io::Result<()> {
-    let Some(req) = read_request(&mut stream)? else {
+    stream.set_read_timeout(Some(CLIENT_IO_TIMEOUT))?;
+    stream.set_write_timeout(Some(CLIENT_IO_TIMEOUT))?;
+    let Some(mut req) = read_request_head(&mut stream)? else {
         return Ok(());
     };
 
     if let Some(token) = auth_token
-        && header(&req, "Authorization") != Some(format!("Bearer {token}").as_str())
+        && !bearer_token_matches(header(&req, "Authorization"), token)
     {
         write_response(
             &mut stream,
@@ -291,6 +348,18 @@ fn handle_connection(
         );
         return Ok(());
     }
+
+    if req.content_length > MAX_HUB_CHUNK_BYTES {
+        write_response(
+            &mut stream,
+            413,
+            "Payload Too Large",
+            &[],
+            b"request body exceeds the hub chunk limit",
+        );
+        return Ok(());
+    }
+    read_request_body(&mut stream, &mut req)?;
 
     #[cfg(feature = "hub-canvas")]
     if req.method == "GET"
@@ -350,16 +419,70 @@ fn handle_connection(
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(20);
 
-            let (start, total) = header(&req, "Content-Range")
+            let range = header(&req, "Content-Range")
                 .and_then(|v| {
                     let v = v.strip_prefix("bytes ")?;
                     let (range, total) = v.split_once('/')?;
-                    let (start, _) = range.split_once('-')?;
-                    Some((start.parse().ok()?, total.parse().ok()?))
+                    let (start, end) = range.split_once('-')?;
+                    Some((start.parse().ok()?, end.parse().ok()?, total.parse().ok()?))
                 })
-                .unwrap_or((0, req.body.len() as u64));
+                .unwrap_or((
+                    0,
+                    (req.body.len() as u64).saturating_sub(1),
+                    req.body.len() as u64,
+                ));
+            let (start, end, total) = range;
+            let body_len = req.body.len() as u64;
+            let valid_range = if total == 0 {
+                start == 0 && end == 0 && body_len == 0
+            } else {
+                end >= start
+                    && end - start + 1 == body_len
+                    && start
+                        .checked_add(body_len)
+                        .is_some_and(|next| next <= total)
+            };
+            if !valid_range || total > registry.max_snapshot_bytes() {
+                write_response(
+                    &mut stream,
+                    400,
+                    "Bad Request",
+                    &[],
+                    b"invalid or oversized Content-Range",
+                );
+                return Ok(());
+            }
+
+            if start == 0 {
+                match registry.begin_upload(&repo_id, sha, base_sha.as_deref())? {
+                    PushDecision::Accepted => {}
+                    PushDecision::Conflict => {
+                        write_response(
+                            &mut stream,
+                            409,
+                            "Conflict",
+                            &[],
+                            b"base sha does not match current head",
+                        );
+                        return Ok(());
+                    }
+                    PushDecision::RateLimited { retry_after_secs } => {
+                        write_response(
+                            &mut stream,
+                            429,
+                            "Too Many Requests",
+                            &[("Retry-After", retry_after_secs.to_string())],
+                            b"rate limited",
+                        );
+                        return Ok(());
+                    }
+                    #[cfg(feature = "hub-provenance")]
+                    PushDecision::SignatureInvalid => unreachable!("not returned before upload"),
+                }
+            }
 
             if let Err(e) = registry.spool_chunk(&repo_id, sha, start, &req.body) {
+                registry.abandon_upload(&repo_id, sha);
                 write_response(
                     &mut stream,
                     500,

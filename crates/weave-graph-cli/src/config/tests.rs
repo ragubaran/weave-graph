@@ -166,9 +166,20 @@ fn read_rbac_users_returns_empty_map_when_file_or_section_is_absent() {
 fn read_rbac_users_parses_the_configured_map() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
-    fs::write(&path, "[rbac.users]\nalice = [\"internal\"]\nbob = []\n").unwrap();
+    fs::write(&path, "[rbac.users.alice]\nroles = [\"internal\"]\ntoken = \"t1\"\n\n[rbac.users.bob]\nroles = []\ntoken = \"t2\"\n").unwrap();
     let users = read_rbac_users(&path);
-    assert_eq!(users.get("alice"), Some(&vec!["internal".to_string()]));
-    assert_eq!(users.get("bob"), Some(&vec![]));
-    assert_eq!(users.get("carol"), None);
+    assert_eq!(
+        users.get("alice").map(|u| u.roles.clone()),
+        Some(vec!["internal".to_string()])
+    );
+    assert_eq!(
+        users.get("alice").and_then(|u| u.token.clone()),
+        Some("t1".to_string())
+    );
+    assert_eq!(users.get("bob").map(|u| u.roles.clone()), Some(vec![]));
+    assert_eq!(
+        users.get("bob").and_then(|u| u.token.clone()),
+        Some("t2".to_string())
+    );
+    assert!(!users.contains_key("carol"));
 }

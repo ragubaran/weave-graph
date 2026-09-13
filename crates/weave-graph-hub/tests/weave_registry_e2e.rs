@@ -21,6 +21,8 @@ fn weave_registry_binary_serves_a_real_push_and_pull() {
             "50",
             "--max-pushes-per-minute-per-repo",
             "50",
+            "--max-snapshot-bytes",
+            "10485760",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -79,6 +81,8 @@ fn weave_registry_binary_exits_1_on_an_unbindable_address() {
             "50",
             "--max-pushes-per-minute-per-repo",
             "50",
+            "--max-snapshot-bytes",
+            "10485760",
         ])
         .output()
         .unwrap();

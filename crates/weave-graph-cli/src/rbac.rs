@@ -20,11 +20,12 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 
 use weave_graph_core::Node;
+use weave_graph_core::auth::bearer_token_matches;
 use weave_graph_core::rbac::{AuthProvider, Identity, RbacGuard, StaticAuthProvider};
 use weave_graph_parse::Language;
 use weave_graph_parse::contract::{short_name, visibility_rule};
 
-use crate::config::read_rbac_users;
+use crate::config::{UserConfig, read_rbac_users};
 
 /// "Is this node part of the public API surface" — reuses the same
 /// per-language heuristic `contract.rs` uses for the M2.2 contract hash,
@@ -51,10 +52,17 @@ fn is_public(node: &Node) -> bool {
 pub(crate) fn guard_for(root: &Path, as_subject: Option<&str>) -> RbacGuard {
     let config_path = root.join(".weave").join("config.toml");
     let mut users = read_rbac_users(&config_path);
-    for (subject, roles) in load_directory(&directory_file(root)) {
-        users.insert(subject, roles);
+    for (subject, user_config) in load_directory(&directory_file(root)) {
+        users.insert(subject, user_config);
     }
-    let identity: Identity = StaticAuthProvider::new(users).resolve(as_subject);
+
+    // Convert to the simplified roles-only map for the static auth provider
+    let role_users = users
+        .into_iter()
+        .map(|(subject, user_config)| (subject, user_config.roles))
+        .collect();
+
+    let identity: Identity = StaticAuthProvider::new(role_users).resolve(as_subject);
     RbacGuard::new(identity, is_public)
 }
 
@@ -65,7 +73,7 @@ pub(crate) fn directory_file(root: &Path) -> PathBuf {
     root.join(".weave").join("rbac-directory.toml")
 }
 
-pub(crate) fn load_directory(path: &Path) -> HashMap<String, Vec<String>> {
+pub(crate) fn load_directory(path: &Path) -> HashMap<String, UserConfig> {
     let content = match fs::read_to_string(path) {
         Ok(content) => content,
         Err(_) => return HashMap::new(),
@@ -73,7 +81,7 @@ pub(crate) fn load_directory(path: &Path) -> HashMap<String, Vec<String>> {
     parse_directory(&content)
 }
 
-fn parse_directory(content: &str) -> HashMap<String, Vec<String>> {
+fn parse_directory(content: &str) -> HashMap<String, UserConfig> {
     let Ok(table) = content.parse::<toml::Table>() else {
         return HashMap::new();
     };
@@ -82,30 +90,56 @@ fn parse_directory(content: &str) -> HashMap<String, Vec<String>> {
     };
     users
         .iter()
-        .filter_map(|(subject, roles)| {
-            let roles: Vec<String> = roles
-                .as_array()?
+        .filter_map(|(subject, value)| {
+            let (roles_val, token_val) = match value {
+                toml::Value::Array(arr) => (Some(arr), None),
+                toml::Value::Table(tbl) => (
+                    tbl.get("roles").and_then(|v| v.as_array()),
+                    tbl.get("token").and_then(|v| v.as_str()),
+                ),
+                _ => (None, None),
+            };
+
+            let roles: Vec<String> = roles_val?
                 .iter()
                 .filter_map(|r| r.as_str().map(String::from))
                 .collect();
-            Some((subject.clone(), roles))
+
+            let token = token_val.map(String::from);
+
+            Some((subject.clone(), UserConfig { roles, token }))
         })
         .collect()
 }
 
-fn save_directory(path: &Path, users: &HashMap<String, Vec<String>>) -> Result<(), String> {
+fn save_directory(path: &Path, users: &HashMap<String, UserConfig>) -> Result<(), String> {
     let mut table = toml::Table::new();
     let mut user_table = toml::Table::new();
-    for (subject, roles) in users {
-        user_table.insert(
-            subject.clone(),
+    for (subject, user_config) in users {
+        let val = if let Some(t) = &user_config.token {
+            let mut t_map = toml::Table::new();
+            t_map.insert(
+                "roles".to_string(),
+                toml::Value::Array(
+                    user_config
+                        .roles
+                        .iter()
+                        .map(|r| toml::Value::String(r.clone()))
+                        .collect(),
+                ),
+            );
+            t_map.insert("token".to_string(), toml::Value::String(t.clone()));
+            toml::Value::Table(t_map)
+        } else {
             toml::Value::Array(
-                roles
+                user_config
+                    .roles
                     .iter()
                     .map(|r| toml::Value::String(r.clone()))
                     .collect(),
-            ),
-        );
+            )
+        };
+        user_table.insert(subject.clone(), val);
     }
     table.insert("users".to_string(), toml::Value::Table(user_table));
     let rendered = toml::to_string_pretty(&table).map_err(|e| e.to_string())?;
@@ -121,7 +155,7 @@ fn save_directory(path: &Path, users: &HashMap<String, Vec<String>>) -> Result<(
 /// at query time exactly one sync cycle late, never zero and never
 /// infinite.
 pub(crate) struct ScimDirectory {
-    snapshot: HashMap<String, Vec<String>>,
+    snapshot: HashMap<String, UserConfig>,
     file: PathBuf,
 }
 
@@ -147,7 +181,7 @@ impl ScimDirectory {
                     return Err("userName must not be empty".to_string());
                 }
                 let mut users = load_directory(&self.file);
-                users.insert(subject.clone(), roles);
+                users.insert(subject.clone(), UserConfig { roles, token: None });
                 save_directory(&self.file, &users)?;
                 Ok(ScimResponse(201, format!("{{\"id\":\"{subject}\"}}")))
             }
@@ -173,7 +207,7 @@ impl AuthProvider for ScimDirectory {
         {
             Some((subject, roles)) => Identity {
                 subject: subject.to_string(),
-                roles: roles.clone(),
+                roles: roles.roles.clone(),
             },
             None => Identity::anonymous(),
         }
@@ -273,11 +307,11 @@ impl ScimServer {
             ("GET", subject) => {
                 let subject = subject.trim_start_matches('/');
                 match directory.snapshot.get(subject) {
-                    Some(roles) => ScimResponse(
+                    Some(user) => ScimResponse(
                         200,
                         format!(
                             "{{\"id\":\"{subject}\",\"roles\":[{}]}}",
-                            roles
+                            user.roles
                                 .iter()
                                 .map(|r| format!("\"{r}\""))
                                 .collect::<Vec<_>>()
@@ -301,24 +335,31 @@ impl ScimServer {
             auth_token,
         } = self;
         for stream in listener.incoming() {
-            let mut stream = stream?;
-            let (method, path, body, headers) = read_request(&mut stream)?;
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+            let Ok((method, path, body, headers)) = read_request(&mut stream) else {
+                continue;
+            };
             if let Some(token) = auth_token {
-                let authorized = headers
-                    .iter()
-                    .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
-                    .is_some_and(|(_, value)| value == &format!("Bearer {token}"));
+                let authorized = bearer_token_matches(
+                    headers
+                        .iter()
+                        .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+                        .map(|(_, value)| value.as_str()),
+                    token,
+                );
                 if !authorized {
-                    write_response(
+                    let _ = write_response(
                         &mut stream,
                         401,
                         "{\"error\":\"missing or invalid bearer token\"}",
-                    )?;
+                    );
                     continue;
                 }
             }
             let ScimResponse(status, body) = Self::handle_request(directory, &method, &path, &body);
-            write_response(&mut stream, status, &body)?;
+            let _ = write_response(&mut stream, status, &body);
         }
         Ok(())
     }

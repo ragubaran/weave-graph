@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use petgraph::Directed;
-use petgraph::csr::Csr;
 use roaring::RoaringBitmap;
 
 use crate::error::StorageError;
@@ -22,9 +20,8 @@ use crate::storage::Storage;
 /// edge's weight back off the CSR, only `neighbors_slice`'s indices —
 /// carrying one was dead storage.
 pub struct CsrGraph {
-    csr: Csr<(), (), Directed, u32>,
-    reverse_csr: OnceLock<Csr<(), (), Directed, u32>>,
-    id_to_index: HashMap<NodeId, u32>,
+    csr: CompactCsr,
+    reverse_csr: OnceLock<CompactCsr>,
     index_to_id: Vec<NodeId>,
 }
 
@@ -35,19 +32,91 @@ fn sort_and_dedup_edges(edges: &mut Vec<(u32, u32)>) {
     edges.dedup();
 }
 
-/// Builds a `Csr` from already sorted/deduped edges, padded with isolated
-/// nodes so every id up to `node_count` exists even past the highest
-/// connected one (`from_sorted_edges` only sizes to `max_node_id + 1`).
-fn build_csr(
-    edges: &[(u32, u32)],
-    node_count: usize,
-) -> Result<Csr<(), (), Directed, u32>, StorageError> {
-    let mut csr: Csr<(), (), Directed, u32> = Csr::from_sorted_edges(edges)
-        .map_err(|_| StorageError::Backend("CSR edges were not sorted/deduped".to_string()))?;
-    while csr.node_count() < node_count {
-        csr.add_node(());
+#[derive(Debug, Clone)]
+pub struct CompactCsr {
+    row_offsets: Vec<usize>,
+    column_indices: Vec<u32>,
+}
+
+impl CompactCsr {
+    pub fn new() -> Self {
+        Self {
+            row_offsets: vec![0],
+            column_indices: Vec::new(),
+        }
     }
-    Ok(csr)
+
+    pub fn from_sorted_edges(edges: &[(u32, u32)], node_count: usize) -> Self {
+        let mut row_offsets = vec![0; node_count + 1];
+        let mut column_indices = Vec::with_capacity(edges.len());
+
+        let mut current_node = 0;
+        for &(u, v) in edges {
+            while current_node < u {
+                current_node += 1;
+                row_offsets[current_node as usize] = column_indices.len();
+            }
+            column_indices.push(v);
+        }
+        while current_node < node_count as u32 {
+            current_node += 1;
+            row_offsets[current_node as usize] = column_indices.len();
+        }
+
+        Self {
+            row_offsets,
+            column_indices,
+        }
+    }
+
+    pub fn neighbors_slice(&self, u: u32) -> &[u32] {
+        if (u as usize) + 1 >= self.row_offsets.len() {
+            return &[];
+        }
+        let start = self.row_offsets[u as usize];
+        let end = self.row_offsets[(u + 1) as usize];
+        &self.column_indices[start..end]
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.row_offsets.len().saturating_sub(1)
+    }
+
+    pub fn edge_count(&self) -> usize {
+        self.column_indices.len()
+    }
+
+    pub fn build_reverse(&self) -> Self {
+        let n = self.node_count();
+        let mut in_degrees = vec![0; n];
+        for &v in &self.column_indices {
+            in_degrees[v as usize] += 1;
+        }
+
+        let mut row_offsets = vec![0; n + 1];
+        let mut sum = 0;
+        for i in 0..n {
+            row_offsets[i] = sum;
+            sum += in_degrees[i];
+        }
+        row_offsets[n] = sum;
+
+        let mut current_offsets = row_offsets.clone();
+        let mut column_indices = vec![0; self.edge_count()];
+
+        for u in 0..n {
+            for &v in self.neighbors_slice(u as u32) {
+                let pos = current_offsets[v as usize];
+                column_indices[pos] = u as u32;
+                current_offsets[v as usize] += 1;
+            }
+        }
+
+        Self {
+            row_offsets,
+            column_indices,
+        }
+    }
 }
 
 /// Unweighted BFS from `from_index` over `csr`, bounded to `max_hops`,
@@ -55,7 +124,7 @@ fn build_csr(
 /// traversals. Shared by [`CsrGraph::reachable_within`]
 /// (forward `csr`) and [`CsrGraph::callers_within`] (`reverse_csr`) —
 /// identical hop-bounding logic, different adjacency to walk.
-fn bfs_within(csr: &Csr<(), (), Directed, u32>, from_index: u32, max_hops: u32) -> RoaringBitmap {
+fn bfs_within(csr: &CompactCsr, from_index: u32, max_hops: u32) -> RoaringBitmap {
     let mut reached = RoaringBitmap::new();
     reached.insert(from_index);
     let mut frontier = vec![from_index];
@@ -82,9 +151,8 @@ impl CsrGraph {
     // Bypasses edge sorting since vertex and edge sets are empty.
     pub fn empty() -> Self {
         Self {
-            csr: Csr::new(),
+            csr: CompactCsr::new(),
             reverse_csr: OnceLock::new(),
-            id_to_index: HashMap::new(),
             index_to_id: Vec::new(),
         }
     }
@@ -94,44 +162,29 @@ impl CsrGraph {
     /// edges on the same `(source, target)` pair collapse into one CSR
     /// edge carrying the max weight; kind attribution stays queryable in SQL.
     pub fn load(storage: &dyn Storage) -> Result<Self, StorageError> {
-        // Streamed via `for_each_node`/`for_each_edge`, not `all_nodes`/
-        // `all_edges` — a `Vec<Node>`/`Vec<Edge>` intermediate (five owned
-        // `String` fields per node, one per edge) was the real RAM cost
-        // behind the measured Core Invariant 4 violation at 500k symbols,
-        // not this struct's own compact `u32`/`f64` layout below.
-        let mut id_to_index: HashMap<NodeId, u32> = HashMap::new();
         let mut index_to_id: Vec<NodeId> = Vec::new();
         storage.for_each_node(&mut |node| {
-            id_to_index.insert(node.id, index_to_id.len() as u32);
             index_to_id.push(node.id);
         })?;
+        index_to_id.sort_unstable();
 
         let mut compact_edges: Vec<(u32, u32)> = Vec::new();
         storage.for_each_edge(&mut |edge| {
-            let (Some(&u), Some(&v)) = (
-                id_to_index.get(&edge.source_id),
-                id_to_index.get(&edge.target_id),
-            ) else {
-                // A dangling edge endpoint is exactly the defect
-                // incremental-reindex write-time purging exists to
-                // prevent; a read-side rebuild stays correct by skipping
-                // it rather than panicking.
+            let Ok(u) = index_to_id.binary_search(&edge.source_id) else {
                 return;
             };
-            compact_edges.push((u, v));
+            let Ok(v) = index_to_id.binary_search(&edge.target_id) else {
+                return;
+            };
+            compact_edges.push((u as u32, v as u32));
         })?;
         sort_and_dedup_edges(&mut compact_edges);
 
-        // `from_sorted_edges` is O(V+E); building via repeated `add_edge`
-        // is O(V·E) per petgraph's own docs — the difference is the gap
-        // between this loading in milliseconds vs. minutes at 500k-symbol
-        // scale.
-        let csr = build_csr(&compact_edges, index_to_id.len())?;
+        let csr = CompactCsr::from_sorted_edges(&compact_edges, index_to_id.len());
 
         Ok(Self {
             csr,
             reverse_csr: OnceLock::new(),
-            id_to_index,
             index_to_id,
         })
     }
@@ -142,34 +195,27 @@ impl CsrGraph {
         nodes: &[NodeId],
         edges: &[(NodeId, NodeId, f64)],
     ) -> Result<Self, StorageError> {
-        let mut id_to_index: HashMap<NodeId, u32> = HashMap::with_capacity(nodes.len());
-        let mut index_to_id: Vec<NodeId> = Vec::with_capacity(nodes.len());
-        for &id in nodes {
-            if let std::collections::hash_map::Entry::Vacant(e) = id_to_index.entry(id) {
-                e.insert(index_to_id.len() as u32);
-                index_to_id.push(id);
-            }
-        }
+        let mut index_to_id: Vec<NodeId> = nodes.to_vec();
+        index_to_id.sort_unstable();
+        index_to_id.dedup();
 
-        // `weight` is part of this function's public signature for
-        // caller convenience (WASM callers often already have it on hand
-        // from a JS-side edge array) but is never stored — see the type's
-        // own doc comment for why.
         let mut compact_edges: Vec<(u32, u32)> = Vec::with_capacity(edges.len());
         for &(source, target, _weight) in edges {
-            let (Some(&u), Some(&v)) = (id_to_index.get(&source), id_to_index.get(&target)) else {
+            let Ok(u) = index_to_id.binary_search(&source) else {
                 continue;
             };
-            compact_edges.push((u, v));
+            let Ok(v) = index_to_id.binary_search(&target) else {
+                continue;
+            };
+            compact_edges.push((u as u32, v as u32));
         }
         sort_and_dedup_edges(&mut compact_edges);
 
-        let csr = build_csr(&compact_edges, index_to_id.len())?;
+        let csr = CompactCsr::from_sorted_edges(&compact_edges, index_to_id.len());
 
         Ok(Self {
             csr,
             reverse_csr: OnceLock::new(),
-            id_to_index,
             index_to_id,
         })
     }
@@ -184,9 +230,10 @@ impl CsrGraph {
 
     /// Outbound neighbor storage ids, in the order the CSR stores them.
     pub fn outbound(&self, id: NodeId) -> Vec<NodeId> {
-        let Some(&index) = self.id_to_index.get(&id) else {
+        let Ok(index) = self.index_to_id.binary_search(&id) else {
             return Vec::new();
         };
+        let index = index as u32;
         self.csr
             .neighbors_slice(index)
             .iter()
@@ -199,8 +246,8 @@ impl CsrGraph {
     /// instead of a generic hash set. `Ok(Some(path))` includes both
     /// endpoints.
     pub fn query_path(&self, from: NodeId, to: NodeId) -> Option<Vec<NodeId>> {
-        let from_index = *self.id_to_index.get(&from)?;
-        let to_index = *self.id_to_index.get(&to)?;
+        let from_index = self.index_to_id.binary_search(&from).ok()? as u32;
+        let to_index = self.index_to_id.binary_search(&to).ok()? as u32;
         if from_index == to_index {
             return Some(vec![from]);
         }
@@ -244,9 +291,10 @@ impl CsrGraph {
     /// multiple starting points with `&`/`|` instead of hand-rolled
     /// bitmask code.
     pub fn reachable_within(&self, from: NodeId, max_hops: u32) -> RoaringBitmap {
-        let Some(&from_index) = self.id_to_index.get(&from) else {
+        let Ok(from_index) = self.index_to_id.binary_search(&from) else {
             return RoaringBitmap::new();
         };
+        let from_index = from_index as u32;
         bfs_within(&self.csr, from_index, max_hops)
     }
 
@@ -258,9 +306,10 @@ impl CsrGraph {
     /// unbounded; this is the CSR-side, depth-bounded counterpart
     /// `weave blast --direction callers`/`both` needs.
     pub fn callers_within(&self, from: NodeId, max_hops: u32) -> RoaringBitmap {
-        let Some(&from_index) = self.id_to_index.get(&from) else {
+        let Ok(from_index) = self.index_to_id.binary_search(&from) else {
             return RoaringBitmap::new();
         };
+        let from_index = from_index as u32;
         let reverse = self.reverse_csr.get_or_init(|| self.build_reverse_csr());
         bfs_within(reverse, from_index, max_hops)
     }
@@ -268,19 +317,9 @@ impl CsrGraph {
     /// Transposes the already-built forward `csr` by walking its own
     /// adjacency once, rather than retaining a separate edge list just for
     /// this — callers that never reach `callers_within` never carry that
-    /// cost either. `reverse_edges` is derived from an already-valid `csr`
-    /// and sorted/deduped immediately below, so `build_csr` cannot actually
-    /// fail here; falling back to an empty graph (never reachable in
-    /// practice) keeps this infallible without a library-code panic path.
-    fn build_reverse_csr(&self) -> Csr<(), (), Directed, u32> {
-        let mut reverse_edges: Vec<(u32, u32)> = Vec::with_capacity(self.csr.edge_count());
-        for u in 0..self.csr.node_count() as u32 {
-            for &v in self.csr.neighbors_slice(u) {
-                reverse_edges.push((v, u));
-            }
-        }
-        sort_and_dedup_edges(&mut reverse_edges);
-        build_csr(&reverse_edges, self.index_to_id.len()).unwrap_or_else(|_| Csr::new())
+    /// cost either.
+    fn build_reverse_csr(&self) -> CompactCsr {
+        self.csr.build_reverse()
     }
 
     // Resolves internal compact CSR index back to original external NodeId.
