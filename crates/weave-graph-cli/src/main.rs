@@ -820,7 +820,8 @@ staleness_policy = "warn"
     } else {
         println!("Existing .weave/config.toml found");
     }
-    ensure_gitignored(Path::new("."))?;
+    ensure_ignored(Path::new("."))?;
+    ensure_mcp_configured(Path::new("."))?;
     Ok(())
 }
 
@@ -850,14 +851,11 @@ fn ci_cache_snippet() -> &'static str {
 "#
 }
 
-/// Auto-adds `.weave/` to `.gitignore` if it isn't already covered — the
-/// derived index is disposable, regenerable data, not something to commit.
-fn ensure_gitignored(root: &Path) -> std::io::Result<()> {
-    let gitignore_path = root.join(".gitignore");
-    let existing = fs::read_to_string(&gitignore_path).unwrap_or_default();
+fn append_ignore_entry(file_path: &Path, pattern: &str) -> std::io::Result<()> {
+    let existing = fs::read_to_string(file_path).unwrap_or_default();
     if existing
         .lines()
-        .any(|l| l.trim() == ".weave/" || l.trim() == ".weave")
+        .any(|l| l.trim() == pattern || l.trim() == pattern.trim_end_matches('/'))
     {
         return Ok(());
     }
@@ -865,8 +863,80 @@ fn ensure_gitignored(root: &Path) -> std::io::Result<()> {
     if !content.is_empty() && !content.ends_with('\n') {
         content.push('\n');
     }
-    content.push_str(".weave/\n");
-    fs::write(&gitignore_path, content)
+    content.push_str(pattern);
+    if !pattern.ends_with('\n') {
+        content.push('\n');
+    }
+    fs::write(file_path, content)
+}
+
+// Ensures disposable index artifacts are ignored by VCS and search tools.
+// Whichever files are present (.gitignore and/or .ignore) receive the
+// entry, defaulting to .gitignore when neither exists.
+fn ensure_ignored(root: &Path) -> std::io::Result<()> {
+    let gitignore_path = root.join(".gitignore");
+    let ignore_path = root.join(".ignore");
+
+    let has_gitignore = gitignore_path.exists();
+    let has_ignore = ignore_path.exists();
+
+    if !has_gitignore && !has_ignore {
+        append_ignore_entry(&gitignore_path, ".weave/")?;
+    } else {
+        if has_gitignore {
+            append_ignore_entry(&gitignore_path, ".weave/")?;
+        }
+        if has_ignore {
+            append_ignore_entry(&ignore_path, ".weave/")?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn ensure_gitignored(root: &Path) -> std::io::Result<()> {
+    ensure_ignored(root)
+}
+
+// Auto-registers the MCP server so coding assistants discover it immediately.
+// Merges into existing mcpServers to avoid clobbering other agent tools.
+fn ensure_mcp_configured(root: &Path) -> std::io::Result<()> {
+    let mcp_path = root.join(".mcp.json");
+    let mut root_val: serde_json::Value = if mcp_path.exists() {
+        let content = fs::read_to_string(&mcp_path)?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if !root_val.is_object() {
+        root_val = serde_json::json!({});
+    }
+
+    let servers = root_val
+        .as_object_mut()
+        .unwrap()
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::json!({}));
+
+    if !servers.is_object() {
+        *servers = serde_json::json!({});
+    }
+
+    let servers_map = servers.as_object_mut().unwrap();
+    if !servers_map.contains_key("weave") {
+        servers_map.insert(
+            "weave".to_string(),
+            serde_json::json!({
+                "command": "weave",
+                "args": ["serve", "--mcp"]
+            }),
+        );
+        let formatted = serde_json::to_string_pretty(&root_val).map_err(std::io::Error::other)?;
+        fs::write(&mcp_path, formatted + "\n")?;
+        println!("Registered weave MCP server in .mcp.json");
+    }
+    Ok(())
 }
 
 fn should_skip_dir(entry_name: &str) -> bool {
@@ -890,6 +960,11 @@ fn is_docs_indexable(_path: &Path) -> bool {
 /// language, or (feature `docs`) a Markdown note. Shared by discovery and
 /// by `--incremental`'s changed-file filter so the two never drift apart.
 fn is_indexable(path: &Path) -> bool {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str())
+        && name.starts_with('.')
+    {
+        return false;
+    }
     Language::from_path(path).is_some() || is_docs_indexable(path)
 }
 

@@ -49,6 +49,73 @@ fn ensure_gitignored_respects_an_existing_weave_entry() {
 }
 
 #[test]
+fn ensure_ignored_updates_only_ignore_when_only_ignore_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(".ignore"), "custom_cache/\n").unwrap();
+    ensure_ignored(dir.path()).unwrap();
+    let ignore_content = fs::read_to_string(dir.path().join(".ignore")).unwrap();
+    assert!(ignore_content.lines().any(|l| l == ".weave/"));
+    assert!(!dir.path().join(".gitignore").exists());
+}
+
+#[test]
+fn ensure_ignored_updates_both_when_both_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(".gitignore"), "target/\n").unwrap();
+    fs::write(dir.path().join(".ignore"), "!custom/\n").unwrap();
+    ensure_ignored(dir.path()).unwrap();
+    let gitignore_content = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    let ignore_content = fs::read_to_string(dir.path().join(".ignore")).unwrap();
+    assert!(gitignore_content.lines().any(|l| l == ".weave/"));
+    assert!(ignore_content.lines().any(|l| l == ".weave/"));
+}
+
+#[test]
+fn ensure_mcp_configured_creates_file_when_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    ensure_mcp_configured(dir.path()).unwrap();
+    let content = fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(
+        json["mcpServers"]["weave"]["command"].as_str().unwrap(),
+        "weave"
+    );
+}
+
+#[test]
+fn ensure_mcp_configured_preserves_existing_servers() {
+    let dir = tempfile::tempdir().unwrap();
+    let initial = serde_json::json!({
+        "mcpServers": {
+            "graft": {
+                "command": "graft",
+                "args": ["mcp"]
+            }
+        }
+    });
+    fs::write(
+        dir.path().join(".mcp.json"),
+        serde_json::to_string_pretty(&initial).unwrap(),
+    )
+    .unwrap();
+    ensure_mcp_configured(dir.path()).unwrap();
+    let content = fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert!(json["mcpServers"]["graft"].is_object());
+    assert!(json["mcpServers"]["weave"].is_object());
+}
+
+#[test]
+fn ensure_mcp_configured_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    ensure_mcp_configured(dir.path()).unwrap();
+    ensure_mcp_configured(dir.path()).unwrap();
+    let content = fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert!(json["mcpServers"]["weave"].is_object());
+}
+
+#[test]
 fn try_fast_path_reports_already_up_to_date_when_shas_match_and_db_exists() {
     let dir = tempfile::tempdir().unwrap();
     let weave_dir = dir.path().join(".weave");

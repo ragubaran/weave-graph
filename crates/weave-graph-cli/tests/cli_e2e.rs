@@ -47,6 +47,64 @@ fn test_cli_init_and_index() {
 }
 
 #[test]
+fn test_cli_init_configures_mcp_and_default_gitignore() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    let mut cmd = Command::cargo_bin("weave").unwrap();
+    cmd.current_dir(root)
+        .arg("init")
+        .arg("--mode")
+        .arg("single")
+        .assert()
+        .success();
+
+    let gitignore = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+    assert!(gitignore.lines().any(|l| l == ".weave/"));
+
+    let mcp = std::fs::read_to_string(root.join(".mcp.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&mcp).unwrap();
+    assert_eq!(
+        json["mcpServers"]["weave"]["command"].as_str().unwrap(),
+        "weave"
+    );
+}
+
+#[test]
+fn test_cli_init_preserves_existing_mcp_and_updates_ignore() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    let initial_mcp = r#"{
+  "mcpServers": {
+    "graft": {
+      "command": "graft",
+      "args": ["mcp"]
+    }
+  }
+}"#;
+    std::fs::write(root.join(".mcp.json"), initial_mcp).unwrap();
+    std::fs::write(root.join(".ignore"), "build/\n").unwrap();
+
+    let mut cmd = Command::cargo_bin("weave").unwrap();
+    cmd.current_dir(root)
+        .arg("init")
+        .arg("--mode")
+        .arg("single")
+        .assert()
+        .success();
+
+    let ignore = std::fs::read_to_string(root.join(".ignore")).unwrap();
+    assert!(ignore.lines().any(|l| l == ".weave/"));
+    assert!(!root.join(".gitignore").exists());
+
+    let mcp = std::fs::read_to_string(root.join(".mcp.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&mcp).unwrap();
+    assert!(json["mcpServers"]["graft"].is_object());
+    assert!(json["mcpServers"]["weave"].is_object());
+}
+
+#[test]
 fn test_cli_index_multi_language_fixtures() {
     let dir = tempdir().unwrap();
     let root = dir.path();
