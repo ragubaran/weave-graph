@@ -28,8 +28,8 @@ fn commit_all(root: &Path, message: &str) {
     git(root, &["commit", "-q", "-m", message]);
 }
 
-/// M2.12's fixture shape: a 3-commit PR branch with a `main` that moved
-/// after the branch point.
+/// A 3-commit PR branch with a `main` that moved after the branch point —
+/// the realistic shape `--base` diffing has to handle.
 struct PrFixture {
     dir: tempfile::TempDir,
     weave_dir: std::path::PathBuf,
@@ -115,7 +115,7 @@ fn blast_since_names_an_unknown_ref_clearly() {
 }
 
 /// End-to-end through the compiled command path: a moved `main` produces
-/// a comment covering only the PR's own changes (M2.12 acceptance).
+/// a comment covering only the PR's own changes.
 #[test]
 fn blast_comment_covers_only_the_prs_own_changes() {
     let fx = PrFixture::new();
@@ -130,7 +130,16 @@ fn blast_comment_covers_only_the_prs_own_changes() {
     crate::index::full_reindex(root, &fx.weave_dir, &fx.active_db, &files).unwrap();
 
     let out_path = root.join("blast.md");
-    cmd_blast(root, "main", "md", Some(&out_path)).unwrap();
+    cmd_blast(
+        root,
+        "main",
+        "md",
+        Some(&out_path),
+        "2",
+        "callers",
+        BlastWaiver::default(),
+    )
+    .unwrap();
     let md = fs::read_to_string(&out_path).unwrap();
 
     assert!(md.contains("`main`...`HEAD`"), "{md}");
@@ -158,7 +167,16 @@ fn blast_json_format_is_parseable_and_carries_the_impacted_set() {
     crate::index::full_reindex(root, &fx.weave_dir, &fx.active_db, &files).unwrap();
 
     let out_path = root.join("blast.json");
-    cmd_blast(root, "main", "json", Some(&out_path)).unwrap();
+    cmd_blast(
+        root,
+        "main",
+        "json",
+        Some(&out_path),
+        "2",
+        "callers",
+        BlastWaiver::default(),
+    )
+    .unwrap();
     let parsed: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
     assert_eq!(parsed["base"], "main");
@@ -217,7 +235,16 @@ fn blast_unions_reachability_across_multiple_touched_files_without_duplicates() 
     crate::index::full_reindex(root, &weave_dir, &active_db, &files).unwrap();
 
     let out_path = root.join("blast.json");
-    cmd_blast(root, "main", "json", Some(&out_path)).unwrap();
+    cmd_blast(
+        root,
+        "main",
+        "json",
+        Some(&out_path),
+        "2",
+        "callees",
+        BlastWaiver::default(),
+    )
+    .unwrap();
     let parsed: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
     let symbols: Vec<&str> = parsed["impacted_symbols"]
@@ -240,7 +267,241 @@ fn blast_unions_reachability_across_multiple_touched_files_without_duplicates() 
 #[test]
 fn blast_with_an_unknown_format_is_a_clear_error() {
     let fx = PrFixture::new();
-    assert!(cmd_blast(fx.dir.path(), "main", "xml", None).is_err());
+    assert!(
+        cmd_blast(
+            fx.dir.path(),
+            "main",
+            "xml",
+            None,
+            "2",
+            "callers",
+            BlastWaiver::default(),
+        )
+        .is_err()
+    );
+}
+
+/// `--depth` bounds transitive reachability: a 3-hop call chain, each hop
+/// in its own file so only `touched.rs` is directly touched by the diff —
+/// `hop1`/`hop2`/`hop3` are reached purely via traversal, not file-level
+/// marking. Fully visible at `"all"` but truncated at `"1"`.
+#[test]
+fn blast_depth_flag_bounds_transitive_reachability() {
+    let dir = init_repo();
+    fs::write(dir.path().join("touched.rs"), "fn touched() { hop1(); }\n").unwrap();
+    fs::write(dir.path().join("hop1.rs"), "fn hop1() { hop2(); }\n").unwrap();
+    fs::write(dir.path().join("hop2.rs"), "fn hop2() { hop3(); }\n").unwrap();
+    fs::write(dir.path().join("hop3.rs"), "fn hop3() {}\n").unwrap();
+    commit_all(dir.path(), "base");
+    git(dir.path(), &["checkout", "-q", "-b", "pr"]);
+    fs::write(
+        dir.path().join("touched.rs"),
+        "fn touched() { hop1(); /* pr */ }\n",
+    )
+    .unwrap();
+    commit_all(dir.path(), "pr change");
+
+    let root = dir.path();
+    let weave_dir = root.join(".weave");
+    fs::create_dir_all(&weave_dir).unwrap();
+    let active_db = weave_dir.join("graph.db");
+    let files = ["touched.rs", "hop1.rs", "hop2.rs", "hop3.rs"]
+        .iter()
+        .map(|f| root.join(f))
+        .collect::<Vec<_>>();
+    crate::index::full_reindex(root, &weave_dir, &active_db, &files).unwrap();
+
+    let symbols_at = |depth: &str| -> Vec<String> {
+        let out_path = root.join(format!("blast_{depth}.json"));
+        cmd_blast(
+            root,
+            "main",
+            "json",
+            Some(&out_path),
+            depth,
+            "callees",
+            BlastWaiver::default(),
+        )
+        .unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
+        parsed["impacted_symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["symbol"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // touched --(1 hop)--> hop1 --(1 hop)--> hop2 --(1 hop)--> hop3.
+    // depth 1 reaches hop1 but not hop2/hop3.
+    let shallow = symbols_at("1");
+    assert!(shallow.contains(&"hop1".to_string()), "{shallow:?}");
+    assert!(!shallow.contains(&"hop2".to_string()), "{shallow:?}");
+    assert!(!shallow.contains(&"hop3".to_string()), "{shallow:?}");
+
+    let unbounded = symbols_at("all");
+    assert!(unbounded.contains(&"hop3".to_string()), "{unbounded:?}");
+}
+
+/// `--direction callers` (the default): a 2-hop caller chain, upstream of
+/// the touched symbol — `up1`/`up2` are reached
+/// purely via reverse traversal, never by file-level touch marking (each
+/// hop lives in its own file, only `touched.rs` is in the diff).
+#[test]
+fn blast_direction_callers_is_the_default_and_finds_upstream_callers() {
+    let dir = init_repo();
+    fs::write(dir.path().join("touched.rs"), "fn touched() {}\n").unwrap();
+    fs::write(dir.path().join("up1.rs"), "fn up1() { touched(); }\n").unwrap();
+    fs::write(dir.path().join("up2.rs"), "fn up2() { up1(); }\n").unwrap();
+    commit_all(dir.path(), "base");
+    git(dir.path(), &["checkout", "-q", "-b", "pr"]);
+    fs::write(dir.path().join("touched.rs"), "fn touched() { /* pr */ }\n").unwrap();
+    commit_all(dir.path(), "pr change");
+
+    let root = dir.path();
+    let weave_dir = root.join(".weave");
+    fs::create_dir_all(&weave_dir).unwrap();
+    let active_db = weave_dir.join("graph.db");
+    let files = ["touched.rs", "up1.rs", "up2.rs"]
+        .iter()
+        .map(|f| root.join(f))
+        .collect::<Vec<_>>();
+    crate::index::full_reindex(root, &weave_dir, &active_db, &files).unwrap();
+
+    let symbols_with = |direction: &str| -> Vec<String> {
+        let out_path = root.join(format!("blast_{direction}.json"));
+        cmd_blast(
+            root,
+            "main",
+            "json",
+            Some(&out_path),
+            "2",
+            direction,
+            BlastWaiver::default(),
+        )
+        .unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
+        parsed["impacted_symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["symbol"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let default_out = root.join("blast_default.json");
+    cmd_blast(
+        root,
+        "main",
+        "json",
+        Some(&default_out),
+        "2",
+        "callers",
+        BlastWaiver::default(),
+    )
+    .unwrap();
+    let callers = symbols_with("callers");
+    assert!(callers.contains(&"up1".to_string()), "{callers:?}");
+    assert!(callers.contains(&"up2".to_string()), "{callers:?}");
+
+    // Same fixture under `--direction callees`: touched calls nothing, so
+    // neither up1 nor up2 (its callers, not its callees) show up.
+    let callees = symbols_with("callees");
+    assert!(!callees.contains(&"up1".to_string()), "{callees:?}");
+    assert!(!callees.contains(&"up2".to_string()), "{callees:?}");
+}
+
+/// `--direction both` unions callers and callees: a symbol with one
+/// upstream caller and one downstream callee surfaces both under `both`,
+/// but only its own side under `callers`/`callees` alone.
+#[test]
+fn blast_direction_both_unions_callers_and_callees() {
+    let dir = init_repo();
+    fs::write(dir.path().join("up.rs"), "fn up() { touched(); }\n").unwrap();
+    fs::write(dir.path().join("touched.rs"), "fn touched() { down(); }\n").unwrap();
+    fs::write(dir.path().join("down.rs"), "fn down() {}\n").unwrap();
+    commit_all(dir.path(), "base");
+    git(dir.path(), &["checkout", "-q", "-b", "pr"]);
+    fs::write(
+        dir.path().join("touched.rs"),
+        "fn touched() { down(); /* pr */ }\n",
+    )
+    .unwrap();
+    commit_all(dir.path(), "pr change");
+
+    let root = dir.path();
+    let weave_dir = root.join(".weave");
+    fs::create_dir_all(&weave_dir).unwrap();
+    let active_db = weave_dir.join("graph.db");
+    let files = ["up.rs", "touched.rs", "down.rs"]
+        .iter()
+        .map(|f| root.join(f))
+        .collect::<Vec<_>>();
+    crate::index::full_reindex(root, &weave_dir, &active_db, &files).unwrap();
+
+    let symbols_with = |direction: &str| -> Vec<String> {
+        let out_path = root.join(format!("blast_{direction}.json"));
+        cmd_blast(
+            root,
+            "main",
+            "json",
+            Some(&out_path),
+            "1",
+            direction,
+            BlastWaiver::default(),
+        )
+        .unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
+        parsed["impacted_symbols"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["symbol"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let callers = symbols_with("callers");
+    assert!(callers.contains(&"up".to_string()), "{callers:?}");
+    assert!(!callers.contains(&"down".to_string()), "{callers:?}");
+
+    let callees = symbols_with("callees");
+    assert!(!callees.contains(&"up".to_string()), "{callees:?}");
+    assert!(callees.contains(&"down".to_string()), "{callees:?}");
+
+    let both = symbols_with("both");
+    assert!(both.contains(&"up".to_string()), "{both:?}");
+    assert!(both.contains(&"down".to_string()), "{both:?}");
+}
+
+#[test]
+fn blast_with_an_unknown_direction_is_a_clear_error() {
+    let fx = PrFixture::new();
+    let root = fx.dir.path();
+    fs::create_dir_all(&fx.weave_dir).unwrap();
+    let files = ["core.rs", "feature.rs"]
+        .iter()
+        .map(|f| root.join(f))
+        .collect::<Vec<_>>();
+    crate::index::full_reindex(root, &fx.weave_dir, &fx.active_db, &files).unwrap();
+
+    let err = cmd_blast(
+        root,
+        "main",
+        "json",
+        None,
+        "2",
+        "sideways",
+        BlastWaiver::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("sideways") && err.contains("direction"),
+        "{err}"
+    );
 }
 
 /// Editing only a private helper must never flag the exported-contract
@@ -263,7 +524,16 @@ fn blast_reports_no_exported_symbols_touched_when_only_a_private_fn_changes() {
     crate::index::full_reindex(root, &weave_dir, &active_db, &files).unwrap();
 
     let out_path = root.join("blast.json");
-    cmd_blast(root, "main", "json", Some(&out_path)).unwrap();
+    cmd_blast(
+        root,
+        "main",
+        "json",
+        Some(&out_path),
+        "2",
+        "callers",
+        BlastWaiver::default(),
+    )
+    .unwrap();
     let parsed: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
     assert_eq!(
@@ -273,7 +543,16 @@ fn blast_reports_no_exported_symbols_touched_when_only_a_private_fn_changes() {
     );
 
     let md_path = root.join("blast.md");
-    cmd_blast(root, "main", "md", Some(&md_path)).unwrap();
+    cmd_blast(
+        root,
+        "main",
+        "md",
+        Some(&md_path),
+        "2",
+        "callers",
+        BlastWaiver::default(),
+    )
+    .unwrap();
     let md = fs::read_to_string(&md_path).unwrap();
     assert!(
         md.contains("No exported/public symbols touched"),
@@ -305,7 +584,16 @@ fn blast_flags_a_directly_edited_pub_fn_as_exported_contract_surface_touched() {
     crate::index::full_reindex(root, &weave_dir, &active_db, &files).unwrap();
 
     let out_path = root.join("blast.json");
-    cmd_blast(root, "main", "json", Some(&out_path)).unwrap();
+    cmd_blast(
+        root,
+        "main",
+        "json",
+        Some(&out_path),
+        "2",
+        "callers",
+        BlastWaiver::default(),
+    )
+    .unwrap();
     let parsed: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
     let exported: Vec<&str> = parsed["exported_touched"]
@@ -317,8 +605,120 @@ fn blast_flags_a_directly_edited_pub_fn_as_exported_contract_surface_touched() {
     assert!(exported.contains(&"public_api"), "{parsed}");
 
     let md_path = root.join("blast.md");
-    cmd_blast(root, "main", "md", Some(&md_path)).unwrap();
+    cmd_blast(
+        root,
+        "main",
+        "md",
+        Some(&md_path),
+        "2",
+        "callers",
+        BlastWaiver::default(),
+    )
+    .unwrap();
     let md = fs::read_to_string(&md_path).unwrap();
     assert!(md.contains("Exported contract surface touched"), "{md}");
     assert!(md.contains("public_api"), "{md}");
+}
+
+// ─── impl.md M3.10: waiver mechanisms ───────────────────────────────────────
+
+#[test]
+fn skip_flag_without_a_reason_is_a_clear_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = cmd_blast(
+        dir.path(),
+        "main",
+        "md",
+        None,
+        "2",
+        "callers",
+        BlastWaiver {
+            skip: true,
+            reason: None,
+            as_subject: None,
+            skip_env: None,
+        },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("--reason"), "{err}");
+}
+
+/// `--skip` never even opens the graph — it works on a directory with no
+/// index (or no git repo) at all, since the whole point is to bypass the
+/// computation, not merely to report a fast "no changes."
+#[test]
+fn skip_flag_with_a_reason_bypasses_computation_entirely() {
+    let dir = tempfile::tempdir().unwrap();
+    let out_path = dir.path().join("blast.md");
+    cmd_blast(
+        dir.path(),
+        "main",
+        "md",
+        Some(&out_path),
+        "2",
+        "callers",
+        BlastWaiver {
+            skip: true,
+            reason: Some("hotfix, no time to wait on CI"),
+            as_subject: None,
+            skip_env: None,
+        },
+    )
+    .unwrap();
+    let md = fs::read_to_string(&out_path).unwrap();
+    assert!(md.contains("Waiver Notice"), "{md}");
+    assert!(md.contains("hotfix, no time to wait on CI"), "{md}");
+}
+
+#[test]
+fn weave_skip_blast_env_var_bypasses_without_requiring_a_reason() {
+    let dir = tempfile::tempdir().unwrap();
+    let out_path = dir.path().join("blast.json");
+    cmd_blast(
+        dir.path(),
+        "main",
+        "json",
+        Some(&out_path),
+        "2",
+        "callers",
+        BlastWaiver {
+            skip: false,
+            reason: None,
+            as_subject: None,
+            skip_env: Some("1"),
+        },
+    )
+    .unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
+    assert_eq!(parsed["skipped"], true, "{parsed}");
+}
+
+#[cfg(feature = "rbac")]
+#[test]
+fn skip_is_refused_when_the_bound_identity_lacks_the_allow_drift_role() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".weave")).unwrap();
+    fs::write(
+        dir.path().join(".weave").join("config.toml"),
+        "mode = \"single\"\n\n[rbac.users]\n\"contractor-bot\" = [\"contractor\"]\n",
+    )
+    .unwrap();
+
+    let err = cmd_blast(
+        dir.path(),
+        "main",
+        "md",
+        None,
+        "2",
+        "callers",
+        BlastWaiver {
+            skip: true,
+            reason: Some("trying to sneak this through"),
+            as_subject: Some("contractor-bot"),
+            skip_env: None,
+        },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("not authorized"), "{err}");
 }

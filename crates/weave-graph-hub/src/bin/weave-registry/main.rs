@@ -25,18 +25,24 @@ struct Args {
     data_dir: PathBuf,
     max_queue_depth_per_repo: usize,
     max_pushes_per_minute_per_repo: u32,
+    auth_token: Option<String>,
 }
 
 const USAGE: &str = "Usage: weave-registry --bind <host:port> --data-dir <path> \\\n  \
-     --max-queue-depth-per-repo <n> --max-pushes-per-minute-per-repo <n>\n\n\
+     --max-queue-depth-per-repo <n> --max-pushes-per-minute-per-repo <n> \\\n  \
+     [--auth-token <token>]\n\n\
      Both rate limits are required — calibrate them against this deployment's \
-     own observed merge rate (plan.md §3.1), not a guessed default.";
+     own observed merge rate (plan.md §3.1), not a guessed default. \
+     --auth-token is optional (HUB-02): omitting it keeps the v1 unauthenticated \
+     loopback-trust behavior; setting it requires every caller to send \
+     `Authorization: Bearer <token>`.";
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut bind = None;
     let mut data_dir = None;
     let mut max_queue_depth_per_repo = None;
     let mut max_pushes_per_minute_per_repo = None;
+    let mut auth_token = None;
 
     let mut args = args;
     while let Some(flag) = args.next() {
@@ -54,6 +60,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
                     "--max-pushes-per-minute-per-repo must be a non-negative integer".to_string()
                 })?);
             }
+            "--auth-token" => auth_token = Some(value()?),
             other => return Err(format!("unrecognized argument: {other}")),
         }
     }
@@ -77,6 +84,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
         data_dir,
         max_queue_depth_per_repo,
         max_pushes_per_minute_per_repo,
+        auth_token,
     })
 }
 
@@ -91,7 +99,7 @@ fn build_server(args: &Args) -> Result<RegistryServer, String> {
             args.data_dir.display()
         )
     })?;
-    RegistryServer::bind(&args.bind, registry)
+    RegistryServer::bind_with_token(&args.bind, registry, args.auth_token.clone())
         .map_err(|e| format!("failed to bind {}: {e}", args.bind))
 }
 
@@ -105,9 +113,14 @@ fn main() {
         exit(1);
     });
     println!(
-        "weave-registry listening on {} (data: {})",
+        "weave-registry listening on {} (data: {}, auth: {})",
         server.local_addr().unwrap(),
-        args.data_dir.display()
+        args.data_dir.display(),
+        if args.auth_token.is_some() {
+            "bearer token required"
+        } else {
+            "none — loopback trust only"
+        }
     );
     if let Err(e) = server.run(None) {
         eprintln!("registry server stopped: {e}");

@@ -267,6 +267,227 @@ fn a_connection_closed_before_any_bytes_does_not_disturb_later_requests() {
     assert_eq!(status, 404, "server must still answer normally afterward");
 }
 
+#[cfg(feature = "hub-canvas")]
+#[test]
+fn canvas_endpoint_is_404_before_any_push_and_200_after_commit() {
+    use weave_graph_core::{Edge, Node, Storage};
+    use weave_graph_store_sqlite::SqliteStorage;
+
+    let snapshot_dir = tempfile::tempdir().unwrap();
+    let db_path = snapshot_dir.path().join("graph.db");
+    {
+        let mut storage = SqliteStorage::open(&db_path).unwrap();
+        storage
+            .upsert_node(&Node {
+                id: 1,
+                repo_id: "r".into(),
+                path: "a.rs".into(),
+                symbol: "s1".into(),
+                kind: "function".into(),
+                line_start: 1,
+                line_end: 2,
+                signature: String::new(),
+            })
+            .unwrap();
+        storage
+            .upsert_node(&Node {
+                id: 2,
+                repo_id: "r".into(),
+                path: "b.rs".into(),
+                symbol: "s2".into(),
+                kind: "function".into(),
+                line_start: 1,
+                line_end: 2,
+                signature: String::new(),
+            })
+            .unwrap();
+        storage
+            .upsert_edge(&Edge {
+                id: 0,
+                source_id: 1,
+                target_id: 2,
+                kind: "CALLS_EXACT".into(),
+                weight: 1.0,
+            })
+            .unwrap();
+    }
+    let bytes = std::fs::read(&db_path).unwrap();
+
+    let (base, _guard) = spawn_server(generous_config());
+    let (status, _headers, _body) = raw_request(&base, "GET", "/repos/my-repo/canvas", &[], b"");
+    assert_eq!(status, 404);
+
+    raw_request(&base, "PUT", "/snapshots/my-repo/sha1.tar.zst", &[], &bytes);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let (status, headers, body) = raw_request(&base, "GET", "/repos/my-repo/canvas", &[], b"");
+        if status == 200 {
+            assert!(
+                headers
+                    .iter()
+                    .any(|(n, v)| n.eq_ignore_ascii_case("content-type")
+                        && v == "application/json")
+            );
+            let text = String::from_utf8(body).unwrap();
+            assert!(text.contains("\"nodes\""), "{text}");
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker never committed"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(feature = "hub-canvas")]
+#[test]
+fn mesh_canvas_endpoint_stitches_multiple_repos_in_one_call() {
+    use weave_graph_core::{Node, Storage};
+    use weave_graph_store_sqlite::SqliteStorage;
+
+    let snapshot_bytes = |file: &str| -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("graph.db");
+        {
+            let mut storage = SqliteStorage::open(&db_path).unwrap();
+            storage
+                .upsert_node(&Node {
+                    id: 1,
+                    repo_id: "r".into(),
+                    path: file.into(),
+                    symbol: "s1".into(),
+                    kind: "function".into(),
+                    line_start: 1,
+                    line_end: 2,
+                    signature: String::new(),
+                })
+                .unwrap();
+        }
+        std::fs::read(&db_path).unwrap()
+    };
+
+    let (base, _guard) = spawn_server(generous_config());
+    raw_request(
+        &base,
+        "PUT",
+        "/snapshots/repo-a/sha1.tar.zst",
+        &[],
+        &snapshot_bytes("a.rs"),
+    );
+    raw_request(
+        &base,
+        "PUT",
+        "/snapshots/repo-b/sha1.tar.zst",
+        &[],
+        &snapshot_bytes("b.rs"),
+    );
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let (status, _headers, body) = raw_request(
+            &base,
+            "GET",
+            "/mesh/canvas/repo-a,repo-b,repo-never-published",
+            &[],
+            b"",
+        );
+        if status == 200 {
+            let text = String::from_utf8(body).unwrap();
+            assert!(text.contains("# repo-a"), "{text}");
+            assert!(text.contains("# repo-b"), "{text}");
+            assert!(!text.contains("repo-never-published"), "{text}");
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker never committed both repos"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// SSRF guard, exercised through the real HTTP route: a loopback or
+/// RFC1918 target must never be accepted for registration — the registry
+/// itself is what would dial it on the next commit, not the caller.
+#[cfg(feature = "hub-webhooks")]
+#[test]
+fn webhook_endpoint_rejects_a_private_target_and_accepts_a_public_one() {
+    let (base, _guard) = spawn_server(generous_config());
+
+    let (status, _headers, body) = raw_request(
+        &base,
+        "PUT",
+        "/repos/my-repo/webhook",
+        &[],
+        b"http://127.0.0.1:9/hook",
+    );
+    assert_ne!(status, 200, "{}", String::from_utf8_lossy(&body));
+
+    // A public IP literal — never actually dialed by this test, `PUT`
+    // .../webhook only resolves-and-classifies it, which needs no DNS
+    // lookup for an IP literal, so this stays fast and network-independent.
+    let (status, _headers, _body) = raw_request(
+        &base,
+        "PUT",
+        "/repos/my-repo/webhook",
+        &[],
+        b"http://8.8.8.8/hook",
+    );
+    assert_eq!(status, 200);
+}
+
+/// HUB-02: once a token is configured, every route — not just snapshot
+/// push/pull — must refuse an unauthenticated or wrong-token request.
+#[test]
+fn a_configured_auth_token_rejects_requests_without_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(dir.path(), generous_config()).unwrap();
+    let server =
+        RegistryServer::bind_with_token("127.0.0.1:0", registry, Some("s3cr3t".to_string()))
+            .unwrap();
+    let addr = server.local_addr().unwrap();
+    thread::spawn(move || {
+        let _ = server.run(None);
+    });
+    let base = format!("http://{addr}");
+
+    let (status, ..) = raw_request(&base, "GET", "/snapshots/x/y.tar.zst", &[], b"");
+    assert_eq!(status, 401, "no Authorization header at all");
+
+    let (status, ..) = raw_request(
+        &base,
+        "GET",
+        "/snapshots/x/y.tar.zst",
+        &[("Authorization", "Bearer wrong".to_string())],
+        b"",
+    );
+    assert_eq!(status, 401, "wrong token");
+
+    let (status, ..) = raw_request(
+        &base,
+        "GET",
+        "/snapshots/x/y.tar.zst",
+        &[("Authorization", "Bearer s3cr3t".to_string())],
+        b"",
+    );
+    assert_eq!(
+        status, 404,
+        "correct token reaches routing (no such snapshot)"
+    );
+}
+
+#[test]
+fn a_server_bound_without_a_token_stays_unauthenticated() {
+    let (base, _guard) = spawn_server(generous_config());
+    let (status, ..) = raw_request(&base, "GET", "/snapshots/x/y.tar.zst", &[], b"");
+    assert_eq!(
+        status, 404,
+        "no token configured means no auth check at all"
+    );
+}
+
 #[test]
 fn a_put_whose_body_is_shorter_than_content_length_does_not_hang_the_server() {
     let (base, _guard) = spawn_server(generous_config());

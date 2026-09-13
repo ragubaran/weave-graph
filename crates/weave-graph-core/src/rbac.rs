@@ -18,7 +18,12 @@ use crate::model::NodeId;
 
 /// A resolved caller identity: a subject name plus zero or more roles.
 /// `roles` is free-form (like `Edge::kind`) — this crate defines no fixed
-/// role taxonomy. Only `"internal"` is special-cased, in [`Identity::is_internal`].
+/// role taxonomy. Two role names are special-cased: `"internal"`
+/// ([`Identity::is_internal`]) and `"allow-drift"`
+/// ([`Identity::can_waive`]) — deliberately separate privileges, since
+/// seeing everything (`internal`) doesn't imply permission to bypass a CI
+/// gate (`allow-drift`). Every other role name is meaningful only to the
+/// caller-supplied visibility predicate (see [`RbacGuard::new`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
     pub subject: String,
@@ -40,6 +45,15 @@ impl Identity {
     /// caller-supplied visibility predicate (see [`RbacGuard::new`]).
     pub fn is_internal(&self) -> bool {
         self.roles.iter().any(|r| r == "internal")
+    }
+
+    /// `impl.md` M3.10: permission to invoke a `weave check-contracts`/
+    /// `weave blast` waiver (`--allow-drift`, `--allow-drift-for`,
+    /// `--skip`, or their `WEAVE_*` env-var equivalents). Independent of
+    /// `is_internal` — an identity that can see every symbol isn't
+    /// automatically trusted to wave through a CI gate.
+    pub fn can_waive(&self) -> bool {
+        self.roles.iter().any(|r| r == "allow-drift")
     }
 }
 
@@ -114,6 +128,14 @@ impl RbacGuard {
     /// sees only what `is_public` allows.
     pub fn visible(&self, node: &Node) -> bool {
         self.identity.is_internal() || (self.is_public)(node)
+    }
+
+    /// `impl.md` M3.10: does this identity carry the `allow-drift` role
+    /// (see [`Identity::can_waive`])? A guard-level passthrough so
+    /// callers checking waiver permission don't need to reach into
+    /// `Identity` directly.
+    pub fn can_waive(&self) -> bool {
+        self.identity.can_waive()
     }
 
     /// Masks a single node for output: unchanged if visible, an opaque

@@ -447,3 +447,219 @@ fn twenty_repos_pushing_concurrently_each_land_their_own_final_head() {
         assert_eq!(bytes, expected_final.into_bytes());
     }
 }
+
+#[cfg(feature = "hub-canvas")]
+#[test]
+fn canvas_is_none_until_the_first_push_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(dir.path(), generous_config()).unwrap();
+    assert!(registry.canvas("repo-a").is_none());
+}
+
+#[cfg(feature = "hub-canvas")]
+#[test]
+fn canvas_renders_the_latest_committed_snapshot_s_modules() {
+    use weave_graph_core::{Edge, Node, Storage};
+    use weave_graph_store_sqlite::SqliteStorage;
+
+    fn node(id: u32, path: &str) -> Node {
+        Node {
+            id,
+            repo_id: "r".into(),
+            path: path.into(),
+            symbol: format!("s{id}"),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 2,
+            signature: String::new(),
+        }
+    }
+
+    let snapshot_dir = tempfile::tempdir().unwrap();
+    let db_path = snapshot_dir.path().join("graph.db");
+    {
+        let mut storage = SqliteStorage::open(&db_path).unwrap();
+        storage.upsert_node(&node(1, "a.rs")).unwrap();
+        storage.upsert_node(&node(2, "b.rs")).unwrap();
+        storage
+            .upsert_edge(&Edge {
+                id: 0,
+                source_id: 1,
+                target_id: 2,
+                kind: "CALLS_EXACT".into(),
+                weight: 1.0,
+            })
+            .unwrap();
+    }
+    let bytes = std::fs::read(&db_path).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(dir.path(), generous_config()).unwrap();
+    registry
+        .push("repo-a", "sha1", None, 20, None, &bytes)
+        .unwrap();
+    wait_for_commit(&registry, "repo-a", "sha1");
+
+    let canvas = registry.canvas("repo-a").unwrap().unwrap();
+    assert!(!canvas.nodes.is_empty());
+}
+
+#[cfg(feature = "hub-canvas")]
+#[test]
+fn mesh_canvas_stitches_every_published_repo_and_skips_the_unpublished_one() {
+    fn node(id: u32, path: &str) -> weave_graph_core::Node {
+        weave_graph_core::Node {
+            id,
+            repo_id: "r".into(),
+            path: path.into(),
+            symbol: format!("s{id}"),
+            kind: "function".into(),
+            line_start: 1,
+            line_end: 2,
+            signature: String::new(),
+        }
+    }
+    use weave_graph_core::Storage;
+    use weave_graph_store_sqlite::SqliteStorage;
+
+    let snapshot_bytes = |file: &str| -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("graph.db");
+        {
+            let mut storage = SqliteStorage::open(&db_path).unwrap();
+            storage.upsert_node(&node(1, file)).unwrap();
+        }
+        std::fs::read(&db_path).unwrap()
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(dir.path(), generous_config()).unwrap();
+    registry
+        .push("repo-a", "sha1", None, 20, None, &snapshot_bytes("a.rs"))
+        .unwrap();
+    registry
+        .push("repo-b", "sha1", None, 20, None, &snapshot_bytes("b.rs"))
+        .unwrap();
+    wait_for_commit(&registry, "repo-a", "sha1");
+    wait_for_commit(&registry, "repo-b", "sha1");
+
+    let mesh = registry.mesh_canvas(&[
+        "repo-a".to_string(),
+        "repo-b".to_string(),
+        "repo-never-published".to_string(),
+    ]);
+    let headers: Vec<&str> = mesh
+        .nodes
+        .iter()
+        .filter(|n| n.id.starts_with("mesh-header-"))
+        .map(|n| n.text.as_str())
+        .collect();
+    assert_eq!(
+        headers,
+        vec!["# repo-a", "# repo-b"],
+        "the unpublished repo must be skipped, not error out the whole mesh"
+    );
+}
+
+#[cfg(feature = "hub-webhooks")]
+#[test]
+fn set_webhook_then_an_empty_body_clears_it() {
+    // A public IP literal — never actually dialed here, `set_webhook` only
+    // resolves-and-classifies it, and an IP literal needs no DNS lookup to
+    // do that, so this stays fast and network-independent.
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(dir.path(), generous_config()).unwrap();
+    assert_eq!(registry.webhook_url("repo-a"), None);
+
+    registry
+        .set_webhook("repo-a", "http://8.8.8.8/hook")
+        .unwrap();
+    assert_eq!(
+        registry.webhook_url("repo-a").as_deref(),
+        Some("http://8.8.8.8/hook")
+    );
+
+    registry.set_webhook("repo-a", "").unwrap();
+    assert_eq!(registry.webhook_url("repo-a"), None);
+}
+
+/// SSRF guard, registered at the source (`Registry::set_webhook`) rather
+/// than only the HTTP layer above it — a loopback or RFC1918 target must
+/// never be accepted, since the *registry* is the one that will dial it.
+#[cfg(feature = "hub-webhooks")]
+#[test]
+fn set_webhook_rejects_loopback_and_private_targets() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(dir.path(), generous_config()).unwrap();
+
+    assert!(
+        registry
+            .set_webhook("repo-a", "http://127.0.0.1:9/hook")
+            .is_err()
+    );
+    assert!(
+        registry
+            .set_webhook("repo-a", "http://10.1.2.3/hook")
+            .is_err()
+    );
+    assert!(
+        registry
+            .set_webhook("repo-a", "http://169.254.169.254/hook")
+            .is_err()
+    );
+    assert_eq!(
+        registry.webhook_url("repo-a"),
+        None,
+        "a rejected target must never end up registered"
+    );
+}
+
+#[cfg(feature = "hub-webhooks")]
+#[test]
+fn dispatch_webhook_calls_the_notifier_with_the_registered_url_repo_and_sha() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join("repo-a");
+    std::fs::create_dir_all(&store_dir).unwrap();
+    std::fs::write(store_dir.join("webhook.txt"), "http://example.invalid/hook").unwrap();
+
+    let mut recorded = None;
+    dispatch_webhook(&store_dir, "repo-a", "sha1", |url, repo_id, sha| {
+        recorded = Some((url.to_string(), repo_id.to_string(), sha.to_string()));
+        Ok(())
+    });
+
+    assert_eq!(
+        recorded,
+        Some((
+            "http://example.invalid/hook".to_string(),
+            "repo-a".to_string(),
+            "sha1".to_string()
+        ))
+    );
+}
+
+#[cfg(feature = "hub-webhooks")]
+#[test]
+fn dispatch_webhook_never_calls_the_notifier_when_nothing_is_registered() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join("repo-a");
+    std::fs::create_dir_all(&store_dir).unwrap();
+
+    dispatch_webhook(&store_dir, "repo-a", "sha1", |_, _, _| {
+        panic!("notifier must not be called when no webhook is registered")
+    });
+}
+
+#[cfg(feature = "hub-webhooks")]
+#[test]
+fn a_committed_push_with_no_registered_webhook_never_dials_out() {
+    // No webhook registered — if `worker_loop` tried to notify anyway,
+    // that would be a real connect attempt on every push; this just proves
+    // the no-webhook path commits cleanly without one.
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(dir.path(), generous_config()).unwrap();
+    registry
+        .push("repo-a", "sha1", None, 20, None, b"v1")
+        .unwrap();
+    wait_for_commit(&registry, "repo-a", "sha1");
+}

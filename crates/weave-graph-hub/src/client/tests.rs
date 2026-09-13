@@ -95,6 +95,23 @@ fn pull_found_returns_the_body() {
     assert_eq!(result, PullOutcome::Found(b"snapshot-bytes".to_vec(), None));
 }
 
+/// HUB-02: `with_token` must attach the bearer header to every request,
+/// including `pull` (which sends no other caller-supplied headers at all).
+#[test]
+fn with_token_sends_an_authorization_bearer_header() {
+    let (addr, handle) = serve_once(FakeHub {
+        status: 200,
+        headers: &[],
+        body: b"bytes",
+    });
+    let client = HubClient::new(&addr, "my-repo")
+        .unwrap()
+        .with_token("s3cr3t");
+    client.pull("abc123").unwrap();
+    let request = handle.join().unwrap();
+    assert!(request.contains("Authorization: Bearer s3cr3t\r\n"));
+}
+
 #[test]
 fn pull_404_maps_to_not_found() {
     let (addr, handle) = serve_once(FakeHub {

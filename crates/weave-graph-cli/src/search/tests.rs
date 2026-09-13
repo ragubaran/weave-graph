@@ -136,4 +136,39 @@ mod semantic {
         let repo = repo_with_two_topics();
         cmd_search_semantic(repo.path(), "verify auth token expiry", 5, None).unwrap();
     }
+
+    /// SEC-01 through the CLI layer: the best-matching chunk being masked
+    /// must not shrink `limit`-capped results — a visible runner-up must
+    /// still surface.
+    #[cfg(feature = "rbac")]
+    #[test]
+    fn semantic_search_does_not_starve_a_visible_hit_behind_a_masked_top_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let weave_dir = dir.path().join(".weave");
+        std::fs::create_dir_all(&weave_dir).unwrap();
+        let active_db = weave_dir.join("graph.db");
+        let source = dir.path().join("mixed.rs");
+        std::fs::write(
+            &source,
+            "fn check_jwt_expiry(token: &str) -> bool { true }\n\
+             pub fn render_page_layout(page: &str) -> String { page.to_string() }\n",
+        )
+        .unwrap();
+        crate::index::full_reindex(dir.path(), &weave_dir, &active_db, &[source]).unwrap();
+        std::fs::write(weave_dir.join("config.toml"), "[rbac.users]\nbob = []\n").unwrap();
+
+        let storage = SqliteStorage::open(&active_db).unwrap();
+        let guard = crate::rbac::guard_for(dir.path(), Some("bob"));
+        let visible: &dyn Fn(&weave_graph_core::Node) -> bool = &|n| guard.visible(n);
+
+        // Unmasked: the private function is the closer match and wins.
+        let unmasked = run_semantic(&storage, "verify auth token expiry", 1, None).unwrap();
+        assert_eq!(unmasked[0].symbol, "check_jwt_expiry");
+
+        // Masked as `bob` (no roles): the masked top hit must not push
+        // the visible runner-up out of a `limit`-capped result set.
+        let masked = run_semantic(&storage, "verify auth token expiry", 1, Some(visible)).unwrap();
+        assert_eq!(masked.len(), 1, "a visible match must still surface");
+        assert_eq!(masked[0].symbol, "render_page_layout");
+    }
 }

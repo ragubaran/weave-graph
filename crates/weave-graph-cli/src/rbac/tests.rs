@@ -154,7 +154,7 @@ fn scim_listing_and_get_reflect_the_snapshot_not_the_file() {
 #[test]
 fn scim_server_binds_loopback_and_serves_real_tcp() {
     let (dir, directory) = provisioned_root();
-    let mut server = ScimServer::bind(0, directory).unwrap();
+    let mut server = ScimServer::bind_with_token(0, directory, None).unwrap();
     let port = server
         .local_addr()
         .unwrap()
@@ -180,6 +180,77 @@ fn scim_server_binds_loopback_and_serves_real_tcp() {
     request(port, "POST /sync HTTP/1.0\r\n\r\n");
     let listed = request(port, "GET /Users HTTP/1.0\r\n\r\n");
     assert!(listed.contains("\"carol\""), "{listed}");
+
+    drop(handle);
+    let _ = dir;
+}
+
+/// IDP-01: a standard RFC 7643 object-array `roles` payload (what Okta /
+/// Azure AD actually send) must resolve to real roles, not silently drop
+/// to empty — the prior string-only match dropped every object element.
+#[test]
+fn provision_request_accepts_rfc_7643_object_array_roles() {
+    let mutation = provision_request(
+        r#"{"userName":"erin","roles":[{"value":"internal","primary":true},{"value":"allow-drift"}]}"#,
+    )
+    .unwrap();
+    let DirectoryMutation::Provision { subject, roles } = mutation else {
+        panic!("expected a Provision mutation");
+    };
+    assert_eq!(subject, "erin");
+    assert_eq!(
+        roles,
+        vec!["internal".to_string(), "allow-drift".to_string()]
+    );
+}
+
+/// A flat string array must keep working unchanged (the shape this
+/// directory has always accepted).
+#[test]
+fn provision_request_still_accepts_a_flat_string_array() {
+    let mutation = provision_request(r#"{"userName":"erin","roles":["internal"]}"#).unwrap();
+    let DirectoryMutation::Provision { roles, .. } = mutation else {
+        panic!("expected a Provision mutation");
+    };
+    assert_eq!(roles, vec!["internal".to_string()]);
+}
+
+/// IDP-02: a configured bearer token rejects any request lacking it (or
+/// carrying the wrong one), and admits one carrying the right one.
+#[test]
+fn scim_server_with_a_token_rejects_unauthenticated_requests() {
+    let (dir, directory) = provisioned_root();
+    let mut server = ScimServer::bind_with_token(0, directory, Some("s3cr3t".to_string())).unwrap();
+    let port = server
+        .local_addr()
+        .unwrap()
+        .parse::<std::net::SocketAddr>()
+        .unwrap()
+        .port();
+    let handle = std::thread::spawn(move || server.serve().unwrap());
+
+    fn request(port: u16, raw: &str) -> String {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.write_all(raw.as_bytes()).unwrap();
+        let mut buf = String::new();
+        stream.read_to_string(&mut buf).unwrap();
+        buf
+    }
+
+    let no_auth = request(port, "GET /Users HTTP/1.0\r\n\r\n");
+    assert!(no_auth.starts_with("HTTP/1.0 401"), "{no_auth}");
+
+    let wrong_auth = request(
+        port,
+        "GET /Users HTTP/1.0\r\nAuthorization: Bearer nope\r\n\r\n",
+    );
+    assert!(wrong_auth.starts_with("HTTP/1.0 401"), "{wrong_auth}");
+
+    let ok = request(
+        port,
+        "GET /Users HTTP/1.0\r\nAuthorization: Bearer s3cr3t\r\n\r\n",
+    );
+    assert!(ok.starts_with("HTTP/1.0 200"), "{ok}");
 
     drop(handle);
     let _ = dir;
@@ -296,5 +367,51 @@ fn cmd_serve_scim_runs_a_real_server_on_a_real_port() {
 
     // The accept loop outlives the test by design (a daemon); coverage of
     // the bind-and-print path is what this asserts.
+    drop(handle);
+}
+
+/// IDP-02: `[rbac.scim] token` in `.weave/config.toml` reaches
+/// `cmd_serve_scim` and is enforced on the real socket.
+#[test]
+fn cmd_serve_scim_enforces_a_configured_token() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".weave")).unwrap();
+    fs::write(
+        dir.path().join(".weave/config.toml"),
+        "[rbac.scim]\ntoken = \"s3cr3t\"\n",
+    )
+    .unwrap();
+    let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let root = dir.path().to_path_buf();
+    let handle = std::thread::spawn(move || cmd_serve_scim(&root, port).unwrap());
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let unauthorized = loop {
+        match std::net::TcpStream::connect(("127.0.0.1", port)) {
+            Ok(mut stream) => {
+                stream.write_all(b"GET /Users HTTP/1.0\r\n\r\n").unwrap();
+                let mut response = String::new();
+                stream.read_to_string(&mut response).unwrap();
+                break response;
+            }
+            Err(_) => {
+                assert!(std::time::Instant::now() < deadline, "server never bound");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    };
+    assert!(unauthorized.starts_with("HTTP/1.0 401"), "{unauthorized}");
+
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .write_all(b"GET /Users HTTP/1.0\r\nAuthorization: Bearer s3cr3t\r\n\r\n")
+        .unwrap();
+    let mut authorized = String::new();
+    stream.read_to_string(&mut authorized).unwrap();
+    assert!(authorized.starts_with("HTTP/1.0 200"), "{authorized}");
+
     drop(handle);
 }

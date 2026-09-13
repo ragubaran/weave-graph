@@ -17,13 +17,27 @@ use crate::registry::{PullResult, PushDecision, Registry, is_safe_path_component
 pub struct RegistryServer {
     listener: TcpListener,
     registry: Arc<Registry>,
+    auth_token: Option<Arc<str>>,
 }
 
 impl RegistryServer {
     pub fn bind(addr: &str, registry: Registry) -> std::io::Result<Self> {
+        Self::bind_with_token(addr, registry, None)
+    }
+
+    /// Same as [`Self::bind`], but every request must carry
+    /// `Authorization: Bearer <token>` matching `token` (HUB-02: the
+    /// registry otherwise trusts anything that can reach the loopback
+    /// socket). `None` preserves the unauthenticated v1 behavior.
+    pub fn bind_with_token(
+        addr: &str,
+        registry: Registry,
+        token: Option<String>,
+    ) -> std::io::Result<Self> {
         Ok(Self {
             listener: TcpListener::bind(addr)?,
             registry: Arc::new(registry),
+            auth_token: token.map(Arc::from),
         })
     }
 
@@ -38,8 +52,9 @@ impl RegistryServer {
         for (served, stream) in self.listener.incoming().enumerate() {
             let stream = stream?;
             let registry = Arc::clone(&self.registry);
+            let auth_token = self.auth_token.clone();
             thread::spawn(move || {
-                let _ = handle_connection(stream, &registry);
+                let _ = handle_connection(stream, &registry, auth_token.as_deref());
             });
             if max_connections.is_some_and(|max| served + 1 >= max) {
                 break;
@@ -134,6 +149,110 @@ fn parse_snapshot_path(path: &str) -> Option<(String, String)> {
     Some((repo_id, sha.to_string()))
 }
 
+/// Parses `.../repos/{repo_id}/{suffix}` out of a request path, same
+/// tolerant-prefix / safety rules as [`parse_snapshot_path`]. Used by the
+/// `hub-canvas`/`hub-webhooks` routes below, which have no `.tar.zst`
+/// filename component to split off.
+#[cfg(any(feature = "hub-canvas", feature = "hub-webhooks"))]
+fn parse_repo_scoped_path(path: &str, suffix: &str) -> Option<String> {
+    let idx = path.find("/repos/")?;
+    let rest = &path[idx + "/repos/".len()..];
+    let (repo_id, tail) = rest.split_once('/')?;
+    if tail.trim_end_matches('/') != suffix || !is_safe_path_component(repo_id) {
+        return None;
+    }
+    Some(repo_id.to_string())
+}
+
+#[cfg(feature = "hub-canvas")]
+fn handle_canvas(stream: &mut TcpStream, registry: &Registry, repo_id: &str) {
+    match registry.canvas(repo_id) {
+        Some(Ok(canvas)) => match serde_json::to_vec(&canvas) {
+            Ok(body) => write_response(
+                stream,
+                200,
+                "OK",
+                &[("Content-Type", "application/json".to_string())],
+                &body,
+            ),
+            Err(e) => write_response(
+                stream,
+                500,
+                "Internal Server Error",
+                &[],
+                e.to_string().as_bytes(),
+            ),
+        },
+        Some(Err(e)) => write_response(stream, 500, "Internal Server Error", &[], e.as_bytes()),
+        None => write_response(
+            stream,
+            404,
+            "Not Found",
+            &[],
+            b"no committed snapshot for this repo",
+        ),
+    }
+}
+
+/// Parses `.../mesh/canvas/{repo-a},{repo-b},...}` — a comma-separated
+/// repo_id list in one path segment, so no query-string parsing is needed
+/// (this server has none anywhere else). Every id must pass
+/// [`is_safe_path_component`]; a single unsafe id fails the whole request
+/// rather than silently dropping it.
+#[cfg(feature = "hub-canvas")]
+fn parse_mesh_canvas_path(path: &str) -> Option<Vec<String>> {
+    let idx = path.find("/mesh/canvas/")?;
+    let rest = path[idx + "/mesh/canvas/".len()..].trim_end_matches('/');
+    if rest.is_empty() {
+        return None;
+    }
+    let repo_ids: Vec<String> = rest.split(',').map(str::to_string).collect();
+    if repo_ids.iter().any(|id| !is_safe_path_component(id)) {
+        return None;
+    }
+    Some(repo_ids)
+}
+
+#[cfg(feature = "hub-canvas")]
+fn handle_mesh_canvas(stream: &mut TcpStream, registry: &Registry, repo_ids: &[String]) {
+    let canvas = registry.mesh_canvas(repo_ids);
+    match serde_json::to_vec(&canvas) {
+        Ok(body) => write_response(
+            stream,
+            200,
+            "OK",
+            &[("Content-Type", "application/json".to_string())],
+            &body,
+        ),
+        Err(e) => write_response(
+            stream,
+            500,
+            "Internal Server Error",
+            &[],
+            e.to_string().as_bytes(),
+        ),
+    }
+}
+
+/// Body is the raw webhook URL text, mirroring `webhooks::notify`'s own
+/// plain-body simplicity — an empty body unregisters (`Registry::set_webhook`'s
+/// own documented idiom), so a subscriber removes itself with `PUT` + no body
+/// rather than needing a separate `DELETE` route.
+#[cfg(feature = "hub-webhooks")]
+fn handle_set_webhook(stream: &mut TcpStream, registry: &Registry, repo_id: &str, body: &[u8]) {
+    let url = String::from_utf8_lossy(body).trim().to_string();
+    match registry.set_webhook(repo_id, &url) {
+        Ok(()) => write_response(stream, 200, "OK", &[], b""),
+        Err(e) => write_response(
+            stream,
+            500,
+            "Internal Server Error",
+            &[],
+            e.to_string().as_bytes(),
+        ),
+    }
+}
+
 fn write_response(
     stream: &mut TcpStream,
     status: u16,
@@ -151,10 +270,50 @@ fn write_response(
     let _ = stream.flush();
 }
 
-fn handle_connection(mut stream: TcpStream, registry: &Registry) -> std::io::Result<()> {
+fn handle_connection(
+    mut stream: TcpStream,
+    registry: &Registry,
+    auth_token: Option<&str>,
+) -> std::io::Result<()> {
     let Some(req) = read_request(&mut stream)? else {
         return Ok(());
     };
+
+    if let Some(token) = auth_token
+        && header(&req, "Authorization") != Some(format!("Bearer {token}").as_str())
+    {
+        write_response(
+            &mut stream,
+            401,
+            "Unauthorized",
+            &[],
+            b"missing or invalid bearer token",
+        );
+        return Ok(());
+    }
+
+    #[cfg(feature = "hub-canvas")]
+    if req.method == "GET"
+        && let Some(repo_ids) = parse_mesh_canvas_path(&req.path)
+    {
+        handle_mesh_canvas(&mut stream, registry, &repo_ids);
+        return Ok(());
+    }
+    #[cfg(feature = "hub-canvas")]
+    if req.method == "GET"
+        && let Some(repo_id) = parse_repo_scoped_path(&req.path, "canvas")
+    {
+        handle_canvas(&mut stream, registry, &repo_id);
+        return Ok(());
+    }
+    #[cfg(feature = "hub-webhooks")]
+    if req.method == "PUT"
+        && let Some(repo_id) = parse_repo_scoped_path(&req.path, "webhook")
+    {
+        handle_set_webhook(&mut stream, registry, &repo_id, &req.body);
+        return Ok(());
+    }
+
     let Some((repo_id, sha)) = parse_snapshot_path(&req.path) else {
         write_response(&mut stream, 404, "Not Found", &[], b"unknown path");
         return Ok(());

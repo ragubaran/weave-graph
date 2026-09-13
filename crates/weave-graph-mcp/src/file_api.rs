@@ -1,11 +1,23 @@
-use weave_graph_core::Storage;
+use weave_graph_core::{Node, Storage};
 
 use crate::tools::{FileApiArgs, FileApiResult, SymbolEntry, WiringCard};
 
 /// Per-file wiring cards — symbol signatures + exact line spans (~60 tokens/file).
 /// AI agents use these to perform slice-edits on specific lines without
 /// ingesting entire source files (`plan.md` Architecture Principle 3).
-pub fn weave_file_api(storage: &dyn Storage, args: FileApiArgs<'_>) -> FileApiResult {
+///
+/// `mask` is M3.0's query-layer RBAC hook. Applied per-matching-node
+/// *after* filtering by the caller's requested (real) path — masking the
+/// whole node list first, as `weave_impact_radius` does, would break the
+/// `n.path == path` match entirely (a masked node's path becomes
+/// `<rbac: hidden>`, never equal to anything a caller could ask for),
+/// silently emptying every masked file's card instead of rendering it as
+/// redacted the same way `weave_trace_calls` does.
+pub fn weave_file_api(
+    storage: &dyn Storage,
+    args: FileApiArgs<'_>,
+    mask: Option<&dyn Fn(&Node) -> Node>,
+) -> FileApiResult {
     let all_nodes = match storage.all_nodes() {
         Ok(n) => n,
         Err(_) => return FileApiResult { cards: vec![] },
@@ -18,7 +30,10 @@ pub fn weave_file_api(storage: &dyn Storage, args: FileApiArgs<'_>) -> FileApiRe
             let mut symbols: Vec<SymbolEntry> = all_nodes
                 .iter()
                 .filter(|n| n.path == path)
-                .map(SymbolEntry::from_node)
+                .map(|n| {
+                    let masked = mask.map(|m| m(n));
+                    SymbolEntry::from_node(masked.as_ref().unwrap_or(n))
+                })
                 .collect();
             symbols.sort_by_key(|s| s.span.clone());
             WiringCard {

@@ -2255,9 +2255,12 @@ dependencies = [
 name = "weave-graph-hub"
 version = "1.0.1"
 dependencies = [
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "weave-graph-core",
+ "weave-graph-store-sqlite",
 ]
 
 [[package]]

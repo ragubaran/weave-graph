@@ -1,7 +1,10 @@
 use std::fs;
 use std::path::Path;
 
-use super::{cmd_check_contracts, record_expectations, repo_contract_hash};
+use super::{
+    CheckContractsWaiver, cmd_check_contracts, record_expectations, repo_contract_hash,
+    repo_contract_map,
+};
 
 struct RepoFixture {
     root: tempfile::TempDir,
@@ -34,9 +37,9 @@ fn write_source(root: &Path, name: &str, source: &str) -> std::path::PathBuf {
 }
 
 fn link(a: &Path, b: &Path) {
-    let hash_a = repo_contract_hash(a).unwrap();
-    let hash_b = repo_contract_hash(b).unwrap();
-    record_expectations(a, b, &hash_a, &hash_b, None, None).unwrap();
+    let map_a = repo_contract_map(a).unwrap();
+    let map_b = repo_contract_map(b).unwrap();
+    record_expectations(a, b, &map_a, &map_b, None, None).unwrap();
 }
 
 fn config_with_policy(root: &Path, other: &Path, policy: &str) {
@@ -57,7 +60,13 @@ fn up_to_date_contract_passes() {
     link(consumer.path(), provider.path());
     config_with_policy(consumer.path(), provider.path(), "warn");
 
-    cmd_check_contracts(consumer.path()).unwrap();
+    cmd_check_contracts(
+        consumer.path(),
+        false,
+        false,
+        CheckContractsWaiver::default(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -70,7 +79,12 @@ fn exported_signature_change_diverges_and_strict_fails() {
     // Provider's exported signature changes after linking.
     write_source(provider.path(), "provider", "pub fn exported(x: u64) {}\n");
 
-    let result = cmd_check_contracts(consumer.path());
+    let result = cmd_check_contracts(
+        consumer.path(),
+        false,
+        false,
+        CheckContractsWaiver::default(),
+    );
     assert!(result.is_err(), "strict policy must exit non-zero on drift");
 }
 
@@ -83,7 +97,13 @@ fn exported_signature_change_warns_without_failing_under_warn_policy() {
 
     write_source(provider.path(), "provider", "pub fn exported(x: u64) {}\n");
 
-    cmd_check_contracts(consumer.path()).unwrap();
+    cmd_check_contracts(
+        consumer.path(),
+        false,
+        false,
+        CheckContractsWaiver::default(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -100,7 +120,13 @@ fn private_change_stays_up_to_date() {
         "pub fn exported(x: u32) {}\nfn renamed_private(y: u64) {}\n",
     );
 
-    cmd_check_contracts(consumer.path()).unwrap();
+    cmd_check_contracts(
+        consumer.path(),
+        false,
+        false,
+        CheckContractsWaiver::default(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -110,13 +136,24 @@ fn missing_expectation_is_reported_not_silent() {
     // No link performed — no expectation recorded.
     config_with_policy(consumer.path(), provider.path(), "warn");
 
-    cmd_check_contracts(consumer.path()).unwrap();
+    cmd_check_contracts(
+        consumer.path(),
+        false,
+        false,
+        CheckContractsWaiver::default(),
+    )
+    .unwrap();
 }
 
 #[test]
 fn no_linked_repos_is_a_clear_error() {
     let consumer = RepoFixture::new("consumer");
-    let result = cmd_check_contracts(consumer.path());
+    let result = cmd_check_contracts(
+        consumer.path(),
+        false,
+        false,
+        CheckContractsWaiver::default(),
+    );
     let message = result.unwrap_err().to_string();
     assert!(message.contains("No linked repos"), "got: {message}");
 }
@@ -127,4 +164,321 @@ fn repo_contract_hash_is_stable_for_unchanged_sources() {
     let first = repo_contract_hash(repo.path()).unwrap();
     let second = repo_contract_hash(repo.path()).unwrap();
     assert_eq!(first, second);
+}
+
+/// `--scoped` blocks when the changed symbol is one the consumer actually
+/// calls — a real `weave link` (not the lightweight
+/// `link()` helper above) so `imported_symbols` has a genuine cross-repo
+/// edge to read. Rust fixtures, matching this file's own convention (and
+/// proven end-to-end through the real extractor by the tests above).
+#[test]
+fn scoped_check_blocks_when_the_changed_symbol_is_actually_imported() {
+    let consumer_dir = tempfile::tempdir().unwrap();
+    let provider_dir = tempfile::tempdir().unwrap();
+    let consumer_weave = consumer_dir.path().join(".weave");
+    let provider_weave = provider_dir.path().join(".weave");
+    fs::create_dir_all(&consumer_weave).unwrap();
+    fs::create_dir_all(&provider_weave).unwrap();
+    let a_rs = consumer_dir.path().join("a.rs");
+    fs::write(&a_rs, "fn consumer_fn() { provider_fn(); }\n").unwrap();
+    let b_rs = provider_dir.path().join("b.rs");
+    fs::write(&b_rs, "pub fn provider_fn() {}\n").unwrap();
+    crate::index::full_reindex(
+        consumer_dir.path(),
+        &consumer_weave,
+        &consumer_weave.join("graph.db"),
+        &[a_rs],
+    )
+    .unwrap();
+    crate::index::full_reindex(
+        provider_dir.path(),
+        &provider_weave,
+        &provider_weave.join("graph.db"),
+        std::slice::from_ref(&b_rs),
+    )
+    .unwrap();
+
+    crate::federation::cmd_link(consumer_dir.path(), provider_dir.path()).unwrap();
+    config_with_policy(consumer_dir.path(), provider_dir.path(), "strict");
+
+    fs::write(&b_rs, "pub fn provider_fn(extra: u32) {}\n").unwrap();
+
+    let result = cmd_check_contracts(
+        consumer_dir.path(),
+        true,
+        true,
+        CheckContractsWaiver::default(),
+    );
+    assert!(
+        result.is_err(),
+        "an imported symbol's signature changed — --scoped must still block"
+    );
+}
+
+/// The mirror case: a provider symbol changes that the consumer never
+/// calls — `--scoped` must report it but not fail CI, even under `strict`.
+#[test]
+fn scoped_check_does_not_block_when_the_changed_symbol_is_not_imported() {
+    let consumer_dir = tempfile::tempdir().unwrap();
+    let provider_dir = tempfile::tempdir().unwrap();
+    let consumer_weave = consumer_dir.path().join(".weave");
+    let provider_weave = provider_dir.path().join(".weave");
+    fs::create_dir_all(&consumer_weave).unwrap();
+    fs::create_dir_all(&provider_weave).unwrap();
+    let a_rs = consumer_dir.path().join("a.rs");
+    fs::write(&a_rs, "fn consumer_fn() { provider_fn(); }\n").unwrap();
+    let b_rs = provider_dir.path().join("b.rs");
+    fs::write(&b_rs, "pub fn provider_fn() {}\npub fn unrelated_fn() {}\n").unwrap();
+    crate::index::full_reindex(
+        consumer_dir.path(),
+        &consumer_weave,
+        &consumer_weave.join("graph.db"),
+        &[a_rs],
+    )
+    .unwrap();
+    crate::index::full_reindex(
+        provider_dir.path(),
+        &provider_weave,
+        &provider_weave.join("graph.db"),
+        std::slice::from_ref(&b_rs),
+    )
+    .unwrap();
+
+    crate::federation::cmd_link(consumer_dir.path(), provider_dir.path()).unwrap();
+    config_with_policy(consumer_dir.path(), provider_dir.path(), "strict");
+
+    // Only the symbol the consumer never calls changes.
+    fs::write(
+        &b_rs,
+        "pub fn provider_fn() {}\npub fn unrelated_fn(extra: u32) {}\n",
+    )
+    .unwrap();
+
+    let result = cmd_check_contracts(
+        consumer_dir.path(),
+        true,
+        true,
+        CheckContractsWaiver::default(),
+    );
+    assert!(
+        result.is_ok(),
+        "drift touches no imported symbol — --scoped must not fail CI: {result:?}"
+    );
+}
+
+// ─── impl.md M3.10: waiver mechanisms ───────────────────────────────────────
+
+#[test]
+fn weave_skip_contracts_env_var_bypasses_everything() {
+    let consumer = RepoFixture::new("consumer");
+    // No link, no config — a real check would error with "No linked repos".
+    cmd_check_contracts(
+        consumer.path(),
+        false,
+        false,
+        CheckContractsWaiver {
+            skip_env: Some("1"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn allow_drift_flag_without_a_reason_is_a_clear_error() {
+    let consumer = RepoFixture::new("consumer");
+    let provider = RepoFixture::new("provider");
+    link(consumer.path(), provider.path());
+    config_with_policy(consumer.path(), provider.path(), "strict");
+    write_source(provider.path(), "provider", "pub fn exported(x: u64) {}\n");
+
+    let err = cmd_check_contracts(
+        consumer.path(),
+        false,
+        false,
+        CheckContractsWaiver {
+            allow_drift: true,
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("--reason"), "{err}");
+}
+
+#[test]
+fn allow_drift_flag_waives_strict_failure_and_is_counted_as_waived_not_diverged() {
+    let consumer = RepoFixture::new("consumer");
+    let provider = RepoFixture::new("provider");
+    link(consumer.path(), provider.path());
+    config_with_policy(consumer.path(), provider.path(), "strict");
+    write_source(provider.path(), "provider", "pub fn exported(x: u64) {}\n");
+
+    cmd_check_contracts(
+        consumer.path(),
+        false,
+        false,
+        CheckContractsWaiver {
+            allow_drift: true,
+            reason: Some("known break, fix incoming"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn allow_drift_for_only_waives_the_named_repo() {
+    let consumer = RepoFixture::new("consumer");
+    let provider_a = RepoFixture::new("provider_a");
+    let provider_b = RepoFixture::new("provider_b");
+    link(consumer.path(), provider_a.path());
+    link(consumer.path(), provider_b.path());
+    fs::write(
+        consumer.path().join(".weave").join("config.toml"),
+        format!(
+            "[federation]\nlinked_repos = [\"{}\", \"{}\"]\nstaleness_policy = \"strict\"\n",
+            provider_a.path().display(),
+            provider_b.path().display()
+        ),
+    )
+    .unwrap();
+
+    // Both providers drift; only provider_a's is waived by name.
+    write_source(
+        provider_a.path(),
+        "provider_a",
+        "pub fn exported(x: u64) {}\n",
+    );
+    write_source(
+        provider_b.path(),
+        "provider_b",
+        "pub fn exported(x: u64) {}\n",
+    );
+
+    let provider_a_label = provider_a
+        .path()
+        .canonicalize()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+
+    let err = cmd_check_contracts(
+        consumer.path(),
+        false,
+        false,
+        CheckContractsWaiver {
+            allow_drift_for: Some(&provider_a_label),
+            reason: Some("provider_a is a known false positive"),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("strict"),
+        "provider_b's drift must still fail CI: {err}"
+    );
+}
+
+#[test]
+fn weave_allow_drift_repos_env_var_waives_only_listed_repos() {
+    let consumer = RepoFixture::new("consumer");
+    let provider = RepoFixture::new("provider");
+    link(consumer.path(), provider.path());
+    config_with_policy(consumer.path(), provider.path(), "strict");
+    write_source(provider.path(), "provider", "pub fn exported(x: u64) {}\n");
+
+    let provider_label = provider
+        .path()
+        .canonicalize()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+
+    cmd_check_contracts(
+        consumer.path(),
+        false,
+        false,
+        CheckContractsWaiver {
+            allow_drift_repos_env: Some(&format!("unrelated-repo,{provider_label}")),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn weave_staleness_policy_override_env_var_downgrades_strict_to_warn() {
+    let consumer = RepoFixture::new("consumer");
+    let provider = RepoFixture::new("provider");
+    link(consumer.path(), provider.path());
+    config_with_policy(consumer.path(), provider.path(), "strict");
+    write_source(provider.path(), "provider", "pub fn exported(x: u64) {}\n");
+
+    cmd_check_contracts(
+        consumer.path(),
+        false,
+        false,
+        CheckContractsWaiver {
+            staleness_override_env: Some("warn"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn warn_only_flag_downgrades_strict_failure_without_waiving_anything() {
+    let consumer = RepoFixture::new("consumer");
+    let provider = RepoFixture::new("provider");
+    link(consumer.path(), provider.path());
+    config_with_policy(consumer.path(), provider.path(), "strict");
+    write_source(provider.path(), "provider", "pub fn exported(x: u64) {}\n");
+
+    // No --reason required: --warn-only isn't one of the "drift flags".
+    cmd_check_contracts(
+        consumer.path(),
+        false,
+        false,
+        CheckContractsWaiver {
+            warn_only: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
+#[cfg(feature = "rbac")]
+#[test]
+fn allow_drift_is_refused_when_the_bound_identity_lacks_the_allow_drift_role() {
+    let consumer = RepoFixture::new("consumer");
+    let provider = RepoFixture::new("provider");
+    link(consumer.path(), provider.path());
+    fs::write(
+        consumer.path().join(".weave").join("config.toml"),
+        format!(
+            "[federation]\nlinked_repos = [\"{}\"]\nstaleness_policy = \"strict\"\n\n\
+             [rbac.users]\n\"contractor-bot\" = [\"contractor\"]\n",
+            provider.path().display()
+        ),
+    )
+    .unwrap();
+    write_source(provider.path(), "provider", "pub fn exported(x: u64) {}\n");
+
+    let err = cmd_check_contracts(
+        consumer.path(),
+        false,
+        false,
+        CheckContractsWaiver {
+            allow_drift: true,
+            reason: Some("trying to sneak this through"),
+            as_subject: Some("contractor-bot"),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("not authorized"), "{err}");
 }

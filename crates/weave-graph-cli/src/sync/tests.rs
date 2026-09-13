@@ -39,6 +39,24 @@ fn pull_hydrates_the_snapshot_through_the_rebuild_rename_path() {
     assert!(!repo.path().join(".weave").join("graph.db.rebuild").exists());
 }
 
+/// HUB-02: a configured `[hub] token` must reach the wire as a real
+/// bearer header — not just accepted by config parsing.
+#[test]
+fn pull_attaches_the_configured_hub_token_as_a_bearer_header() {
+    let repo = init_repo("pulled");
+    let (addr, request) = serve_snapshot(b"bytes");
+    fs::write(
+        repo.path().join(".weave").join("config.toml"),
+        format!("[hub]\nurl = \"{addr}\"\ntoken = \"s3cr3t\"\n"),
+    )
+    .unwrap();
+
+    cmd_sync_pull(repo.path(), Some("abc123"), false).unwrap();
+
+    let request = request.join().unwrap();
+    assert!(request.contains("Authorization: Bearer s3cr3t\r\n"));
+}
+
 #[test]
 fn pull_without_a_snapshot_reports_and_leaves_the_db_untouched() {
     let repo = init_repo("noop");
@@ -59,15 +77,29 @@ fn pull_requires_a_configured_hub_url() {
     assert!(err.to_string().contains("[hub] url"), "got: {err}");
 }
 
+/// The registry's returned signature used to be discarded straight into
+/// `_signature`. `report_signature` now handles it — this pins that a
+/// present signature doesn't make the pull
+/// error or panic (this crate still verifies nothing; it just no longer
+/// silently drops what the registry sent).
+#[test]
+fn pull_with_a_signature_header_succeeds_without_discarding_it() {
+    let repo = init_repo("signed_pull");
+    let (addr, _requests) = serve_sequence(vec![(200, "X-Weave-Signature: abc123\r\n")]);
+    write_config(repo.path(), &addr);
+
+    cmd_sync_pull(repo.path(), Some("abc123"), false).unwrap();
+}
+
 #[test]
 fn push_refuses_when_not_on_a_git_branch() {
     let repo = init_repo("feature");
     // Not a git repo at all → current_branch is None → refused before any
-    // network call (merge-only publish, plan.md §2.3).
+    // network call (merge-only publish).
     let (addr, _request) = serve_with_status(201, b"");
     write_config(repo.path(), &addr);
 
-    let err = cmd_sync_push(repo.path()).unwrap_err();
+    let err = cmd_sync_push(repo.path(), None).unwrap_err();
     let message = err.to_string();
     assert!(
         message.contains("default branch") || message.contains("git branch"),
@@ -102,12 +134,56 @@ fn push_on_main_publishes_the_snapshot() {
         "x"
     ]));
 
-    cmd_sync_push(repo.path()).unwrap();
+    cmd_sync_push(repo.path(), None).unwrap();
 
     let request = request.join().unwrap();
     assert!(request.starts_with("PUT /snapshots/"));
     assert!(request.contains("X-Weave-Retention: 5\r\n"));
     assert!(request.contains("Content-Length: "));
+    assert!(
+        !request.to_ascii_lowercase().contains("x-weave-signature:"),
+        "no signature was supplied — the header must not appear at all: {request}"
+    );
+}
+
+/// `cmd_sync_push`'s `signature` parameter is a real, honest seam, not a
+/// no-op — a caller that supplies one gets it on the wire as
+/// `X-Weave-Signature`, unchanged from before this refactor except that
+/// it's no longer hardcoded to `None` three calls deep.
+#[test]
+fn push_with_a_signature_sends_the_x_weave_signature_header() {
+    let repo = init_repo("signed");
+    let (addr, request) = serve_with_status(201, b"");
+    write_config(repo.path(), &addr);
+    let git_ok = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(git_ok(&["init", "-b", "main"]));
+    assert!(git_ok(&["add", "."]));
+    assert!(git_ok(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-m",
+        "x"
+    ]));
+
+    cmd_sync_push(repo.path(), Some("deadbeef")).unwrap();
+
+    let request = request.join().unwrap();
+    assert!(
+        request.contains("X-Weave-Signature: deadbeef\r\n"),
+        "got: {request}"
+    );
 }
 
 /// Reads headers plus, per `Content-Length`, the full body before returning
@@ -245,7 +321,7 @@ fn push_retries_with_backoff_after_a_rate_limit_and_then_succeeds() {
         "x"
     ]));
 
-    cmd_sync_push(repo.path()).unwrap();
+    cmd_sync_push(repo.path(), None).unwrap();
 
     assert_eq!(
         requests.join().unwrap().len(),
@@ -283,7 +359,7 @@ fn push_retries_past_a_second_conflict_before_giving_up() {
         "x"
     ]));
 
-    cmd_sync_push(repo.path()).unwrap();
+    cmd_sync_push(repo.path(), None).unwrap();
 
     assert_eq!(
         requests.join().unwrap().len(),
@@ -321,7 +397,7 @@ fn push_gives_up_after_exhausting_conflict_retries() {
         "x"
     ]));
 
-    let err = cmd_sync_push(repo.path()).unwrap_err();
+    let err = cmd_sync_push(repo.path(), None).unwrap_err();
 
     assert!(err.to_string().contains("republish attempts"), "got: {err}");
     assert_eq!(

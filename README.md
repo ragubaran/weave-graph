@@ -84,12 +84,12 @@ pip install weave-graph
 ```
 
 #### 5. Build from Source
-Two release variants cover every mode:
+Two release distribution tiers cover every operational mode:
 
-| Variant               | Build Command                                                | Covers                                                                             |
-| :-------------------- | :----------------------------------------------------------- | :--------------------------------------------------------------------------------- |
-| **`weave`** (default) | `cargo build --release -p weave-graph-cli --features team`   | Single mode + Multiple mode                                                        |
-| **`weave-custom`**    | `cargo build --release -p weave-graph-cli --features custom` | Everything in `weave`, plus Custom mode (RBAC, policy-lint, OTel — in development) |
+| Tier | Binary | Build Command | Key Capabilities & Target |
+| :--- | :--- | :--- | :--- |
+| **Standard Tier** | `weave` (default) | `cargo build --release -p weave-graph-cli --features team` | Small orgs, startups & devs: Single + Multiple mode (AST parsing, SQLite/Turso, contract diffing, blast radius) |
+| **Self-Hosted Tier** | `weave-custom` | `cargo build --release -p weave-graph-cli --features custom` | Self-hosted & enterprise teams: Full suite (Custom mode + RBAC, SCIM, Hub, Policy-Lint, Provenance, Vector, SLM, OTel) |
 
 ```bash
 git clone https://github.com/ragubaran/weave-graph.git
@@ -97,7 +97,25 @@ cd weave-graph
 cargo build --release -p weave-graph-cli --features team
 ```
 
-The binary lands at `target/release/weave`; put it on your `$PATH` (e.g. `cp target/release/weave ~/.local/bin/`) or run it in place as `./target/release/weave`. A bare `cargo build --release` (no `--features`) also works and yields a smaller, Single-mode-only binary with no federation support.
+The binary lands at `target/release/weave`; put it on your `$PATH` (e.g. `cp target/release/weave ~/.local/bin/`) or run it in place as `./target/release/weave`. A bare `cargo build --release` (no `--features`) yields a minimal, Single-mode-only binary (<15MB, zero network).
+
+---
+
+### Detailed Comparison: Tiers vs. Modes
+
+Weave Graph separates **packaging & binary size** (Compile-Time Tiers) from **repository topology** (Runtime Modes in `.weave/config.toml`):
+
+| Dimension | Mode 1: Single (`mode = "single"`) | Mode 2: Multiple (`mode = "multiple"`) | Mode 3: Custom (`mode = "custom"`) |
+| :--- | :--- | :--- | :--- |
+| **Primary Scope** | Monorepo or standalone service. | Distributed local repositories via `[federation] linked_repos`. | Centralized organization-wide mesh & private VPC infrastructure. |
+| **Standard Tier (`weave`)** | **Full Support (Default)**<br/>• Local AST index & contract hashing<br/>• Fast blast radius & reachability<br/>• Choice of SQLite or Turso backend | **Full Support (with `federation`)**<br/>• Cross-repo moniker resolution<br/>• Tarjan SCC cycle checks<br/>• Public contract hashes | **Not Supported**<br/>(Requires enterprise Hub registry, SCIM server, and RBAC guard). |
+| **Self-Hosted Tier (`weave-custom`)** | **Supported + Enterprise Add-ons**<br/>• RBAC query masking (`--as`)<br/>• Local boundary `policy-lint`<br/>• OpenTelemetry runtime overlays | **Supported + Enterprise Add-ons**<br/>• RBAC masking across local repos<br/>• Local + linked contract drift gates<br/>• Local SLM journal generation | **Full Native Support**<br/>• Centralized Hub registry & spool queues<br/>• SCIM 2.0 Okta/Azure AD sync<br/>• LOD 1 Mermaid architecture diagrams<br/>• Merkle snapshot provenance verification |
+
+#### Internal Subdivisions in Standard Tier (`weave`)
+1. **Storage Backend**: `sqlite` (bundled `rusqlite` WAL mode, default) vs `turso` (`--features turso`, embedded libSQL remote replica).
+2. **Search Engine**: Non-vector BM25 symbol search (`fts`, default) vs Semantic Vector Search (`--features vector`, 1-bit `sqlite-vec` ANN + int8 rescore).
+
+---
 
 ### Single mode — one repo, one developer
 
@@ -136,9 +154,9 @@ staleness_policy = "strict"   # warn (diagnostic only) | strict (non-zero exit, 
 cd repo-a && weave check-contracts   # CI gate on divergent public-API boundaries
 ```
 
-### Custom mode — enterprise add-ons (in development)
+### Custom mode — enterprise add-ons
 
-Layers additional opt-in Cargo features on top of Multiple mode for larger or regulated orgs: query-layer RBAC masking (`--features rbac`), an architectural-boundary policy linter (`--features policy-lint`), and an OpenTelemetry trace overlay (`--features otel`). All are off by default and none is implemented yet — see `AGENTS.md` for the invariants they'll need to hold (masking enforced at the query layer, never export-only) and [Release Notes](docs/product/release-notes.md#not-in-this-release-planned-for-a-later-phase) for what's planned.
+Layers enterprise capabilities on top of Multiple mode for self-hosted VPCs and regulated orgs: query-layer RBAC masking (`--features rbac`), SCIM 2.0 directory sync (`weave rbac serve-scim`), an architectural-boundary policy linter (`--features policy-lint`), centralized snapshot hub (`--features hub`), Merkle provenance verification (`--features hub-provenance`), and OpenTelemetry trace overlays (`--features otel`).
 
 ## Configuration
 

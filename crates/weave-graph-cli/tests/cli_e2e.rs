@@ -1152,6 +1152,58 @@ fn test_cli_policy_drift_reports_cycles_and_orphans() {
         );
 }
 
+/// POL-03 through the real binary: a public utility whose only caller is
+/// a private (masked) function must be flagged as a masking artifact, not
+/// reported as a plain orphan indistinguishable from a real one.
+#[test]
+#[cfg(all(feature = "policy-lint", feature = "rbac"))]
+fn test_cli_policy_drift_annotates_orphans_hidden_by_masking() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(
+        root.join("caller.rs"),
+        "fn hidden_caller() { crate::exposed::exposed_util(); }",
+    )
+    .unwrap();
+    std::fs::write(root.join("exposed.rs"), "pub fn exposed_util() {}").unwrap();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("init")
+        .assert()
+        .success();
+    std::fs::write(root.join(".weave/config.toml"), "[rbac.users]\nbob = []\n").unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    // Unmasked: the real inbound edge is visible, so `exposed.rs` is not
+    // orphaned at all (`caller.rs` legitimately is — nothing calls it).
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["policy", "drift"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("exposed.rs").not());
+
+    // Masked as `bob`: the caller is hidden, severing the only inbound
+    // edge — must be labeled a masking artifact, not a bare orphan.
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["--as", "bob", "policy", "drift"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "exposed.rs (has hidden inbound edges)",
+        ));
+}
+
 /// impl.md M3.3's verify criterion, through the real binary: an OTLP
 /// trace export annotates the matching symbol, its latency is queryable
 /// via `weave query`, and it survives a full reindex (the carry-over

@@ -116,7 +116,7 @@ fn query_path_matches_the_sql_bfs_semantics() {
 }
 
 #[test]
-fn duplicate_source_target_pairs_with_different_kinds_collapse_to_one_edge_with_max_weight() {
+fn duplicate_source_target_pairs_with_different_kinds_collapse_to_one_edge() {
     let storage = FakeStorage {
         nodes: vec![node(1), node(2)],
         edges: vec![
@@ -175,6 +175,44 @@ fn reachable_within_bounds_by_hop_count_and_supports_set_intersection() {
     );
 }
 
+/// `callers_within` must find real multi-hop callers by walking edges
+/// *backward* — a capability `reachable_within` (outbound-only) never had,
+/// and `Storage::get_callers`'s SQL path never bounded by depth.
+#[test]
+fn callers_within_bounds_by_hop_count_over_the_reverse_direction() {
+    // 1 -> 2 -> 3 -> 4 (1 calls 2, 2 calls 3, 3 calls 4)
+    let storage = FakeStorage {
+        nodes: vec![node(1), node(2), node(3), node(4)],
+        edges: vec![edge(1, 2, 1.0), edge(2, 3, 1.0), edge(3, 4, 1.0)],
+    };
+    let graph = CsrGraph::load(&storage).unwrap();
+
+    // Who calls 4, within 1 hop? Just 3 (plus 4 itself).
+    let within_one = graph.callers_within(4, 1);
+    assert_eq!(within_one.len(), 2);
+    assert!(within_one.contains(graph_index(&graph, 3)));
+    assert!(!within_one.contains(graph_index(&graph, 2)));
+
+    // Within 2 hops: 3 and 2 (transitively, 2 calls 3 calls 4).
+    let within_two = graph.callers_within(4, 2);
+    assert_eq!(within_two.len(), 3);
+    assert!(within_two.contains(graph_index(&graph, 2)));
+    assert!(!within_two.contains(graph_index(&graph, 1)));
+
+    // Forward traversal from the same node must not find its own callers.
+    assert!(
+        graph.reachable_within(4, 3).len() == 1,
+        "4 calls nothing downstream in this chain"
+    );
+
+    // Directed both ways: node 1 (the root caller) has no callers of its own.
+    assert_eq!(graph.callers_within(1, 5).len(), 1);
+}
+
+fn graph_index(graph: &CsrGraph, id: NodeId) -> u32 {
+    *graph.id_to_index.get(&id).unwrap()
+}
+
 #[test]
 fn fake_storage_get_node_get_edges_and_schema_version_behave_sanely() {
     let storage = gapped_chain();
@@ -214,12 +252,36 @@ fn from_nodes_and_edges_reconstructs_identical_csr_structure() {
 }
 
 #[test]
-fn from_nodes_and_edges_dedups_and_takes_max_weight() {
+fn from_nodes_and_edges_dedups_duplicate_pairs_regardless_of_the_weight_argument() {
     let nodes = vec![1, 2];
+    // The weight component is accepted for caller convenience (WASM
+    // callers often already have it) but never stored — see `CsrGraph`'s
+    // own doc comment — so two duplicate pairs with different weights
+    // still collapse to one edge.
     let edges = vec![(1, 2, 1.0), (1, 2, 5.0)];
     let graph = CsrGraph::from_nodes_and_edges(&nodes, &edges).unwrap();
     assert_eq!(graph.edge_count(), 1);
     assert_eq!(graph.outbound(1), vec![2]);
+}
+
+/// `reverse_csr` must not be built at load time — every consumer that
+/// never calls `callers_within` (`weave query`/`report`/`export`, every MCP
+/// tool, `weave blast --direction callees`) must never pay to build or
+/// hold it.
+#[test]
+fn reverse_csr_is_not_built_until_callers_within_is_first_called() {
+    let graph = CsrGraph::load(&gapped_chain()).unwrap();
+    assert!(
+        graph.reverse_csr.get().is_none(),
+        "must not build the reverse CSR eagerly at load time"
+    );
+
+    let _ = graph.callers_within(30, 1);
+
+    assert!(
+        graph.reverse_csr.get().is_some(),
+        "must build it lazily on first callers_within call"
+    );
 }
 
 #[test]

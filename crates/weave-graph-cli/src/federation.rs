@@ -1,17 +1,17 @@
-//! `federation` feature (`plan.md` §2.3, `impl.md` M2.1): `weave link`
-//! composes two independently-indexed repos' already-built `graph.db`
-//! files into one addressable graph under composite keys
-//! (`[repo_id]::[path]::[symbol]`), then runs Tarjan's SCC over it to
-//! surface circular cross-repo dependencies. Purely local — reads two
-//! SQLite files plus each repo's own raw source, and writes a report; no
-//! networking crate anywhere in this module's dependency tree.
+//! `federation` feature: `weave link` composes two independently-indexed
+//! repos' already-built `graph.db` files into one addressable graph under
+//! composite keys (`[repo_id]::[path]::[symbol]`), then runs Tarjan's SCC
+//! over it to surface circular cross-repo dependencies. Purely local —
+//! reads two SQLite files plus each repo's own raw source, and writes a
+//! report; no networking crate anywhere in this module's dependency tree.
 //!
 //! **Cross-repo edges are real, not simulated**: each repo's own
 //! already-resolved edges (from its `graph.db`) only ever reference that
 //! repo's own node ids — a repo's `IMPORTS`/call reference that couldn't
-//! resolve *within* that repo was silently dropped at indexing time (M1.2's
-//! "never a dangling target" rule), and the raw target text isn't
-//! persisted once dropped. So composing already-indexed graphs alone can
+//! resolve *within* that repo was silently dropped at indexing time (the
+//! "never a dangling target" rule Core Invariant 3 requires), and the raw
+//! target text isn't persisted once dropped. So composing already-indexed
+//! graphs alone can
 //! never surface a cross-repo dependency. This module re-parses both
 //! repos' raw source (`index::parse_all`, the same function `weave index`
 //! itself uses) and retries each repo's otherwise-unresolved references
@@ -143,24 +143,28 @@ pub(crate) fn cmd_link(repo_a: &Path, repo_b: &Path) -> Result<(), Box<dyn std::
         println!("Written to {}", report_path.display());
     }
 
-    // M2.2: record each repo's boundary contract as the other repo's
+    // Record each repo's boundary contract as the other repo's
     // expectation, so `weave check-contracts` can detect divergence later.
-    let hash_a = repo_contract_hash(&a)?;
-    let hash_b = repo_contract_hash(&b)?;
-    crate::contracts::record_expectations(repo_a, repo_b, &hash_a, &hash_b, None, None)?;
+    // The per-symbol map is recorded too, not just its hash, so a later
+    // divergence can be diffed symbol-by-symbol.
+    let map_a = repo_contract_map(&a, repo_a)?;
+    let map_b = repo_contract_map(&b, repo_b)?;
+    let hash_a = crate::contracts::contract_hash_of(&map_a);
+    let hash_b = crate::contracts::contract_hash_of(&map_b);
+    crate::contracts::record_expectations(repo_a, repo_b, &map_a, &map_b, None, None)?;
     println!(
         "Recorded contract expectations: {} = {}, {} = {}",
         a.label, hash_a, b.label, hash_b
     );
 
-    // M2.1: Auto-append `repo_b` to `repo_a`'s config so `weave link` works seamlessly later.
+    // Auto-append `repo_b` to `repo_a`'s config so `weave link` works seamlessly later.
     let config_a = repo_a.join(".weave").join("config.toml");
     crate::config::add_linked_repo(&config_a, repo_b)?;
     let config_b = repo_b.join(".weave").join("config.toml");
     crate::config::add_linked_repo(&config_b, repo_a)?;
 
-    // impl.md tracked gap: the composite graph used to be built, reported,
-    // and thrown away — `weave query-federated` needs it to still exist
+    // The composite graph used to be built, reported, and thrown away —
+    // `weave query-federated` needs it to still exist
     // after this process exits. Persisted symmetrically so either side can
     // query without caring which repo actually ran `weave link`.
     persist_composite_graph(
@@ -241,7 +245,7 @@ fn persist_composite_graph(
 /// pair (`persist_composite_graph`) — shared by every federated-graph
 /// reader (`query-federated`, `report-federated`) so "no federated graph
 /// yet" always produces the same clear error naming the fix.
-fn open_federated_storage(
+pub(crate) fn open_federated_storage(
     repo_a: &Path,
     repo_b: &Path,
 ) -> Result<(SqliteStorage, PathBuf), Box<dyn std::error::Error>> {
@@ -283,19 +287,18 @@ pub(crate) fn cmd_query_federated(
     }
 }
 
-/// `weave report-federated <repo_a> <repo_b>` — `hub-canvas` v1
-/// (`docs/hub_enhancement_external.md` §3.2's "unified `.canvas`
-/// architecture maps"). Reuses `report::generate` exactly as `weave
+/// `weave report-federated <repo_a> <repo_b>` — the multi-repo counterpart
+/// to `weave report`. Reuses `report::generate` exactly as `weave
 /// report` calls it, just pointed at the persisted composite graph
 /// instead of a single repo's `graph.db`. `report.rs`'s LOD 0 canvas
 /// already groups nodes by `Node::repo_id` — its own comment notes that
 /// today this is "always exactly one ... since cross-repo federation
 /// isn't built yet". Composite nodes carry each repo's real label in that
-/// field (`cmd_link`), so this one call turns LOD 0 into the multi-repo
-/// root canvas the design doc asks for: zero new rendering code, zero new
-/// clustering code (M1.8/M2.9's Louvain + 200-node budget apply
-/// unchanged, now over the composite file-dependency graph). No RBAC
-/// masking yet, same stated gap as `query-federated`.
+/// field (`cmd_link`), so this one call turns LOD 0 into a real multi-repo
+/// root canvas: zero new rendering code, zero new clustering code (the
+/// existing Louvain + 200-node budget apply unchanged, now over the
+/// composite file-dependency graph). No RBAC masking yet, same stated gap
+/// as `query-federated`.
 pub(crate) fn cmd_report_federated(
     repo_a: &Path,
     repo_b: &Path,
@@ -317,8 +320,8 @@ pub(crate) fn cmd_report_federated(
     Ok(())
 }
 
-/// `weave link` with fewer than two explicit paths (impl.md M2.1's L7 gap):
-/// the partner comes from this repo's `[federation] linked_repos` config.
+/// `weave link` with fewer than two explicit paths: the partner comes
+/// from this repo's `[federation] linked_repos` config.
 /// Exactly one linked repo must be configured — ambiguity is an error, not
 /// a guess.
 pub(crate) fn cmd_link_from_config(
@@ -356,20 +359,43 @@ pub(crate) fn cmd_link_from_config(
     cmd_link(root, &partner)
 }
 
-/// Whole-repo contract hash from already-parsed sources (`impl.md` M2.2):
-/// every file's exported signatures, canonicalized and SHA-256'd. Reuses the
-/// `parse_all` output `load_repo` already produced — no second file read.
-fn repo_contract_hash(graph: &RepoGraph) -> Result<String, Box<dyn std::error::Error>> {
-    let mut entries = Vec::new();
+/// Whole-repo exported-symbol map from already-parsed sources: every
+/// file's exported symbols, keyed by qualified name. Reuses the
+/// `parse_all` output `load_repo` already produced — no
+/// second file read. Paths are relativized against `root` so this agrees
+/// with `contracts::repo_contract_map`'s own relative-path convention —
+/// otherwise the two sides of a later diff would show the same untouched
+/// symbol under two different path spellings.
+fn repo_contract_map(
+    graph: &RepoGraph,
+    root: &Path,
+) -> Result<crate::contracts::ContractMap, Box<dyn std::error::Error>> {
+    let mut map = crate::contracts::ContractMap::new();
     for (path, parsed) in &graph.parsed_files {
         // `from_path` dispatches on extension, so the absolute path
         // `parse_all` produced needs no rewriting here.
         let Some(language) = Language::from_path(path) else {
             continue;
         };
-        entries.extend(contract::exported_entries(language, parsed));
+        let rel = path.strip_prefix(root).unwrap_or(path);
+        let path_str = rel.to_string_lossy();
+        for (symbol, (kind, signature, line_start)) in
+            contract::exported_entries_map(language, parsed)
+        {
+            map.insert(symbol, (kind, signature, path_str.to_string(), line_start));
+        }
     }
-    Ok(contract::hash_entries(entries))
+    Ok(map)
+}
+
+#[cfg(test)]
+fn repo_contract_hash(
+    graph: &RepoGraph,
+    root: &Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(crate::contracts::contract_hash_of(&repo_contract_map(
+        graph, root,
+    )?))
 }
 
 /// Retries every reference either repo's own indexing left unresolved

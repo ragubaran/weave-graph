@@ -195,10 +195,19 @@ pub(crate) struct ScimResponse(pub u16, pub String);
 pub(crate) struct ScimServer {
     listener: TcpListener,
     directory: ScimDirectory,
+    auth_token: Option<String>,
 }
 
 impl ScimServer {
-    pub(crate) fn bind(port: u16, directory: ScimDirectory) -> Result<Self, String> {
+    /// `token: None` is the unauthenticated v1 behavior (loopback binding
+    /// only). `Some` requires every request to carry an `Authorization:
+    /// Bearer <token>` header matching it (IDP-02: loopback binding alone
+    /// lets any local process forge provisioning).
+    pub(crate) fn bind_with_token(
+        port: u16,
+        directory: ScimDirectory,
+        token: Option<String>,
+    ) -> Result<Self, String> {
         // Loopback only (Core Invariant 6's spirit): a directory endpoint
         // beyond the host would leak role assignments the moment it starts.
         let listener = TcpListener::bind(("127.0.0.1", port))
@@ -206,6 +215,7 @@ impl ScimServer {
         Ok(Self {
             listener,
             directory,
+            auth_token: token,
         })
     }
 
@@ -288,10 +298,25 @@ impl ScimServer {
         let Self {
             listener,
             directory,
+            auth_token,
         } = self;
         for stream in listener.incoming() {
             let mut stream = stream?;
-            let (method, path, body) = read_request(&mut stream)?;
+            let (method, path, body, headers) = read_request(&mut stream)?;
+            if let Some(token) = auth_token {
+                let authorized = headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+                    .is_some_and(|(_, value)| value == &format!("Bearer {token}"));
+                if !authorized {
+                    write_response(
+                        &mut stream,
+                        401,
+                        "{\"error\":\"missing or invalid bearer token\"}",
+                    )?;
+                    continue;
+                }
+            }
             let ScimResponse(status, body) = Self::handle_request(directory, &method, &path, &body);
             write_response(&mut stream, status, &body)?;
         }
@@ -307,33 +332,50 @@ fn provision_request(body: &str) -> Result<DirectoryMutation, String> {
         .and_then(|v| v.as_str())
         .ok_or("SCIM provision requires a string `userName`")?
         .to_string();
+    // IDP-01: accept RFC 7643's object-array shape
+    // (`[{"value": "internal"}]`) as well as a flat string array — real
+    // IdPs (Okta, Azure AD) send the former; the prior string-only match
+    // silently dropped every object element, producing zero roles.
     let roles = json
         .get("roles")
         .and_then(|v| v.as_array())
         .map(|a| {
             a.iter()
-                .filter_map(|r| r.as_str().map(String::from))
+                .filter_map(|r| {
+                    r.as_str()
+                        .map(String::from)
+                        .or_else(|| r.get("value")?.as_str().map(String::from))
+                })
                 .collect()
         })
         .unwrap_or_else(|| vec!["reader".to_string()]);
     Ok(DirectoryMutation::Provision { subject, roles })
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<(String, String, String), std::io::Error> {
+type ScimRequest = (String, String, String, Vec<(String, String)>);
+
+fn read_request(stream: &mut TcpStream) -> Result<ScimRequest, std::io::Error> {
     let mut buf = vec![0u8; 8192];
     let n = stream.read(&mut buf)?;
     let raw = String::from_utf8_lossy(&buf[..n]).to_string();
-    let mut lines = raw.split("\r\n");
+    let head_end = raw.find("\r\n\r\n").unwrap_or(raw.len());
+    let mut lines = raw[..head_end].split("\r\n");
     let request_line = lines.next().unwrap_or_default();
     let mut parts = request_line.split(' ');
     let method = parts.next().unwrap_or_default().to_string();
     let path = parts.next().unwrap_or_default().to_string();
+    let headers = lines
+        .filter_map(|l| {
+            l.split_once(':')
+                .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
+        })
+        .collect();
     // Split body off at the header/body boundary, if one arrived.
     let body = match raw.find("\r\n\r\n") {
         Some(i) => raw[i + 4..].to_string(),
         None => String::new(),
     };
-    Ok((method, path, body))
+    Ok((method, path, body, headers))
 }
 
 fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> std::io::Result<()> {
@@ -358,10 +400,15 @@ fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> std::io::R
 }
 
 /// `weave rbac serve-scim` (feature rbac): loopback-only SCIM 2.0
-/// provisioning endpoint backed by `.weave/rbac-directory.toml`.
+/// provisioning endpoint backed by `.weave/rbac-directory.toml`. An
+/// optional `[rbac.scim] token` in `.weave/config.toml` (IDP-02) requires
+/// every request to carry a matching `Authorization: Bearer` header;
+/// omitting it keeps the fully-supported unauthenticated v1 behavior.
 pub(crate) fn cmd_serve_scim(root: &Path, port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let directory = ScimDirectory::load(directory_file(root));
-    let mut server = ScimServer::bind(port, directory)?;
+    let token = crate::config::get_key(&root.join(".weave").join("config.toml"), "rbac.scim.token")
+        .filter(|t| !t.is_empty());
+    let mut server = ScimServer::bind_with_token(port, directory, token)?;
     println!(
         "SCIM directory server on {} (loopback only); Ctrl-C to stop",
         server.local_addr()?

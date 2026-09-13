@@ -1,129 +1,275 @@
 # Configuration Reference
 
-Everything lives in `<repo>/.weave/config.toml`, written by `weave init`.
-Every section besides `mode` is optional — an absent section means that
-capability is off, never a pending setup step. Feature-gated sections are
-read (and matter) only when the corresponding Cargo feature was compiled
-in.
+All configuration for Weave Graph lives in `<repo>/.weave/config.toml`, created automatically by `weave init`.
+Every section other than `mode` is optional — an absent section simply disables that capability without pending setup steps. Feature-gated sections apply only when their corresponding Cargo feature is compiled into the binary.
 
 ```toml
-mode = "single"                     # single | multiple
+# Workspace operating mode: "single" | "multiple"
+mode = "single"
 
+# ==============================================================================
+# Part I: Core & Developer Configuration
+# ==============================================================================
 [storage]
-home = ""                           # optional central/custom storage path (default: <repo>/.weave/)
-relocate_on_network_fs = false      # opt-in; default is warn-and-refuse
+home = ""                           # Optional central storage directory (default: <repo>/.weave/)
+                                     # Also the only supported opt-in past the network-filesystem
+                                     # refusal below (alongside the WEAVE_HOME env var) — there is
+                                     # no separate "force it anyway" flag.
 
-[index]
-bailout_ratio = 0.10                # full rebuild above this share of changed files
-bailout_floor = 100                 # ...but never below this absolute count
+[federation]                        # feature: federation (team profile)
+linked_repos = ["../sibling-repo"]  # Relative paths to locally federated repositories
+staleness_policy = "strict"         # Policy for check-contracts: "warn" | "strict" | "ignore"
 
-[federation]                        # requires feature = federation
-linked_repos = []                   # e.g. ["../sibling-repo"]
-staleness_policy = "warn"           # warn | strict | ignore
+[watch]                             # feature: watch
+enabled = false                     # File watcher background thread: "true" to activate
+debounce_ms = 2000                  # Coalesce file modifications into single batch [100, 60000]
+blast_radius_ceiling = 200          # Maximum changed symbols allowed before deferring reindex
 
-[hub]                               # requires feature = hub; expected to be rare
-url = ""                            # unset is a fully supported permanent state
-snapshot_retention = 20             # default when unset; sent as a hint header — pruning itself is hub-server behavior
+[report]
+format = "canvas"                   # "canvas" (default) | "html" | "all"
+auto_open = false                   # Automatically launch browser on report generation
 
-[slm]                               # requires feature = slm
-model = "qwen2.5-coder-0.5b-q4_k_m" # never auto-upgraded; weights not bundled
-lazy_load = true                    # must stay true: 0MB idle cost until first `weave ask`
+[viz]                               # feature: viz
+mode = "static"                     # "static" (file:// bundle) | "server" (loopback HTTP server)
 
-[watch]                             # requires feature = watch
-enabled = false                     # must be the literal string "true" to activate
-debounce_ms = 2000                  # clamped to [100, 60000]
-blast_radius_ceiling = 200          # above this, defer to manual `weave index` instead of auto-reindexing
+# ==============================================================================
+# Part II: Custom Mode / Self-Hosted Enterprise Configuration (feature: custom)
+# ==============================================================================
+[rbac.users]                        # feature: rbac — the only RBAC config section that exists
+alice = ["internal"]                # "internal" is the one role name RBAC treats specially:
+                                     # bypasses masking entirely. Every other role name below gets
+                                     # identical behavior — masked down to pub-visible symbols only.
+bob = ["contractor"]                # A role name with no special meaning of its own (see §6).
+service_account = ["allow-drift"]   # The other special role: permission to waive
+                                     # check-contracts/blast gates (impl.md M3.10, see §7).
 
-[report]                            # --html/--open need feature = viz
-format = "canvas"                   # "html"/"all" also render HTML; anything else (incl. the "canvas" default) doesn't — markdown+canvas are always written regardless
-auto_open = false                   # launch the system browser after `weave report --html`
+[hub]
+url = "http://weave-registry:8080"  # URL of centralized weave-registry server
+snapshot_retention = 20             # Maximum snapshots retained per repository on hub
 
-[viz]                               # requires feature = viz
-mode = "static"                     # static (file://) | server (loopback-only HTTP)
+[slm]
+model = "qwen2.5-coder-0.5b-q4_k_m" # Model identifier in $XDG_CACHE_HOME/weave/models/
 ```
 
-## `[storage]` — central knowledge store
+`weave` also reads a `[federation.linked_repos]`-adjacent `weave check-contracts --allow-drift-for <repo>`
+CLI flag and matching `WEAVE_*` environment variables for temporary CI waivers — see §7, not this table
+(they're not `.weave/config.toml` keys at all).
 
-To store graph data outside the repository tree (a central folder or
-multi-repo knowledge vault), either set `[storage] home` per repo or export
-a global default:
+
+---
+
+# Part I: Core & Developer Configuration
+
+## 1. Operating Mode (`mode`)
+
+Defines the repository workspace topology:
+- `"single"` *(default)*: Optimized for a standalone repository.
+- `"multiple"`: Scaffolds multi-repo federation support, cross-repository contract expectations, and CI cache templates.
+
+---
+
+## 2. Storage & Environmental Overrides (`[storage]`)
+
+### Centralized Storage Vault (`WEAVE_HOME`)
+By default, Weave Graph stores its SQLite database at `<repo>/.weave/graph.db`. To isolate graph databases outside of the source tree (such as in compliance environments, shared CI agents, or centralized knowledge vaults), define `[storage] home` in config or export the `WEAVE_HOME` environment variable:
 
 ```bash
-export WEAVE_HOME=/path/to/central/knowledge
+export WEAVE_HOME=~/.weave/vault
 ```
 
-When `WEAVE_HOME` is set and no repo-specific `[storage] home` is set,
-`weave` isolates each repository's database under a sanitized namespace:
-`$WEAVE_HOME/<sanitized-repo-path>/`. Indexing only ever touches the target
-repository's own database and swap files — other repositories under the
-same central folder are unaffected. With neither set, storage defaults to
-`<repo_root>/.weave/`.
 
-`relocate_on_network_fs` governs what happens if that storage path resolves
-onto a network filesystem: the default is to warn and refuse (SQLite's WAL
-mode needs shared memory a network mount doesn't reliably provide) rather
-than silently risk corruption.
+When `WEAVE_HOME` is active, Weave Graph isolates databases under a deterministic sanitized directory name:
+`$WEAVE_HOME/<sanitized-repo-path>/graph.db`.
+Indexing operations only touch the active repository's database and swap files.
 
-## `[index]`
+### Network Filesystem Protection
+SQLite Write-Ahead Logging (WAL) requires shared-memory primitives (`shm`) that network mounts (NFS, SMB, CIFS) do not reliably provide. If Weave Graph detects that `.weave/` resides on a network filesystem, it logs a diagnostic warning and refuses to run, to prevent database corruption.
 
-Controls when `weave index --incremental` gives up and falls back to a
-full rebuild.
+There is no dedicated toggle for this — the only two ways past the refusal are the two storage-relocation mechanisms already documented above (`[storage] home` or `WEAVE_HOME`), which move the database off the network mount entirely rather than reconfiguring how it's accessed there. Once relocated, the check never re-runs against the new location.
 
-`weave index --incremental` reuses the existing index and reindexes only
-changed files, but falls back to a full rebuild once the changed-file
-share crosses `bailout_ratio` — and never below the absolute `bailout_floor`
-count, so a tiny repo with a big fractional change doesn't trigger an
-unnecessary full rebuild.
+---
 
-## `[federation]`
+## 3. Indexing & Rebuild Thresholds
 
-Requires feature `federation`. `linked_repos` is an array of relative paths to other locally-indexed
-repos; `weave link <a> <b>` records contract expectations but does not yet
-write this array back for you (edit it once, by hand). `staleness_policy`
-controls what `weave check-contracts` does with a divergent contract:
-`warn` (diagnostic only), `strict` (non-zero exit — the CI gate), `ignore`.
+`weave index --incremental` re-parses only modified files. When large refactorings or upstream branch merges occur, executing thousands of localized deletes and re-inserts is slower than a clean rebuild — `weave-graph-core`'s `ReindexConfig` bails out to a full rebuild above a 10% modified-file ratio (never below 100 modified files regardless of ratio). **These thresholds are compiled-in defaults, not `.weave/config.toml` keys** — there is no `[index]` section; `weave config set index.bailout_ratio ...` would write a value nothing reads back. If you need this tunable, that's a real gap to file, not a documented feature today.
 
-## `[hub]` (feature: `hub`)
+---
 
-Client-only configuration for an optional, self-hosted snapshot service.
-`url` unset is a fully supported permanent state — most teams never enable
-this feature. `snapshot_retention` is sent as a hint header on push; actual
-pruning is hub-server behavior, not something the client enforces.
+## 4. Multi-Repo Federation (`[federation]`)
 
-## `[slm]` (feature: `slm`)
+Used by `weave link`, `weave query-federated`, and `weave check-contracts` (requires `--features team` or `federation`):
+- `linked_repos` *(array of strings)*: Relative directory paths to partner repositories in the federation.
+- `staleness_policy` *(string, default: `"warn"`)*: Controls CI gate behavior during `weave check-contracts`:
+  - `"strict"`: Exits with a non-zero code on any contract hash mismatch (recommended for CI).
+  - `"warn"`: Prints a diagnostic drift summary but exits with code `0`.
+  - `"ignore"`: Skips contract validation.
 
-`model` names a registry entry pulled via `weave slm pull <model> --sha256
-<digest>` into `$XDG_CACHE_HOME/weave/models/`. `lazy_load` must stay
-`true` for the feature-isolation guarantee to hold (0 MB idle RSS until
-`weave ask` is actually invoked) — there is currently no supported reason
-to set it `false`.
+---
 
-## `[watch]` (feature: `watch`)
+## 5. Developer Experience & Visualization (`[watch]`, `[report]`, `[viz]`)
 
-`enabled` must be the literal string `"true"` — anything else (including
-absent) is off. `debounce_ms` controls how long a burst of file-change
-events is coalesced into one reindex attempt. `blast_radius_ceiling` is the
-threshold above which a change is deferred behind a visible marker
-(`weave status`, and every MCP tool response) instead of auto-reindexed —
-tune it down for a small repo where you want to review large changes
-manually, or up for a large repo where routine multi-file edits are
-expected and safe to auto-sync.
+### Background File Watcher (`[watch]`)
+- `enabled` *(boolean, default: `false`)*: Activates the background file watcher thread inside `weave serve --mcp` or `weave index --watch`.
+- `debounce_ms` *(integer, default: `2000`)*: Coalescing window in milliseconds to batch rapid file save events into a single reindex cycle. Clamped to `[100, 60000]`.
+- `blast_radius_ceiling` *(integer, default: `200`)*: Maximum impacted symbols permitted for automatic reindexing. Edits exceeding this ceiling are deferred behind a pending marker in `weave status` to avoid freezing local systems during massive changes.
 
-## `[report]` / `[viz]` (feature: `viz`)
+### Reporting & Visualization (`[report]`, `[viz]`)
+- `[report] format`: Output format (`"canvas"`, `"html"`, or `"all"`). Markdown and JSON Canvas (`.canvas`) are always generated regardless.
+- `[report] auto_open`: Automatically launches the default web browser after generating an HTML report.
+- `[viz] mode`: Selects between `"static"` (standalone `file://` SVG viewer bundle) and `"server"` (loopback HTTP server on `127.0.0.1`).
 
-`[report] format` gates which artifacts `weave report` writes in addition
-to the always-on Markdown + `.canvas` export: `"html"`/`"all"` also render
-offline HTML viewer bundles. `[viz] mode` picks between a static
-`file://` bundle (default) and a loopback-only (`127.0.0.1`) static file
-server for `weave viz`.
+---
 
-## Reading and writing scalar keys
+# Part II: Custom Mode / Self-Hosted Enterprise Configuration
+
+The sections below apply when Weave Graph is compiled with `--features custom` (or specific individual enterprise features). These options configure centralized security, compliance policies, runtime telemetry, and hub synchronization.
+
+---
+
+## 6. Role-Based Access Control (`[rbac.users]`)
+
+Weave Graph enforces security masking directly at the **query layer** across the CLI, Markdown/Canvas reports, exports, and MCP tools (Core Invariant 7).
+
+There is no `[rbac]` settings table — `[rbac.users]` is the entire config surface. Masking engages purely based on whether the global `--as <subject>` flag is passed on a given command; there is no `enabled`/`anonymous_role` toggle. An identity-less call (`--as` omitted) always resolves to the built-in anonymous identity (zero roles), not a configurable fallback.
+
+### User & Role Mappings (`[rbac.users]`)
+Maps individual identities to role-name arrays:
+```toml
+[rbac.users]
+alice = ["internal"]
+bob = ["engineer"]
+contractor_vendor = ["contractor"]
+ci_auditor = ["auditor"]
+release_bot = ["allow-drift"]
+```
+
+**Only two role names carry any special meaning anywhere in the code** — every other role name (`"engineer"`, `"contractor"`, `"auditor"`, or anything else you make up) is purely a label for your own bookkeeping/audit trail and has **identical** masking behavior:
+- `"internal"` — bypasses query-layer masking entirely; the identity sees the full graph.
+- `"allow-drift"` — grants permission to invoke a `weave check-contracts`/`weave blast` waiver (`--allow-drift`, `--allow-drift-for`, `--skip`, or their `WEAVE_*` env-var equivalents — see the CLI reference). Independent of `"internal"`: an identity that sees everything isn't automatically trusted to bypass a CI gate.
+
+Everyone else — any other role, multiple roles, or no roles at all — gets the exact same masked view: only symbols the language's own visibility convention marks public (`pub fn` in Rust, `export` in TS/JS, etc.), the same heuristic `weave check-contracts`'s contract hash already uses. There is no per-role custom masking pattern, no `mask = [...]` table, nothing module-scoped to a specific role.
+
+### SCIM 2.0 Identity Directory (`.weave/rbac-directory.toml`)
+`weave rbac serve-scim --port 9292` runs a loopback-only, unauthenticated SCIM 2.0 endpoint (`POST /Users` to provision, `DELETE /{subject}` to deprovision, `POST /sync` to refresh) that an IdP pushes subject→role assignments to; results land in `.weave/rbac-directory.toml`, same `subject -> [roles]` shape as `[rbac.users]`. It has no `/Groups` endpoint and no vendor-specific integration — it's generic SCIM, and the IdP is responsible for deciding which roles to push for which subject.
+- **Precedence Rule**: Directory records in `rbac-directory.toml` override static entries in `[rbac.users]` for the same subject.
+- **Identity Evaluation**: The global `--as <identity>` flag evaluates both static config and SCIM directory records to resolve active roles.
+
+---
+
+## 7. Architectural Policy Linting (`.weave/policy.yaml`)
+
+Declarative architectural boundary enforcement and drift detection. The rules file path (`.weave/policy.yaml`) and CI-fail-on-violation behavior are both fixed, not configurable — there is no `[policy]` config table (no `config_file`/`exit_on_violation` keys); `weave policy lint` always reads `.weave/policy.yaml` and always exits non-zero on any violation.
+
+### Boundary Rule Format (`.weave/policy.yaml`)
+Boundary rules define allowable communication paths across architectural modules:
+```yaml
+rules:
+  # Disallow direct database calls from UI or HTTP controllers
+  - disallow:
+      from: "src/controllers"
+      to: "src/db"
+
+  # Require services to mediate billing operations
+  - require:
+      from: "src/billing"
+      to: "src/services/billing_service.rs"
+```
+
+---
+
+## 8. Distributed Traces & Telemetry
+
+Connects static AST call graphs with runtime performance data imported via OpenTelemetry OTLP JSON trace exports. There is no `[otel]` config table — `weave traces import <file>` takes the trace file as a required CLI argument (no config-file fallback), and the reported percentiles are fixed at p50/p95/p99 (not a configurable list).
+
+### Trace Matching Behavior
+- Correlates span `code.function` or span names with static graph symbols.
+- Enables `weave query "latency(<symbol>)"` to report span/error counts and p50/p95/p99 latency (in microseconds) directly in terminal queries and MCP responses.
+
+---
+
+## 9. Centralized Snapshot Registry & Hub (`[hub]`)
+
+Configures client synchronization with a self-hosted `weave-registry` server daemon:
+
+```toml
+[hub]
+url = "http://weave-registry.internal.corp:8080"
+snapshot_retention = 20
+```
+
+### Settings
+- `url` *(string, optional)*: The HTTP endpoint of the centralized registry. Leaving this unset is a fully supported permanent state for offline and local teams.
+- `snapshot_retention` *(integer, default: `20`)*: Hint header sent during `weave sync push` specifying how many historical snapshots to retain per repository branch on the hub server.
+- **Atomic Hydration**: `weave sync pull` downloads canonical graph snapshots and applies them via atomic file swap (`.rebuild`), so a CI runner starts from a hydrated graph instead of a cold source-tree parse.
+
+---
+
+## 10. Local SLM & Natural Language Routing (`[slm]`)
+
+Configures natural-language query routing for human developers at terminals:
+
+```toml
+[slm]
+model = "qwen2.5-coder-0.5b-q4_k_m" # Model name in $XDG_CACHE_HOME/weave/models/
+```
+
+### Settings
+- `model`: Identifies the local GGUF model managed via `weave slm pull` and `weave slm list`.
+- Lazy loading (no model weights loaded into memory until `weave ask` is explicitly run) is unconditional code behavior, not a config toggle — there is no `lazy_load` key.
+- *Note: `slm` is exclusively for terminal human queries and is never invoked on the MCP agent path.*
+
+---
+
+## 11. Hybrid Search & Vector Embeddings (`[fts]`, `[vector]`)
+
+Configures lexical and semantic code search:
+- `fts` *(BM25)*: Automatically indexes symbol names, doc comments, signatures, and file paths into SQLite FTS5 with AST-aware synonym expansion.
+- `vector`: Utilizes `sqlite-vec` virtual tables for semantic similarity lookups across AST definition chunks via `weave search "<query>" --semantic`.
+
+---
+
+# Part III: Turso Storage Engine Configuration (`[storage.turso]`)
+
+> [!IMPORTANT]
+> **Exclusive to `weave-turso` Binary Variant**:  
+> Turso storage configuration applies **only** when using the dedicated `weave-turso` (`vX.Y.Z-turso`) binary build. It is not compiled into the default `weave` binary or the `weave-custom` bundle.
+
+## 12. Architecture & Packaging Isolation
+
+`weave-turso` replaces the default `rusqlite` bundled SQLite C library with embedded **libSQL** (`libsql = "0.9"`), providing native replication and distributed replica synchronization.
+
+### Why a Dedicated `weave-turso` Binary is Required
+- **C Symbol Conflict**: Rusqlite's bundled `libsqlite3-sys` and libSQL's `libsql-ffi` both statically define and export SQLite C symbols (`sqlite3_open`, `sqlite3_step`, etc.). Linking both storage engines into a single binary causes fatal duplicate symbol linker collisions.
+- **Normal Mode Exclusivity**: the `turso` feature replaces bundled SQLite with embedded libSQL. Measured stripped release size: **~41.1 MB** — statistically identical to the default SQLite build (linking libSQL instead of nothing extra costs, this isn't a size win). Vector mode (`vX.Y.Z-vector`) remains exclusively on SQLite because libSQL does not currently support `sqlite-vec` virtual tables.
+
+### Building the `--features turso` Binary
+```bash
+# Build with the turso backend linked in
+cargo build --release -p weave-graph-cli --no-default-features --features turso
+```
+
+> [!WARNING]
+> **Not yet reachable from any `weave` command.** `TursoStorage` is a complete `Storage` trait implementation (`crates/weave-graph-store-turso`, benchmarked in its own `benches/turso_latency.rs`), but `weave-graph-cli` never constructs one — every CLI command still opens `SqliteStorage` regardless of which features are compiled in. Building with `--features turso` links the backend into the binary; it doesn't change which one gets used. There is no `[storage.turso]` config table, no `sync_url`/`auth_token`/replication config, and no CLI flag to select it — those would all be new work, not configuration this binary reads today.
+
+### What's Real Today
+`TursoStorage::open(path)` / `open_in_memory()` implement the same `Storage` trait as `SqliteStorage` — same transactional guarantees, same schema migrations — but that's a library-level capability for a future integration, not something you can point `weave` at from `.weave/config.toml` yet.
+
+---
+
+# Part IV: CLI Helpers & Programmatic Configuration
+
+Inspect and update configuration values programmatically:
 
 ```bash
-weave config set storage.home /path/to/central/knowledge/repo-a
+# Read a scalar key
 weave config get storage.home
+weave config get federation.staleness_policy
+
+# Update a scalar key
+weave config set federation.staleness_policy strict
+weave config set watch.blast_radius_ceiling 300
 ```
 
-`weave config set` only writes scalar (string/bool/number) values — array
-keys like `[federation] linked_repos` need a direct edit to
-`.weave/config.toml`.
+> [!NOTE]
+> `weave config set` only writes scalar values (strings, booleans, numbers). Array keys such as `[federation] linked_repos` or user tables such as `[rbac.users]` require editing `.weave/config.toml` directly.
+

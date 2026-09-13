@@ -18,8 +18,8 @@
 .claude/
 .gemini
 .agents/
+opencode.json
 
-# Internal planning/audit docs stay local, not committed — except the
 # published product documentation for end users (docs/product/).
 docs/*
 !docs/product/

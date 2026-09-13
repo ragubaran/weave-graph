@@ -1,6 +1,20 @@
 use weave_graph_core::embedding::MockEmbeddingProvider;
+use weave_graph_core::{Node, Storage};
 
 use crate::SqliteStorage;
+
+fn node(path: &str) -> Node {
+    Node {
+        id: 0,
+        repo_id: "local".to_string(),
+        path: path.to_string(),
+        symbol: "s".to_string(),
+        kind: "function".to_string(),
+        line_start: 1,
+        line_end: 2,
+        signature: "fn s()".to_string(),
+    }
+}
 
 #[test]
 fn rebuild_then_search_finds_the_closest_chunk_by_shared_vocabulary() {
@@ -16,7 +30,7 @@ fn rebuild_then_search_finds_the_closest_chunk_by_shared_vocabulary() {
     storage.rebuild_vector_index(&embedder, &chunks).unwrap();
 
     let hits = storage
-        .search_vector(&embedder, "verify jwt token expiry", 5, 4)
+        .search_vector(&embedder, "verify jwt token expiry", 5, 4, None)
         .unwrap();
 
     assert_eq!(hits.first(), Some(&1u32));
@@ -31,7 +45,7 @@ fn rebuild_clears_stale_entries_from_a_previous_rebuild() {
         .unwrap();
     assert_eq!(
         storage
-            .search_vector(&embedder, "auth login", 5, 4)
+            .search_vector(&embedder, "auth login", 5, 4, None)
             .unwrap()
             .len(),
         1
@@ -43,7 +57,7 @@ fn rebuild_clears_stale_entries_from_a_previous_rebuild() {
         .rebuild_vector_index(&embedder, &[(2, "render html template".to_string())])
         .unwrap();
     let hits = storage
-        .search_vector(&embedder, "auth login", 5, 4)
+        .search_vector(&embedder, "auth login", 5, 4, None)
         .unwrap();
     assert!(!hits.contains(&1));
 }
@@ -58,9 +72,49 @@ fn search_respects_the_limit() {
     storage.rebuild_vector_index(&embedder, &chunks).unwrap();
 
     let hits = storage
-        .search_vector(&embedder, "auth handler", 2, 4)
+        .search_vector(&embedder, "auth handler", 2, 4, None)
         .unwrap();
     assert_eq!(hits.len(), 2);
+}
+
+/// SEC-01: the best-ranked candidate being masked must not shrink the
+/// result set — a visible runner-up must still surface, not get starved
+/// by a `truncate(limit)` that ran before masking was ever applied.
+#[test]
+fn search_does_not_starve_a_visible_runner_up_behind_a_masked_top_hit() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let embedder = MockEmbeddingProvider::new();
+    let secret_id = storage.upsert_node(&node("secret.rs")).unwrap();
+    let public_id = storage.upsert_node(&node("public.rs")).unwrap();
+    // `secret`'s chunk is the query text verbatim — deterministically the
+    // single best-scoring candidate, so an unmasked search at limit=1
+    // would return only `secret_id`. `public`'s chunk shares only some
+    // vocabulary, scoring lower but still a real, visible match.
+    storage
+        .rebuild_vector_index(
+            &embedder,
+            &[
+                (secret_id, "auth handler exact match".to_string()),
+                (public_id, "auth handler unrelated other words".to_string()),
+            ],
+        )
+        .unwrap();
+
+    let hide_secret = |n: &Node| n.path != "secret.rs";
+    let hits = storage
+        .search_vector(
+            &embedder,
+            "auth handler exact match",
+            1,
+            4,
+            Some(&hide_secret),
+        )
+        .unwrap();
+    assert_eq!(
+        hits,
+        vec![public_id],
+        "the visible node must survive even though it may rank second"
+    );
 }
 
 #[test]
@@ -69,7 +123,7 @@ fn search_against_an_empty_index_returns_no_matches() {
     let embedder = MockEmbeddingProvider::new();
     assert!(
         storage
-            .search_vector(&embedder, "anything", 5, 4)
+            .search_vector(&embedder, "anything", 5, 4, None)
             .unwrap()
             .is_empty()
     );

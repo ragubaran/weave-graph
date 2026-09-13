@@ -365,6 +365,87 @@ impl Registry {
         let state = self.repo_state(repo_id);
         state.head.lock().map(|h| h.pending).unwrap_or(0)
     }
+
+    /// Registry-side canvas aggregation (feature `hub-canvas`): renders the
+    /// latest committed snapshot's architectural modules. `None` when the
+    /// repo has never had a successful push — same "nothing to show yet"
+    /// semantics as [`Registry::pull`]'s `NotFound`.
+    #[cfg(feature = "hub-canvas")]
+    pub fn canvas(&self, repo_id: &str) -> Option<Result<crate::canvas::Canvas, String>> {
+        match self.pull(repo_id, "latest") {
+            PullResult::Found(bytes, _signature) => {
+                Some(crate::canvas::from_snapshot_bytes(&bytes))
+            }
+            PullResult::NotFound => None,
+        }
+    }
+
+    /// N-repo mesh view (feature `hub-canvas`): each requested repo's own
+    /// module canvas, stitched into one document via
+    /// [`crate::canvas::build_mesh_canvas`]. A repo with no committed
+    /// snapshot yet, or whose snapshot fails to render, is skipped rather
+    /// than failing the whole call — one bad/unpublished repo in the list
+    /// must never blank out the others.
+    #[cfg(feature = "hub-canvas")]
+    pub fn mesh_canvas(&self, repo_ids: &[String]) -> crate::canvas::Canvas {
+        let bands = repo_ids
+            .iter()
+            .filter_map(|repo_id| match self.canvas(repo_id) {
+                Some(Ok(canvas)) => Some((repo_id.clone(), canvas)),
+                _ => None,
+            })
+            .collect();
+        crate::canvas::build_mesh_canvas(bands)
+    }
+
+    /// Registers (or replaces) the one webhook URL notified on every
+    /// successful push for `repo_id` (feature `hub-webhooks`). Passing an
+    /// empty `url` removes the registration — the same "unset by writing
+    /// nothing" idiom `hub.url`'s own client-side config uses. Rejects a
+    /// URL that resolves to a loopback/private/link-local address up
+    /// front (`webhooks::validate_registerable`) — enforced here, the one
+    /// path every caller (HTTP route or otherwise) goes through, not only
+    /// at the HTTP layer above it.
+    #[cfg(feature = "hub-webhooks")]
+    pub fn set_webhook(&self, repo_id: &str, url: &str) -> std::io::Result<()> {
+        if !is_safe_path_component(repo_id) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unsafe repo_id: {repo_id:?}"),
+            ));
+        }
+        let store_dir = self.repo_store_dir(repo_id);
+        fs::create_dir_all(&store_dir)?;
+        let path = webhook_path(&store_dir);
+        if url.is_empty() {
+            let _ = fs::remove_file(&path);
+            return Ok(());
+        }
+        crate::webhooks::validate_registerable(url)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+        let tmp = store_dir.join("webhook.txt.tmp");
+        fs::write(&tmp, url)?;
+        fs::rename(&tmp, &path)
+    }
+
+    /// The URL registered for `repo_id`, if any (feature `hub-webhooks`).
+    #[cfg(feature = "hub-webhooks")]
+    pub fn webhook_url(&self, repo_id: &str) -> Option<String> {
+        read_webhook(&self.repo_store_dir(repo_id))
+    }
+}
+
+#[cfg(feature = "hub-webhooks")]
+fn webhook_path(store_dir: &Path) -> PathBuf {
+    store_dir.join("webhook.txt")
+}
+
+#[cfg(feature = "hub-webhooks")]
+fn read_webhook(store_dir: &Path) -> Option<String> {
+    fs::read_to_string(webhook_path(store_dir))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 struct SpoolJob {
@@ -444,7 +525,8 @@ fn worker_loop(
             continue;
         }
         for job in jobs {
-            commit_job(&store_dir, &job);
+            #[cfg_attr(not(feature = "hub-webhooks"), allow(unused_variables))]
+            let committed = commit_job(&store_dir, &job);
             let _ = fs::remove_file(&job.path);
             let sig_path = job
                 .path
@@ -453,13 +535,45 @@ fn worker_loop(
             if let Ok(mut head) = state.head.lock() {
                 head.pending -= 1;
             }
+            #[cfg(feature = "hub-webhooks")]
+            if committed {
+                dispatch_webhook(&store_dir, &repo_id, &job.sha, crate::webhooks::notify);
+            }
         }
     }
 }
 
-fn commit_job(store_dir: &Path, job: &SpoolJob) {
-    let Ok(bytes) = fs::read(&job.path) else {
+/// The worker's post-commit webhook step: looks up the one URL registered
+/// for this repo and, if any, calls `notifier`. Split out from
+/// [`worker_loop`] so this glue — "did we look up the right file and call
+/// with the right args" — is unit-testable with a recording closure,
+/// without needing a real network round trip through `notify`'s own
+/// SSRF-validated resolution (`worker_loop` always passes the real
+/// [`crate::webhooks::notify`]).
+#[cfg(feature = "hub-webhooks")]
+fn dispatch_webhook(
+    store_dir: &Path,
+    repo_id: &str,
+    sha: &str,
+    notifier: impl FnOnce(&str, &str, &str) -> Result<(), String>,
+) {
+    let Some(url) = read_webhook(store_dir) else {
         return;
+    };
+    // Best-effort, off the request-handling thread already — a slow or
+    // unreachable subscriber must never delay this worker's next commit
+    // any more than one log line.
+    if let Err(e) = notifier(&url, repo_id, sha) {
+        eprintln!("webhook dispatch to {url} for {repo_id}/{sha}: {e}");
+    }
+}
+
+/// Returns `true` once the blob, its optional signature, and `HEAD` are
+/// all durably written — the exact point [`worker_loop`]'s webhook
+/// dispatch (feature `hub-webhooks`) treats as "snapshot committed."
+fn commit_job(store_dir: &Path, job: &SpoolJob) -> bool {
+    let Ok(bytes) = fs::read(&job.path) else {
+        return false;
     };
     let dest = store_dir.join(format!("{}.tar.zst", job.sha));
     let tmp = store_dir.join(format!("{}.tar.zst.tmp", job.sha));
@@ -467,7 +581,7 @@ fn commit_job(store_dir: &Path, job: &SpoolJob) {
         .and_then(|_| fs::rename(&tmp, &dest))
         .is_err()
     {
-        return;
+        return false;
     }
 
     let sig_path = job
@@ -486,6 +600,9 @@ fn commit_job(store_dir: &Path, job: &SpoolJob) {
         .is_ok()
     {
         prune_retention(store_dir, job.retention);
+        true
+    } else {
+        false
     }
 }
 

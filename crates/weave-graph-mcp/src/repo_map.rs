@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use weave_graph_core::modules::{aggregate_file_edges, build_modules};
-use weave_graph_core::{CsrGraph, NodeId, Storage};
+use weave_graph_core::{CsrGraph, Node, NodeId, Storage};
 
 use crate::tools::{RepoMapArgs, RepoMapResult};
 
@@ -10,7 +10,18 @@ use crate::tools::{RepoMapArgs, RepoMapResult};
 /// degree; module-level mode (`args.module == Some(true)`) folds the
 /// file-dependency graph into Louvain modules first (M2.9) — one line
 /// per module, drill-down into files via `weave_file_api` unchanged.
-pub fn weave_repo_map(storage: &dyn Storage, csr: &CsrGraph, args: RepoMapArgs) -> RepoMapResult {
+///
+/// `mask` is M3.0's query-layer RBAC hook, applied once to the whole node
+/// list before any grouping — same pattern `weave_impact_radius` uses.
+/// Masked nodes all carry the same `<rbac: hidden>` path, so every masked
+/// file collapses into one aggregate bucket rather than leaking per-file
+/// structure for paths the identity can't see.
+pub fn weave_repo_map(
+    storage: &dyn Storage,
+    csr: &CsrGraph,
+    args: RepoMapArgs,
+    mask: Option<&dyn Fn(&Node) -> Node>,
+) -> RepoMapResult {
     let nodes = match storage.all_nodes() {
         Ok(n) => n,
         Err(e) => {
@@ -18,6 +29,10 @@ pub fn weave_repo_map(storage: &dyn Storage, csr: &CsrGraph, args: RepoMapArgs) 
                 text: format!("error: {e}"),
             };
         }
+    };
+    let nodes: Vec<Node> = match mask {
+        Some(m) => nodes.iter().map(m).collect(),
+        None => nodes,
     };
 
     if args.module.unwrap_or(false) {

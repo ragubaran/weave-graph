@@ -1,5 +1,5 @@
-//! `weave sync pull|push` (`impl.md` M2.5, `plan.md` §2.3) behind the `hub`
-//! Cargo feature. Pull hydrates a hub snapshot into `graph.db` through the
+//! `weave sync pull|push` behind the `hub` Cargo feature. Pull hydrates
+//! a hub snapshot into `graph.db` through the
 //! same `.rebuild`-then-atomic-rename path as every other write (Core
 //! Invariant 2); push publishes merge-only — never from a feature branch —
 //! and treats `409` as "republish the full snapshot", since graphs are
@@ -25,6 +25,21 @@ fn hub_url(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
         "No hub configured: set [hub] url in .weave/config.toml. Leaving it unset is a \
          fully supported permanent state — sync is opt-in."
             .into()
+    })
+}
+
+/// `[hub] token` (HUB-02) — omitted entirely for the still-fully-supported
+/// unauthenticated deployment; only attached when a deployment actually
+/// runs `weave-registry --auth-token`.
+fn hub_token(root: &Path) -> Option<String> {
+    config::get_key(&root.join(".weave").join("config.toml"), "hub.token").filter(|t| !t.is_empty())
+}
+
+fn hub_client(root: &Path) -> Result<HubClient, Box<dyn std::error::Error>> {
+    let client = HubClient::new(&hub_url(root)?, &repo_label(root))?;
+    Ok(match hub_token(root) {
+        Some(token) => client.with_token(token),
+        None => client,
     })
 }
 
@@ -60,20 +75,27 @@ pub(crate) fn cmd_sync_pull(
     commit: Option<&str>,
     fallback_latest: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let client = HubClient::new(&hub_url(root)?, &repo_label(root))?;
+    let client = hub_client(root)?;
     let sha = match commit {
         Some(explicit) => explicit.to_string(),
         None => git_merge_base(root)?,
     };
 
-    // `weave sync pull` has no provenance verifier wired yet — the
-    // signature sidecar is fetched but not checked, same as `push` above
-    // not signing (`hub-provenance`'s trait boundary exists, unused here).
+    // `weave` ships no `SnapshotProvenanceVerifier` of its own — verifying
+    // a signature is a deployment concern (`weave_graph_hub`'s trait is
+    // public under `hub-provenance` for exactly that integration), the
+    // same boundary this crate's doc provenance already draws elsewhere.
+    // What this crate *can* do honestly is stop discarding the signature
+    // the registry already returns — surfaced below instead of bound to `_`.
     let bytes = match client.pull(&sha)? {
-        PullOutcome::Found(bytes, _signature) => bytes,
+        PullOutcome::Found(bytes, signature) => {
+            report_signature(&signature);
+            bytes
+        }
         PullOutcome::NotFound if fallback_latest => match client.pull("latest")? {
-            PullOutcome::Found(bytes, _signature) => {
+            PullOutcome::Found(bytes, signature) => {
                 println!("No snapshot for {sha}; hydrated latest instead.");
+                report_signature(&signature);
                 bytes
             }
             PullOutcome::NotFound => {
@@ -109,20 +131,47 @@ pub(crate) fn cmd_sync_pull(
     Ok(())
 }
 
+/// Surfaces a pulled snapshot's recorded signature rather than discarding
+/// it — this crate verifies nothing (no `SnapshotProvenanceVerifier` is
+/// wired in), so "present" is reported as a fact, never as "verified".
+fn report_signature(signature: &Option<String>) {
+    match signature {
+        Some(sig) => println!(
+            "Snapshot signature on record: {sig} (not verified — `weave` ships no \
+             provenance verifier; wire one via `weave_graph_hub::SnapshotProvenanceVerifier` \
+             if your deployment needs to check it)."
+        ),
+        None => println!("Snapshot has no recorded signature."),
+    }
+}
+
 /// `weave sync push`: publish the current graph snapshot. Merge-only by
 /// construction — a feature branch is refused before any network call. The
 /// v1 payload is always the full snapshot (graphs are derived data;
 /// recompute-and-overwrite is the correct resolution on `409`), with the
 /// delta envelope's `base_commit_sha` carried as a header for the hub's
 /// fast-forward decision.
-pub(crate) fn cmd_sync_push(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+///
+/// `signature` comes from `weave sync push --signature <sig>` (or `None`
+/// if the flag is omitted, the default) — this crate ships no
+/// `SnapshotProvenanceVerifier` of its own (signing is a deployment
+/// concern, the same boundary this crate's doc provenance draws
+/// elsewhere), so there is nothing built in to sign with. The flag is the
+/// seam: an operator with a real signature (computed via
+/// `weave_graph_hub`'s public, `hub-provenance`-gated trait, or any other
+/// external signer) hands it in here rather than `weave` ever computing
+/// one itself.
+pub(crate) fn cmd_sync_push(
+    root: &Path,
+    signature: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let branch = crate::git::current_branch(root);
     match branch.as_deref() {
         Some("main") | Some("master") => {}
         Some(other) => {
             return Err(format!(
                 "Refusing to publish from branch '{other}' — the hub accepts publishes \
-                 only on the default branch (merge-only publish, plan.md §2.3)."
+                 only on the default branch (merge-only publish)."
             )
             .into());
         }
@@ -133,13 +182,20 @@ pub(crate) fn cmd_sync_push(root: &Path) -> Result<(), Box<dyn std::error::Error
         }
     }
 
-    let client = HubClient::new(&hub_url(root)?, &repo_label(root))?;
+    let client = hub_client(root)?;
     let target = crate::git::current_sha(root)
         .ok_or("Cannot determine HEAD commit — refusing to publish without a commit sha")?;
     let base = cache::read_last_indexed_sha(&root.join(".weave"));
     let payload = fs::read(data_db_path(root)?)?;
 
-    let outcome = push_with_backoff(&client, &target, base.as_deref(), retention(root), &payload)?;
+    let outcome = push_with_backoff(
+        &client,
+        &target,
+        base.as_deref(),
+        retention(root),
+        signature,
+        &payload,
+    )?;
     match outcome {
         PushOutcome::Published | PushOutcome::Accepted => {
             println!("Published snapshot for {target}.")
@@ -148,13 +204,19 @@ pub(crate) fn cmd_sync_push(root: &Path) -> Result<(), Box<dyn std::error::Error
             // v1 always sends the full snapshot, so a conflict is resolved by
             // republishing it — the hub's head simply moved. Bounded retry
             // loop with the same backoff+jitter as the rate-limit path
-            // (impl.md M2.5's originally-specified behavior, not just a
-            // single unconditional retry) since a busy hub can race a
-            // second concurrent publish into the same window.
+            // (not just a single unconditional retry) since a busy hub can
+            // race a second concurrent publish into the same window.
             let mut outcome = PushOutcome::Conflict;
             for attempt in 0..MAX_CONFLICT_RETRIES {
                 std::thread::sleep(std::time::Duration::from_millis(jitter_ms()));
-                outcome = push_with_backoff(&client, &target, None, retention(root), &payload)?;
+                outcome = push_with_backoff(
+                    &client,
+                    &target,
+                    None,
+                    retention(root),
+                    signature,
+                    &payload,
+                )?;
                 if !matches!(outcome, PushOutcome::Conflict) {
                     break;
                 }
@@ -192,18 +254,17 @@ pub(crate) fn cmd_sync_push(root: &Path) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-/// Runners back off exponentially with jitter on `429` (`impl.md` M3.1,
-/// `plan.md` §3.1) instead of failing on the first rate-limit response —
-/// the registry's watermark is expected to clear within a few seconds
+/// Runners back off exponentially with jitter on `429` instead of failing
+/// on the first rate-limit response — the registry's watermark is
+/// expected to clear within a few seconds
 /// under ordinary load. Jitter avoids a thundering herd of CI runners all
 /// retrying at the exact same instant; it's derived from wall-clock
 /// nanoseconds rather than a `rand` dependency this crate doesn't need
 /// elsewhere.
 const MAX_PUSH_ATTEMPTS: u32 = 5;
 
-/// Bounded retries for a `409 Conflict` republish (`impl.md` M2.5's
-/// originally-specified retry-with-backoff, not the single unconditional
-/// retry v1 shipped with).
+/// Bounded retries for a `409 Conflict` republish (retry-with-backoff,
+/// not a single unconditional retry).
 const MAX_CONFLICT_RETRIES: u32 = 3;
 
 /// Sub-second jitter derived from wall-clock nanoseconds, so concurrent
@@ -221,13 +282,11 @@ fn push_with_backoff(
     target_sha: &str,
     base_sha: Option<&str>,
     retention: usize,
+    signature: Option<&str>,
     payload: &[u8],
 ) -> Result<PushOutcome, Box<dyn std::error::Error>> {
     for attempt in 0..MAX_PUSH_ATTEMPTS {
-        // `weave sync push` has no provenance signer wired yet (`hub-provenance`'s
-        // trait boundary exists, but nothing in this module calls it) — `None`
-        // is today's real behavior, not a placeholder for one.
-        let outcome = client.push(target_sha, base_sha, retention, None, payload)?;
+        let outcome = client.push(target_sha, base_sha, retention, signature, payload)?;
         let PushOutcome::RateLimited { retry_after_secs } = outcome else {
             return Ok(outcome);
         };

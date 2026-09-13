@@ -55,7 +55,7 @@ Previous release: `v1.0.0`.
 ### Changes & Packaging Tiers
 
 - **Single-Engine Packaging**:
-  - Standard Normal Mode (`v1.0.1`, executable `weave`): ultra-small, single-engine SQLite stripped binary (<6.8 MB macOS / <7.2 MB Linux), <80 MB peak RAM. Default GA/Stable distribution.
+  - Standard Normal Mode (`v1.0.1`, executable `weave`): ultra-small, single-engine SQLite stripped binary (<6.8 MB macOS / <7.2 MB Linux — pre-measurement estimate, corrected to 41.1 MB by the real numbers in "Unreleased" above), <80 MB peak RAM. Default GA/Stable distribution.
   - Vector Mode (`v1.0.1-vector`, executable `weave`): single-engine SQLite + `sqlite-vec` virtual tables with binary/int8 quantization (<9.1 MB stripped). Note: vector mode is exclusively supported on SQLite; Turso does not natively support vector virtual tables.
 - **Turso Feature Mode (`v1.0.1-turso`, executable `weave`)**:
   - Available strictly for Normal Mode (no vector support), replacing SQLite with the libSQL embedded replica backend (<11.5 MB stripped).

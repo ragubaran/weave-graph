@@ -1,16 +1,26 @@
-//! `impl.md` M1.3's required bench: bytes-per-node ≤24, bytes-per-edge ≤8
-//! are **targets, not gates yet** (see M1.9). This measures load time via
-//! criterion and reports byte-size analytically rather than via runtime
-//! heap introspection — `petgraph::csr::Csr`'s internal `Vec`s aren't
-//! exposed for that, and adding a heap-profiling dependency just for this
-//! diagnostic isn't worth it at this milestone.
+//! Bytes-per-node/edge targets for the resource envelope: ≤24 bytes/node,
+//! ≤8 bytes/edge. This measures load time via criterion and reports
+//! byte-size analytically rather than via runtime heap introspection —
+//! `petgraph::csr::Csr`'s internal `Vec`s aren't exposed for that, and
+//! adding a heap-profiling dependency just for this diagnostic isn't
+//! worth it.
 //!
-//! Layout (`Csr<(), f64, Directed, u32>`): `row: Vec<u32>` (len n+1),
-//! `column: Vec<u32>` (len m), `edges: Vec<f64>` (len m), no node weight
-//! storage (`N = ()`). So bytes/node ≈ 4 (row entry), bytes/edge ≈ 12
-//! (4-byte column index + 8-byte weight) — already over the 8-byte/edge
-//! target with an `f64` weight; narrowing that is real M1.9 work, not
-//! something to fudge here. `CsrGraph`'s own id-compaction maps
+//! Layout (`Csr<(), (), Directed, u32>`, per `petgraph::csr::Csr`'s own
+//! source): `row: Vec<usize>` (len n+1 — **not** `Vec<u32>`, the row-index
+//! width is fixed regardless of the `Ix` type parameter), `column:
+//! Vec<NodeIndex<Ix>>` = `Vec<u32>` here (len m), `edges: Vec<()>` — zero
+//! bytes, `Vec<()>` never allocates (nothing in this crate ever reads an
+//! edge's weight back off the CSR, so it was dropped entirely; `Edge.weight`
+//! in the SQL model is untouched). So one direction costs bytes/node ≈ 8
+//! (row entry, `size_of::<usize>()`), bytes/edge ≈ 4 (column index only).
+//!
+//! `CsrGraph::load` (what this bench measures) only ever builds the
+//! **forward** direction — `reverse_csr` is built lazily, on first
+//! `callers_within` call, so a plain `load` never pays for it. The
+//! "forward + reverse" row below is the cost *if and when* `callers_within`
+//! is actually invoked (`weave blast --direction callers`/`both`), reported
+//! alongside the load-time number for context, not because `load` itself
+//! builds both. `CsrGraph`'s own id-compaction maps
 //! (`HashMap<NodeId, u32>` + `Vec<NodeId>`) add further overhead on top,
 //! reported separately since they're this crate's wrapper, not the CSR
 //! itself.
@@ -121,12 +131,23 @@ fn csr_memory(c: &mut Criterion) {
         let edge_count = storage.edges.len();
 
         // Analytical estimate — see module doc for the layout this assumes.
-        let csr_core_bytes = (node_count + 1) * 4 + edge_count * (4 + 8);
+        // `row` is `Vec<usize>` (petgraph's own field type, confirmed
+        // against its source — not `Vec<u32>`/`Vec<Ix>`), so its per-entry
+        // size is `size_of::<usize>()`, not a hardcoded constant. No weight
+        // term: `edges: Vec<()>` costs nothing (Fix A).
+        let row_entry_bytes = std::mem::size_of::<usize>();
+        let column_entry_bytes = std::mem::size_of::<u32>();
+        let one_direction_bytes =
+            (node_count + 1) * row_entry_bytes + edge_count * column_entry_bytes;
         let compaction_bytes = node_count * (4 + 4); // id_to_index entry + index_to_id entry, ignoring HashMap load-factor overhead
         eprintln!(
-            "n={node_count} m={edge_count}: csr core ~{:.1} bytes/node, ~{:.1} bytes/edge; +compaction maps ~{:.1} bytes/node",
-            csr_core_bytes as f64 / node_count as f64,
-            (edge_count * 12) as f64 / edge_count.max(1) as f64,
+            "n={node_count} m={edge_count}: csr core (load, forward only) ~{:.1} bytes/node, ~{:.1} bytes/edge; \
+             if callers_within is ever called (forward+reverse) ~{:.1} bytes/node, ~{:.1} bytes/edge; \
+             +compaction maps ~{:.1} bytes/node",
+            one_direction_bytes as f64 / node_count as f64,
+            (edge_count * column_entry_bytes) as f64 / edge_count.max(1) as f64,
+            (one_direction_bytes * 2) as f64 / node_count as f64,
+            (edge_count * column_entry_bytes * 2) as f64 / edge_count.max(1) as f64,
             compaction_bytes as f64 / node_count as f64,
         );
 

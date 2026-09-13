@@ -28,8 +28,27 @@ fn parse_args_accepts_all_four_required_flags() {
             data_dir: PathBuf::from("/tmp/registry-data"),
             max_queue_depth_per_repo: 50,
             max_pushes_per_minute_per_repo: 20,
+            auth_token: None,
         }
     );
+}
+
+#[test]
+fn parse_args_accepts_an_optional_auth_token() {
+    let parsed = parse_args(args(&[
+        "--bind",
+        "127.0.0.1:8080",
+        "--data-dir",
+        "/tmp/registry-data",
+        "--max-queue-depth-per-repo",
+        "50",
+        "--max-pushes-per-minute-per-repo",
+        "20",
+        "--auth-token",
+        "s3cr3t",
+    ]))
+    .unwrap();
+    assert_eq!(parsed.auth_token.as_deref(), Some("s3cr3t"));
 }
 
 #[test]
@@ -107,6 +126,7 @@ fn build_server_opens_a_real_registry_and_binds_a_real_loopback_port() {
         data_dir: dir.path().to_path_buf(),
         max_queue_depth_per_repo: 10,
         max_pushes_per_minute_per_repo: 10,
+        auth_token: None,
     };
     let server = build_server(&args).unwrap();
     assert!(server.local_addr().unwrap().port() > 0);
@@ -120,6 +140,7 @@ fn build_server_reports_a_clear_error_for_an_unbindable_address() {
         data_dir: dir.path().to_path_buf(),
         max_queue_depth_per_repo: 10,
         max_pushes_per_minute_per_repo: 10,
+        auth_token: None,
     };
     let err = build_server(&args).err().expect("expected a bind error");
     assert!(err.contains("failed to bind"), "got: {err}");

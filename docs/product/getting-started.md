@@ -10,7 +10,11 @@
 brew tap weave-graph/tap && brew install weave
 
 # Cargo (crates.io / Rust Toolchain)
+# Recommended team build (includes Single mode, Multi-repo federation, and Markdown docs)
 cargo install weave-graph-cli --features team
+
+# Enterprise build (includes RBAC, OTel, Policy Linting, Hub Registry, and Vector search)
+cargo install weave-graph-cli --features custom
 
 # npm / npx (Zero-install instant execution for AI agents)
 npx @weave-graph/cli serve --mcp
@@ -26,104 +30,135 @@ Requires a Rust 2024-edition toolchain (`rustc 1.93+`):
 git clone https://github.com/ragubaran/weave-graph.git
 cd weave-graph
 cargo build --release -p weave-graph-cli --features team
-```
-
-The binary lands at `target/release/weave`. Put it on your `$PATH`:
-
-```bash
 cp target/release/weave ~/.local/bin/
 ```
 
-`--features team` (`docs` + `federation`) is the recommended default build —
-it covers Single mode and Multiple mode. A bare `cargo build --release`
-with no `--features` also works and produces a smaller binary that only
-supports Single mode. See [Features](features.md) for every other flag and
-[CLI Reference](cli-reference.md) for the full command list.
+- `--features team` (`docs` + `federation`) is the recommended default build for developers and teams.
+- A bare `cargo build --release` with no flags produces the default 41.1 MB binary (all 29 languages linked in, since `lang-extended` is on by default). For the smallest binary, add `--no-default-features` explicitly — that's the build that gets to 9.6 MB (8 core languages only).
+- `--features custom` builds the full self-hosted enterprise suite. See [Self-Hosted](self-hosted.md) and [Features](features.md).
 
-## Single mode — one repo, one developer
+---
 
-No Cargo features required.
+## 1. Single Repository Mode — Local Developer Workflow
+
+No optional features required. Operates 100% locally with zero cloud egress.
 
 ```bash
 cd my-repo
 weave init --mode single       # writes .weave/config.toml
-weave index                    # builds .weave/graph.db from your source tree
+weave index                    # indexes 29 languages into .weave/graph.db
 weave query "callers(AuthService.verify)"
-weave report                   # writes WEAVE_REPORT.md + a .canvas file
-weave serve --mcp              # local MCP server for AI agents (stdio, loopback-only)
+weave report                   # writes WEAVE_REPORT.md + interactive .canvas file
+weave serve --mcp              # starts local MCP server for AI coding agents
 ```
 
-`.weave/` is where `weave` keeps its state — it's yours to `.gitignore`
-(`weave init` adds the entry automatically) since it's a derived index, not
-source of truth.
+`.weave/` is where `weave` keeps its index — it is added to `.gitignore` automatically since it is a derived cache, not source of truth.
 
-### Querying the graph
-
-`weave query` understands four expression forms:
+### Querying the Graph
+`weave query` provides deterministic traversal expressions:
 
 ```bash
-weave query "callers(AuthService.verify)"   # who calls this symbol
-weave query "callees(AuthService.verify)"   # what this symbol calls
-weave query "impact(AuthService.verify)"    # full transitive blast radius
-weave query "path(main, AuthService.verify)" # shortest call chain between two symbols
+weave query "callers(AuthService.verify)"     # Inbound calls (who calls this symbol)
+weave query "callees(AuthService.verify)"     # Outbound calls (what this symbol calls)
+weave query "impact(AuthService.verify)"      # Transitive blast radius across all hops
+weave query "path(main, AuthService.verify)"  # Shortest call chain between two symbols
 ```
 
-### Keeping the index current
-
+### Keeping the Index Current
 ```bash
-weave index --incremental   # touch only files changed since the last index
-weave status                # summary: file/symbol/edge counts, pending markers
+weave index --incremental     # Reindexes only changed files
+weave status                  # Summary: files, symbols, edges, and pending markers
 ```
 
-An incremental reindex falls back to a full rebuild automatically once the
-changed-file ratio crosses a configurable threshold — see
-[Configuration](configuration.md#index). For automatic reindexing on file
-save, see the `watch` feature in [Features](features.md#watch).
+Every `weave index` run takes an advisory file lock (`.weave/index.lock`). If two processes run concurrently (e.g. pre-commit hook and an IDE agent), the second process safely **blocks and waits its turn**. Reads (`weave query`, `weave serve --mcp`) run concurrently without blocking via SQLite WAL mode.
 
-Every `weave index` run takes an advisory file lock
-(`.weave/index.lock`) for the duration of the write, so two concurrent
-`weave index` invocations against the same repo (e.g. a pre-commit hook
-and a CI job racing each other) never interleave writes. A second
-invocation **blocks and waits its turn** rather than failing — it prints
-`waiting for indexer (PID <pid>)...` and proceeds once the first finishes.
-Reads (`weave query`, `weave serve --mcp`, etc.) are never blocked by
-this lock; SQLite's WAL mode already allows any number of concurrent
-readers alongside the one writer.
+---
 
-## Multiple mode: several local repos, no hosted service
+## 2. Multiple Repository Mode — Federation Across Local Repos
 
-Needs a build with `federation` (the default `team` bundle already
-includes it — see Install above). Composes each repo's already-indexed
-graph locally; no server, no network call.
+Requires `--features team` (or `federation`). Composes separate repository graphs **locally without a centralized server or network traffic**.
 
+### Initializing Multi-Repo Workspaces
+In each repository of your ecosystem:
 ```bash
-(cd repo-a && weave init --mode multiple && weave index)
-(cd repo-b && weave init --mode multiple && weave index)
+cd services/auth-service
+weave init --mode multiple
+weave index
 
-weave link repo-a repo-b     # records each repo's contract hash as the other's expectation
+cd ../../services/payment-service
+weave init --mode multiple
+weave index
 ```
 
-`weave link` records contract expectations but doesn't yet write
-`linked_repos` back into `config.toml` for you — add it once, by hand
-(`--mode multiple` already scaffolds the `[federation]` section):
-
+`--mode multiple` configures the `[federation]` section in `.weave/config.toml`:
 ```toml
-# repo-a/.weave/config.toml
+# services/payment-service/.weave/config.toml
+mode = "multiple"
+
 [federation]
-linked_repos = ["../repo-b"]
+linked_repos = ["../auth-service"]
 staleness_policy = "strict"   # warn | strict | ignore
 ```
 
+### Linking Repositories
+Link repositories to compose their graphs and establish cryptographic contract baselines:
 ```bash
-cd repo-a && weave check-contracts   # CI gate on divergent public API boundaries
+weave link services/payment-service services/auth-service
+```
+- Discovers cross-repo call edges and API dependencies.
+- Runs Tarjan's Strongly Connected Components (SCC) to detect multi-repo circular dependencies.
+- Computes SHA-256 contract hashes of each repository's exported public API and records them as mutual expectations.
+
+### Cross-Repository Queries
+Query across the combined multi-repo boundary:
+```bash
+weave query-federated services/payment-service services/auth-service "callers(AuthService.verify)"
+```
+Traces call paths starting in `auth-service` that are triggered by handlers in `payment-service`.
+
+### Unified Multi-Repo Architecture Canvas
+Render an Obsidian JSON Canvas covering all linked repositories:
+```bash
+weave report-federated services/payment-service services/auth-service --out FEDERATED_MAP.canvas
 ```
 
-## Next steps
+### Automated CI Contract Gates
+Enforce contract compatibility in CI pull requests before merging breaking changes:
+```bash
+cd services/payment-service
+weave check-contracts --diff --scoped
+```
+- `--diff`: Displays symbol-level added, changed, and removed API declarations.
+- `--scoped`: Validates only the exact subset of symbols imported by the consuming repository, avoiding false alarms on unrelated changes.
+- Exits non-zero on violations when `staleness_policy = "strict"`.
 
-- [Features](features.md) — every optional capability (Markdown ingestion,
-  pinned agent notes, the file watcher, PR blast-radius comments, an
-  offline HTML viewer, snapshot sync, natural-language querying, alternate
-  storage backends, Python bindings).
-- [MCP Integration](mcp-integration.md) — connect `weave serve --mcp` to
-  Claude Code, Claude Desktop, Cursor, or any other MCP client.
-- [CLI Reference](cli-reference.md) — every command and flag, in one place.
+### Cross-Repo Deprecation Migration Planning
+Before deprecating an API in a shared library or service, generate an impact and migration plan:
+```bash
+cd services/auth-service
+weave plan-migration --symbol "TokenValidator.verify_v1"
+```
+Outputs every file, line number, and consuming symbol across all linked repositories that must be updated.
+
+---
+
+## 3. Self-Hosted & Enterprise Custom Mode
+
+For centralized team infrastructure, private cloud VPCs, or compliance environments, Weave Graph provides the **Custom Mode Profile** (`--features custom`).
+
+- **Role-Based Access Control (RBAC)**: Query-layer security masking across CLI, reports, and MCP tools. Identity comes from `.weave/config.toml`'s `[rbac.users]` (a static subject→roles map) or, for enterprise provisioning, a loopback SCIM 2.0 endpoint (`weave rbac serve-scim`) any SCIM-capable IdP can push to — there's no GitHub-specific or OAuth integration.
+- **Architectural Policy Linting**: Declare architectural layers in `.weave/policy.yaml` and gate CI pull requests with `weave policy lint`.
+- **Distributed Traces & Telemetry**: Import OTLP JSON traces (`weave traces import`) to overlay p50/p95/p99 latencies directly on graph symbols.
+- **Schema Registry & Snapshot Hub**: Centralized snapshot synchronization with the standalone `weave-registry` daemon — atomic file-swap hydration (`weave sync pull`) instead of a cold re-parse.
+
+👉 **Read the comprehensive [Self-Hosted & Enterprise Deployment Guide](self-hosted.md) for full configuration, setup instructions, and architecture patterns.**
+
+---
+
+## Next Steps
+
+- **[CLI Reference](cli-reference.md)** — Complete command reference grouped by Profile/Tier.
+- **[Configuration Reference](configuration.md)** — `.weave/config.toml` options and environment variables.
+- **[Features](features.md)** — In-depth breakdown of optional Cargo features.
+- **[Self-Hosted Guide](self-hosted.md)** — Enterprise deployment, RBAC, SSO, and Policy Linting.
+- **[MCP Integration](mcp-integration.md)** — Setting up Claude Code, Cursor, or Windsurf with `weave serve --mcp`.

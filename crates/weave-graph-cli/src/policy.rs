@@ -103,7 +103,8 @@ pub(crate) fn cmd_policy_lint(
     #[cfg(not(feature = "rbac"))]
     let (visible, _) = (None::<&dyn Fn(&Node) -> bool>, as_subject);
 
-    let view = visible_view(&storage, visible)?;
+    let (all_nodes, all_edges) = fetch_graph(&storage)?;
+    let view = filter_view(all_nodes, all_edges, visible);
     let violations = weave_graph_core::policy::lint(&view.nodes, &view.edges, &rules);
 
     println!("Policy: {} rule(s) from {}", rules.len(), POLICY_FILE);
@@ -156,9 +157,22 @@ pub(crate) fn cmd_policy_drift(
     #[cfg(not(feature = "rbac"))]
     let (visible, _) = (None::<&dyn Fn(&Node) -> bool>, as_subject);
 
-    let view = visible_view(&storage, visible)?;
+    let (all_nodes, all_edges) = fetch_graph(&storage)?;
+    // POL-03: a masked view can sever a public file's only inbound edges
+    // (they came from a hidden module), making it falsely look orphaned.
+    // Computed from the same already-fetched `all_nodes`/`all_edges` — one
+    // `Storage` round-trip total, not two, and no second full node/edge
+    // `Vec` held alongside the masked one (Invariant 4's RAM envelope).
+    let unmasked_orphans = visible.is_some().then(|| {
+        weave_graph_core::policy::orphan_files(&all_nodes, &all_edges)
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>()
+    });
+
+    let view = filter_view(all_nodes, all_edges, visible);
     let cycles = weave_graph_core::policy::find_cycles(&view.nodes, &view.edges);
     let orphans = weave_graph_core::policy::orphan_files(&view.nodes, &view.edges);
+    let truly_orphaned = unmasked_orphans.unwrap_or_else(|| orphans.iter().cloned().collect());
 
     println!("Drift report:");
     if cycles.is_empty() {
@@ -177,7 +191,11 @@ pub(crate) fn cmd_policy_drift(
             orphans.len()
         );
         for file in &orphans {
-            println!("    {file}");
+            if truly_orphaned.contains(file) {
+                println!("    {file}");
+            } else {
+                println!("    {file} (has hidden inbound edges)");
+            }
         }
     }
     Ok(())
@@ -194,11 +212,24 @@ struct GraphView {
     skipped_edges: usize,
 }
 
-fn visible_view(
+/// The one `Storage` round-trip lint/drift both pay — callers that also
+/// need the raw, unfiltered graph (POL-03's drift comparison) get it from
+/// this same fetch instead of querying storage a second time.
+fn fetch_graph(
     storage: &dyn weave_graph_core::Storage,
+) -> Result<(Vec<Node>, Vec<Edge>), Box<dyn std::error::Error>> {
+    Ok((storage.all_nodes()?, storage.all_edges()?))
+}
+
+/// Pure in-memory filter (no I/O): nodes kept per the caller's visibility
+/// predicate, edges kept only when both endpoints survived. Cross-module
+/// classification needs both sides; a half-visible edge is unclassifiable
+/// and counted, never guessed about.
+fn filter_view(
+    all_nodes: Vec<Node>,
+    all_edges: Vec<Edge>,
     visible: Option<&dyn Fn(&Node) -> bool>,
-) -> Result<GraphView, Box<dyn std::error::Error>> {
-    let all_nodes = storage.all_nodes()?;
+) -> GraphView {
     let (nodes, hidden_nodes) = match visible {
         Some(check) => {
             let mut nodes = Vec::new();
@@ -215,7 +246,6 @@ fn visible_view(
         None => (all_nodes, 0),
     };
     let visible_ids: std::collections::HashSet<u32> = nodes.iter().map(|n| n.id).collect();
-    let all_edges = storage.all_edges()?;
     let mut edges = Vec::new();
     let mut skipped_edges = 0usize;
     for edge in all_edges {
@@ -225,12 +255,12 @@ fn visible_view(
             skipped_edges += 1;
         }
     }
-    Ok(GraphView {
+    GraphView {
         nodes,
         edges,
         hidden_nodes,
         skipped_edges,
-    })
+    }
 }
 
 /// The M2.4.4 composition (`impl.md` M3.2): confirmed ADR obligations are

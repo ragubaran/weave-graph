@@ -34,11 +34,13 @@ pub(crate) fn extract(language: Language, root: Node, source: &[u8], path: &str)
         Language::Rust => rust::extract(root, source, path),
         Language::Python => python::extract(root, source, path),
         Language::JavaScript => ecma::extract(root, source, path, false),
-        Language::TypeScript => ecma::extract(root, source, path, true),
+        Language::TypeScript | Language::ArkTs => ecma::extract(root, source, path, true),
         Language::Go => go::extract(root, source, path),
         Language::Java => java::extract(root, source, path),
         Language::C => c::extract(root, source, path),
-        Language::Cpp => cpp::extract(root, source, path),
+        Language::Cpp | Language::ObjC | Language::Metal | Language::Cuda => {
+            cpp::extract(root, source, path)
+        }
         Language::CSharp => csharp::extract(root, source, path),
         Language::Dart => dart::extract(root, source, path),
         Language::Elixir => elixir::extract(root, source, path),
@@ -50,9 +52,14 @@ pub(crate) fn extract(language: Language, root: Node, source: &[u8], path: &str)
         Language::Php => php::extract(root, source, path),
         Language::Bash => bash::extract(root, source, path),
         Language::PowerShell => powershell::extract(root, source, path),
-        Language::Lua => lua::extract(root, source, path),
+        Language::Lua | Language::Luau => lua::extract(root, source, path),
         Language::Sql => sql::extract(root, source, path),
-        Language::Html => html::extract(root, source, path),
+        Language::Html
+        | Language::Svelte
+        | Language::Vue
+        | Language::Astro
+        | Language::Liquid
+        | Language::Cfml => html::extract(root, source, path),
         Language::Css => css::extract(root, source, path),
         Language::R => r::extract(root, source, path),
         // Universal fallback: ANY other language runs through query_vm automatically!

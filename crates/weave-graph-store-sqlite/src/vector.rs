@@ -107,12 +107,18 @@ pub(crate) fn rebuild(
 /// doesn't recognize its own KNN constraint once an extra predicate joins
 /// it. A plain (non-KNN) row read of the stored `int8_vec` bytes for
 /// exactly the stage-1 candidates has no such restriction.
+///
+/// `visible` (SEC-01) filters candidates *before* `truncate(limit)`, not
+/// after — filtering post-truncation starves `limit` of any masked hit
+/// ranked ahead of a visible one, sometimes down to zero results, and lets
+/// a caller infer a hidden file's existence from the result-count drop.
 pub(crate) fn search(
     conn: &Connection,
     embedder: &dyn EmbeddingProvider,
     query_text: &str,
     limit: usize,
     oversample: usize,
+    visible: Option<&dyn Fn(NodeId) -> bool>,
 ) -> Result<Vec<NodeId>, StorageError> {
     let query = embedder.embed(query_text);
     let query_bytes: Vec<u8> = query.iter().flat_map(|f| f.to_le_bytes()).collect();
@@ -156,6 +162,9 @@ pub(crate) fn search(
             Ok((id, dot))
         })
         .collect::<Result<_, StorageError>>()?;
+    if let Some(visible) = visible {
+        scored.retain(|(id, _)| visible(*id));
+    }
     scored.sort_by(|a, b| b.1.total_cmp(&a.1));
     scored.truncate(limit);
     Ok(scored.into_iter().map(|(id, _)| id).collect())

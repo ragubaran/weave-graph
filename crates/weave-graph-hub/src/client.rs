@@ -95,6 +95,7 @@ fn parse_url(base: &str) -> Result<ParsedUrl, HubError> {
 pub struct HubClient {
     url: ParsedUrl,
     repo_id: String,
+    auth_token: Option<String>,
 }
 
 impl HubClient {
@@ -102,7 +103,16 @@ impl HubClient {
         Ok(Self {
             url: parse_url(base_url)?,
             repo_id: repo_id.to_string(),
+            auth_token: None,
         })
+    }
+
+    /// Attaches `Authorization: Bearer <token>` to every request this
+    /// client makes (HUB-02) — matches a `weave-registry --auth-token`
+    /// deployment; a no-op call to `bind`'s unauthenticated default.
+    pub fn with_token(mut self, token: impl Into<String>) -> Self {
+        self.auth_token = Some(token.into());
+        self
     }
 
     /// `GET {prefix}/snapshots/{repo_id}/{commit_sha}.tar.zst`. `404` maps to
@@ -281,6 +291,9 @@ impl HubClient {
         );
         for (name, value) in headers {
             req.push_str(&format!("{name}: {value}\r\n"));
+        }
+        if let Some(token) = &self.auth_token {
+            req.push_str(&format!("Authorization: Bearer {token}\r\n"));
         }
         if method == "PUT" {
             req.push_str(&format!("Content-Length: {}\r\n", payload.len()));

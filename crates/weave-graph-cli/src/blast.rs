@@ -1,5 +1,5 @@
-//! `weave blast --base <ref>` (impl.md M2.12): PR blast-radius comment
-//! mode. File-level touched-symbol mapping (documented precision limit —
+//! `weave blast --base <ref>`: PR blast-radius comment mode. File-level
+//! touched-symbol mapping (documented precision limit —
 //! every symbol `all_nodes` reports in a changed file counts as touched),
 //! per-symbol `reachable_within` union, module-folded markdown at the
 //! 200-node budget. Prints to stdout or a file; no GitHub networking —
@@ -15,8 +15,9 @@ use weave_graph_core::{NodeId, Storage};
 use weave_graph_parse::{Language, contract};
 
 /// At or below this many impacted symbols the markdown lists them
-/// individually; above it, module folding keeps the output bounded
-/// (M1.8's 200-node budget discipline repointed at the PR comment).
+/// individually; above it, module folding keeps the output bounded — a
+/// PR comment with thousands of bullet points is unreadable regardless
+/// of how accurate it is.
 const SYMBOL_BUDGET: usize = 200;
 
 pub(crate) struct BlastReport {
@@ -30,12 +31,24 @@ pub(crate) struct BlastReport {
     /// modules containing at least one impacted symbol.
     pub(crate) modules: Vec<(String, usize, usize, Vec<String>)>,
     /// Directly-edited symbols (not the transitive `impacted` set) that
-    /// are part of this repo's exported contract surface (`impl.md`
-    /// M2.2's own `visibility_rule` — the same heuristic `check-contracts`
-    /// hashes and RBAC masks by, reused rather than re-derived). Lets a
+    /// are part of this repo's exported contract surface, per
+    /// `contract::visibility_rule` — the same heuristic `check-contracts`
+    /// hashes by, reused rather than re-derived. Lets a
     /// reviewer see "this diff touches the public API" without waiting
     /// for a separate `weave check-contracts` run on the consumer side.
     pub(crate) exported_touched: Vec<(String, String, u32)>,
+}
+
+/// `impl.md` M3.10: `weave blast`'s waiver inputs, bundled the same way
+/// `contracts::CheckContractsWaiver` is — `main.rs` reads
+/// `WEAVE_SKIP_BLAST` once and hands the value in. `Default` is the
+/// no-waiver case every call site that isn't exercising M3.10 wants.
+#[derive(Default)]
+pub(crate) struct BlastWaiver<'a> {
+    pub(crate) skip: bool,
+    pub(crate) reason: Option<&'a str>,
+    pub(crate) as_subject: Option<&'a str>,
+    pub(crate) skip_env: Option<&'a str>,
 }
 
 pub(crate) fn cmd_blast(
@@ -43,8 +56,37 @@ pub(crate) fn cmd_blast(
     base: &str,
     format: &str,
     out: Option<&Path>,
+    depth: &str,
+    direction: &str,
+    waiver: BlastWaiver,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let report = compute(root, base)?;
+    let via_env = crate::waiver::is_truthy(waiver.skip_env);
+    if waiver.skip || via_env {
+        crate::waiver::authorize(root, waiver.as_subject)?;
+        let reason = if waiver.skip {
+            crate::waiver::require_reason(waiver.reason)?
+        } else {
+            "WEAVE_SKIP_BLAST is set".to_string()
+        };
+        let notice = crate::waiver::emit_banner("weave blast", &reason);
+        let text = match format {
+            "json" => serde_json::to_string_pretty(&serde_json::json!({
+                "skipped": true,
+                "reason": reason,
+            }))?,
+            _ => format!("{notice}\n_Blast radius computation skipped._\n"),
+        };
+        match out {
+            Some(path) => {
+                std::fs::write(path, text)?;
+                println!("Blast report written to {} (skipped)", path.display());
+            }
+            None => print!("{text}"),
+        }
+        return Ok(());
+    }
+
+    let report = compute(root, base, depth, direction)?;
     let text = match format {
         "json" => render_json(&report)?,
         "md" | "markdown" => render_markdown(&report),
@@ -60,10 +102,26 @@ pub(crate) fn cmd_blast(
     Ok(())
 }
 
+/// `"all"`/`"max"` means unbounded; anything else parses as a hop count,
+/// falling back to the default (`2`) on garbage input rather than erroring
+/// — a PR-comment tool shouldn't hard-fail CI over a typo'd flag.
+fn parse_depth(arg: &str) -> u32 {
+    match arg {
+        "all" | "max" => u32::MAX,
+        other => other.parse::<u32>().unwrap_or(2),
+    }
+}
+
 /// One `Storage` + one `CsrGraph`, loaded once and reused across every
-/// touched symbol's traversal — never a per-symbol reopen (M2.12's own
-/// acceptance criterion).
-fn compute(root: &Path, base: &str) -> Result<BlastReport, Box<dyn std::error::Error>> {
+/// touched symbol's traversal — never a per-symbol reopen, which would
+/// scale open/parse cost with the number of touched symbols instead of
+/// staying constant.
+fn compute(
+    root: &Path,
+    base: &str,
+    depth: &str,
+    direction: &str,
+) -> Result<BlastReport, Box<dyn std::error::Error>> {
     let changed_files = git::blast_since(root, base)?;
 
     let (storage, _db_path) = crate::open_storage_for_read(root)?;
@@ -87,9 +145,22 @@ fn compute(root: &Path, base: &str) -> Result<BlastReport, Box<dyn std::error::E
     // transitive reachability set) previously paid a per-element hash
     // insertion for every node on every union instead of one compressed
     // bitwise OR.
+    let max_hops = parse_depth(depth);
     let mut impacted = roaring::RoaringBitmap::new();
     for node in &touched {
-        impacted |= csr.reachable_within(node.id, u32::MAX);
+        impacted |= match direction {
+            "callers" => csr.callers_within(node.id, max_hops),
+            "callees" => csr.reachable_within(node.id, max_hops),
+            "both" => {
+                csr.callers_within(node.id, max_hops) | csr.reachable_within(node.id, max_hops)
+            }
+            other => {
+                return Err(format!(
+                    "unknown direction `{other}` (expected callers, callees, or both)"
+                )
+                .into());
+            }
+        };
     }
     let mut impacted_list: Vec<(String, String, u32)> = impacted
         .iter()

@@ -265,6 +265,7 @@ fn extract_toml(root: Node, source: &[u8], path: &str, file: &mut ParsedFile) {
 /// per-language node-kind list, just substring matching on the kind name.
 const SYMBOL_KIND_MARKERS: &[(&str, SymbolKind)] = &[
     ("class", SymbolKind::Class),
+    ("contract", SymbolKind::Class),
     ("interface", SymbolKind::Interface),
     ("struct", SymbolKind::Struct),
     ("method", SymbolKind::Method),

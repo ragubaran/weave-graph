@@ -29,6 +29,7 @@ fn returns_only_requested_file_symbols() {
             paths: &["a.rs"],
             max_tokens: None,
         },
+        None,
     );
     assert_eq!(result.cards.len(), 1);
     assert_eq!(result.cards[0].path, "a.rs");
@@ -47,6 +48,7 @@ fn symbols_are_ordered_by_span() {
             paths: &["a.rs"],
             max_tokens: None,
         },
+        None,
     );
     assert_eq!(result.cards[0].symbols[0].symbol, "fn_a");
     assert_eq!(result.cards[0].symbols[1].symbol, "fn_b");
@@ -63,9 +65,46 @@ fn missing_path_returns_empty_card() {
             paths: &["missing.rs"],
             max_tokens: None,
         },
+        None,
     );
     assert_eq!(result.cards.len(), 1);
     assert!(result.cards[0].symbols.is_empty());
+}
+
+#[test]
+fn rbac_masked_files_report_redacted_symbols_not_an_empty_card() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    storage
+        .upsert_node(&node("src/payment/core.rs", "charge_card", 1))
+        .unwrap();
+
+    let mask = |n: &Node| Node {
+        id: n.id,
+        repo_id: n.repo_id.clone(),
+        path: "<rbac: hidden>".to_string(),
+        symbol: "<rbac: hidden>".to_string(),
+        kind: "<rbac: hidden>".to_string(),
+        line_start: 0,
+        line_end: 0,
+        signature: String::new(),
+    };
+    let result = weave_file_api(
+        &storage,
+        FileApiArgs {
+            paths: &["src/payment/core.rs"],
+            max_tokens: None,
+        },
+        Some(&mask),
+    );
+    assert_eq!(result.cards.len(), 1);
+    assert_eq!(result.cards[0].path, "src/payment/core.rs");
+    assert_eq!(
+        result.cards[0].symbols.len(),
+        1,
+        "the real symbol count survives masking"
+    );
+    assert_eq!(result.cards[0].symbols[0].symbol, "<rbac: hidden>");
+    assert_eq!(result.cards[0].symbols[0].signature, "");
 }
 
 // ─── impl.md M2.16: token-budgeted shedding tiers ───────────────────────────

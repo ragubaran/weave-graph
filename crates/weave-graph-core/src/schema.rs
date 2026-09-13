@@ -1,5 +1,5 @@
-//! The schema every `Storage` backend must produce (`plan.md` §1.1),
-//! expressed as backend-agnostic SQL constants. Lives in core because
+//! The schema every `Storage` backend must produce, expressed as
+//! backend-agnostic SQL constants. Lives in core because
 //! every store crate shares it — and because `rusqlite`'s bundled
 //! `libsqlite3-sys` and `libsql-ffi` both statically define the SQLite C
 //! symbols, the store crates can never be linked into one binary, so the
@@ -7,9 +7,9 @@
 
 /// Highest schema version any migration in `MIGRATIONS` brings a database
 /// to — round-trip tests assert against it.
-pub const LATEST_SCHEMA_VERSION: u32 = 5;
+pub const LATEST_SCHEMA_VERSION: u32 = 6;
 
-/// Base schema (`plan.md` §1.1): `nodes`, `edges`, `doc_links`, `contracts`,
+/// Base schema: `nodes`, `edges`, `doc_links`, `contracts`,
 /// `schema_version`. Unique indices on each table's natural key make
 /// `upsert_node`/`upsert_edge` idempotent under `INSERT ... ON CONFLICT`.
 pub const V1_CREATE_TABLES: &str = "
@@ -59,7 +59,7 @@ CREATE TABLE schema_version (
 );
 ";
 
-/// M1.4's per-file purge (`DELETE FROM edges WHERE source_id IN (SELECT id
+/// Per-file purge (`DELETE FROM edges WHERE source_id IN (SELECT id
 /// FROM nodes WHERE path = ?) OR target_id IN (...)`) and traversal both
 /// need these — added as a real migration (not folded into v1) so the
 /// upgrade-an-existing-db path is exercised now while it's cheap.
@@ -69,19 +69,20 @@ CREATE INDEX idx_edges_target ON edges(target_id);
 CREATE INDEX idx_nodes_repo_path ON nodes(repo_id, path);
 ";
 
-/// M2.3 (`provenance` feature): nullable provider-signature columns on
+/// `provenance` feature: nullable provider-signature columns on
 /// `doc_links`. Unconditional — schema version must not depend on Cargo
-/// features, and M1.1 already set the pre-add-columns precedent. The
-/// commit column exists because the Merkle root is a one-way hash: the
-/// record must round-trip `(doc_id, commit_hash, root, signature)` in
-/// full for `verify` to recompute the root after a store read.
+/// features, and every ALTER TABLE migration here follows the same
+/// add-columns-unconditionally precedent. The commit column exists because
+/// the Merkle root is a one-way hash: the record must round-trip `(doc_id,
+/// commit_hash, root, signature)` in full for `verify` to recompute the
+/// root after a store read.
 pub const V3_DOC_LINK_PROVENANCE: &str = "
 ALTER TABLE doc_links ADD COLUMN provenance_commit TEXT;
 ALTER TABLE doc_links ADD COLUMN provenance_hash TEXT;
 ALTER TABLE doc_links ADD COLUMN provenance_signature TEXT;
 ";
 
-/// M2.10 (`notes` feature): cross-agent memory graph. The *table* lands
+/// `notes` feature: cross-agent memory graph. The *table* lands
 /// unconditionally — same reasoning as V3's own precedent: schema version
 /// must not depend on Cargo features, and a default binary must be able to
 /// open a notes-enabled repo's database without a SchemaTooNew refusal.
@@ -104,7 +105,7 @@ CREATE TABLE notes (
 CREATE INDEX idx_notes_moniker ON notes(moniker);
 ";
 
-/// M3.3 (`otel` feature): imported distributed trace spans, overlaid onto
+/// `otel` feature: imported distributed trace spans, overlaid onto
 /// graph nodes by symbol at *query* time — no node-id FK, deliberately:
 /// a reindex renumbers ids, and re-resolution by symbol is what keeps a
 /// span from dangling (Core Invariant 3). The table lands unconditionally
@@ -126,6 +127,15 @@ CREATE TABLE trace_spans (
 CREATE UNIQUE INDEX idx_trace_spans_natural_key ON trace_spans(trace_id, span_id);
 ";
 
+/// The sorted per-symbol entries a contract hash was computed from, so a
+/// later divergence can be diffed symbol-by-symbol instead of only
+/// reporting "hashes differ". Nullable — a row written before this
+/// migration reads back as `COALESCE(entries_blob, '')`, an empty map,
+/// never a read error.
+pub const V6_CONTRACT_ENTRIES: &str = "
+ALTER TABLE contracts ADD COLUMN entries_blob TEXT;
+";
+
 /// Ordered migration history. Each backend replays every `(version, sql)`
 /// newer than the database's recorded version, in its own transaction.
 pub const MIGRATIONS: &[(u32, &str)] = &[
@@ -134,4 +144,5 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (3, V3_DOC_LINK_PROVENANCE),
     (4, V4_NOTES_TABLE),
     (5, V5_TRACE_SPANS_TABLE),
+    (6, V6_CONTRACT_ENTRIES),
 ];

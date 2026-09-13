@@ -79,7 +79,7 @@ pub(crate) fn run_semantic(
 ) -> Result<Vec<Node>, StorageError> {
     let embedder = weave_graph_core::embedding::MockEmbeddingProvider::new();
     let mut nodes = Vec::new();
-    for id in storage.search_vector(&embedder, query, limit, OVERSAMPLE)? {
+    for id in storage.search_vector(&embedder, query, limit, OVERSAMPLE, visible)? {
         let Some(node) = storage.get_node(id)? else {
             continue;
         };

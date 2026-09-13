@@ -2,7 +2,7 @@
 
 > **Scope**: Mandatory for all AI coding agents (Antigravity, Claude Code, Cursor) and human contributors working in this repository.  
 > **Project**: `weave-graph` (CLI: `weave` / Crates: `weave-graph-*`, see §6)  
-> **Core Mission**: Build an ultra-lightweight ($<15\text{MB}$ binary, $<80\text{MB}$ RAM), memory-safe code intelligence engine in pure Rust with deterministic execution, zero cloud leaks, and $\ge 90\%$ test coverage.
+> **Core Mission**: Build an ultra-lightweight (<15MB binary, <80MB RAM), memory-safe code intelligence engine in pure Rust with deterministic execution, zero cloud leaks, and >=90% test coverage.
 
 ---
 
@@ -11,19 +11,20 @@
 1. **Zero-LLM Core**: The core graph builder, parser, SQLite store, and MCP tools must execute **100% deterministically** without requiring an LLM or network connection.
 2. **Crash-Resilient Indexing**: Never write dirty data into the active `.weave/graph.db`. Large rebuilds must write to `.weave/graph.db.rebuild` and atomically `rename(2)` over the active database.
 3. **Bidirectional Edge Integrity**: Every incremental file reindex must purge both outbound (`source_id`) AND inbound (`target_id`) edges to prevent dangling pointers.
-4. **Resource Envelope**: Peak memory must never exceed $80\text{MB}$ RAM for 500k symbols. Adjacency lists must use integer-compacted CSR matrices (`uint32`).
+4. **Resource Envelope**: Peak memory must never exceed 80MB RAM for 500k symbols. Adjacency lists must use integer-compacted CSR matrices (`uint32`).
 5. **No Network in Base Tier**: The default build must compile with zero network dependencies (no `reqwest`, no Tokio runtime in `weave-graph-core`).
 6. **MCP Server Binds Localhost Only**: `weave serve --mcp` must default to loopback. Binding beyond localhost requires an explicit flag — the graph exposes full source structure.
 7. **RBAC Is Enforced at the Query Layer, Never Export-Only**: When `rbac` is enabled, masking lives inside the storage/traversal boundary so CLI, `weave report`, exports, and MCP all inherit one guard. Adding masking only in an export path — even "temporarily" — is the specific mistake this project's design review already caught and rejected once; do not reintroduce it.
 8. **Feature Isolation**: Enabling any optional feature (`docs`, `federation`, `hub`, `provenance`, `slm`, `rbac`, `otel`, `policy-lint`, `python`, `turso`) must not measurably change default-build query latency or idle RSS. This is asserted in CI, not just claimed.
+9. **Ground Truth & Zero Invention**: Never invent fictional features, phantom APIs, fabricated flags, synthetic metrics, or placeholder benchmarks when creating or modifying code, tests, documentation, or marketing copy. All documentation, tests, examples, and claims must strictly reflect real, implemented ground truth verified against the active codebase.
 
 ---
 
 ## 2. Code Coverage & Testing Rules
 
 ### 2.1 Minimum 90% Line Coverage Target
-* Every crate must maintain **$\ge 90\%$ code line coverage** verified by `cargo-llvm-cov`.
-* PRs that lower overall project coverage or fall below $90\%$ in any crate will fail CI.
+* Every crate must maintain **>=90% code line coverage** verified by `cargo-llvm-cov`.
+* PRs that lower overall project coverage or fall below 90% in any crate will fail CI.
 * Run coverage locally before committing:
   ```bash
   cargo llvm-cov --workspace --all-targets --fail-under-lines 90
@@ -32,7 +33,7 @@
 ### 2.2 Testing Hierarchy
 1. **Unit Tests (`src/**/tests.rs`)**:
    * Pure algorithmic verification (Tree-sitter queries, CSR bitmask intersections). Tarjan's SCC is scoped to the `federation` feature (Phase 2) — test it there, not in `weave-graph-core`'s default-build suite.
-   * Mock external storage; execute in under $10\text{ms}$.
+   * Mock external storage; execute in under 10ms.
    * **The one test that blocks merging any indexing change**: index two mutually-referencing files, reindex one, assert zero edge endpoints reference a missing node (Core Invariant 3).
 2. **Integration Tests (per-crate `tests/`)**:
    * Storage layer transactions, schema migrations, and SQLite crash-safety.
@@ -58,7 +59,7 @@ Strict crate boundaries ensure consistency. No ad-hoc dependencies are permitted
 
 | Layer | Standard Library / Crate | Purpose | Rule |
 | :--- | :--- | :--- | :--- |
-| **Language** | Rust 2024 Edition (`1.93+`) | Core implementation | Latest stable edition (`2024`); proactive $N+1$ stable tracking. |
+| **Language** | Rust 2024 Edition (`1.93+`) | Core implementation | Latest stable edition (`2024`); proactive N+1 stable tracking. |
 | **AST Parsing** | `tree-sitter` (C/Rust) | Syntax extraction | Microsecond execution; no AST tree leaks across threads. |
 | **Markdown** | `pulldown-cmark` | Wikilinks & ADRs | Pure CPU streaming parser; zero regex parsers. |
 | **Primary Store** | `rusqlite` (`bundled`) | SQLite persistence | Default engine behind `Storage` trait. WAL mode for local `.weave/graph.db`; **non-WAL journal mode required** for any read-only shared snapshot served over a network filesystem (WAL needs shared memory, which network mounts don't provide). |
@@ -76,8 +77,9 @@ Every comment in this codebase must adhere to the **Best Comment Guide**:
 
 1. **Strict 4-Line Maximum**: No comment block or docstring may exceed **4 lines**.
 2. **Explain "Why", Never "What"**: Code explains *what* is happening; comments explain *invariants, architectural decisions, and hardware constraints*.
-3. **Self-Documenting Code**: If a function requires more than 4 lines of explanation, refactor the function into smaller, well-named units.
-4. **Example of Compliant Comment**:
+3. **No Doc-File Citations or Dates in Code**: Never cite planning/tracking documents (e.g. `impl.md`, `plan.md`), milestone codes (`M1.x`, `M2.x`), gap numbers, section marks (`§`), or calendar dates in source code comments or docstrings. Plain functional comments only. Citations and dates are allowed exclusively inside documentation files (`docs/` and markdown docs).
+4. **Self-Documenting Code**: If a function requires more than 4 lines of explanation, refactor the function into smaller, well-named units.
+5. **Example of Compliant Comment**:
    ```rust
    // Purge edges in both directions before re-inserting AST nodes.
    // Deleting only source_id leaves orphaned incoming edges from
@@ -96,11 +98,11 @@ All code must follow the [Google Rust Style Guide](https://google.github.io/styl
 * Use `pub(crate)` for internal inter-module boundaries. Use `pub` only for types exported in public library APIs.
 
 ### 5.2 Immutability & Variables
-* Use `let` by default; use `let mut` only when mutation is strictly necessary in a small scope ($<15$ lines).
+* Use `let` by default; use `let mut` only when mutation is strictly necessary in a small scope (<15 lines).
 * Prefer iterator transformations (`map`, `filter`, `fold`) over mutable loop accumulators.
 
 ### 5.3 Function Design
-* Functions must be small and single-purpose: **target $<40$ lines per function**.
+* Functions must be small and single-purpose: **target <40 lines per function**.
 * Arguments must use borrowed slices (`&str`, `&[T]`) rather than owned collections (`String`, `Vec<T>`) unless ownership transfer is required.
 
 ### 5.4 Safety Invariants
@@ -134,7 +136,7 @@ bench --workspace` already discover without path overrides. Each crate's
 `benches/`/`tests/` covers only that crate's public API; `tests/fixtures/`
 holds its pinned sample files.
 
-```
+```text
 weave-graph/
 ├── Cargo.toml                     # Virtual workspace root, shared edition/rust-version
 ├── Cargo.lock
@@ -187,18 +189,19 @@ overflow-checks = false
 
 ### 7.3 CI Workflow Matrix (`.github/workflows/ci.yml`)
 1. **Lint Job**: `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`.
-2. **Test & Coverage Job**: `cargo llvm-cov --workspace --lcov --output-path lcov.info` (Upload to codecov; fail if $<90\%$).
+2. **Test & Coverage Job**: `cargo llvm-cov --workspace --lcov --output-path lcov.info` (Upload to codecov; fail if <90%).
 3. **E2E Job**: Run test suite against real multi-language fixtures in `crates/weave-graph-parse/tests/fixtures/`.
-4. **Benchmark Regression Gate**: Run `cargo bench -- --threshold 10` (Fail PR if performance regresses $>10\%$ against base commit).
-5. **N+1 Forward-Compatibility Job**: Proactively test workspace against `beta` / next stable release ($N+1$) to catch compiler lints, deprecations, and upstream regressions before they land in stable.
+4. **Benchmark Regression Gate**: Run `cargo bench -- --threshold 10` (Fail PR if performance regresses >10% against base commit).
+5. **N+1 Forward-Compatibility Job**: Proactively test workspace against `beta` / next stable release (N+1) to catch compiler lints, deprecations, and upstream regressions before they land in stable.
 
 ---
 
 ## 8. Agent Behavior Checklist
 
 When generating or editing code in this workspace, all agents must verify:
-- [ ] Are all new comment blocks $\le 4$ lines explaining *why*, not *what*?
-- [ ] Is line coverage $\ge 90\%$ for newly created code modules?
+- [ ] Are all new comment blocks <= 4 lines explaining *why*, not *what*?
+- [ ] Are code comments free of doc-file citations (`*.md`), milestone codes, and dates (plain functional comments only)?
+- [ ] Is line coverage >=90% for newly created code modules?
 - [ ] Are all errors handled via typed `Result<T, E>` with zero `unwrap()` calls in libraries?
 - [ ] Did incremental updates purge edges bidirectionally?
 - [ ] Does the storage layer use temporary file swap for large rebuilds?
@@ -206,6 +209,7 @@ When generating or editing code in this workspace, all agents must verify:
 - [ ] Does `weave serve --mcp` still default to localhost-only bind?
 - [ ] If touching `rbac`: is masking enforced at the query/storage layer, not just in an export path?
 - [ ] If adding/changing a feature: does the feature-isolation check still show zero change to default-build latency and idle RSS?
+- [ ] Are all documented flags, APIs, config keys, and performance claims verified against real ground-truth code (zero invented items)?
 
 <!-- graft:start -->
 ## Graft — repo context graph

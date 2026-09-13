@@ -108,10 +108,10 @@ fn query_path_returns_none_when_unreachable() {
 fn upsert_contract_replaces_the_expectation_for_a_pair() {
     let mut storage = SqliteStorage::open_in_memory().unwrap();
     storage
-        .upsert_contract("consumer", "provider", "hash1", "sha1")
+        .upsert_contract("consumer", "provider", "hash1", "sha1", "blob1")
         .unwrap();
     storage
-        .upsert_contract("consumer", "provider", "hash2", "sha2")
+        .upsert_contract("consumer", "provider", "hash2", "sha2", "blob2")
         .unwrap();
 
     let expectations = storage.contract_expectations("consumer").unwrap();
@@ -119,16 +119,17 @@ fn upsert_contract_replaces_the_expectation_for_a_pair() {
     assert_eq!(expectations[0].0, "provider");
     assert_eq!(expectations[0].1, "hash2");
     assert_eq!(expectations[0].2, "sha2");
+    assert_eq!(expectations[0].3, "blob2");
 }
 
 #[test]
 fn contract_expectations_are_scoped_to_the_consumer() {
     let mut storage = SqliteStorage::open_in_memory().unwrap();
     storage
-        .upsert_contract("consumer_a", "provider", "hash_a", "sha1")
+        .upsert_contract("consumer_a", "provider", "hash_a", "sha1", "blob_a")
         .unwrap();
     storage
-        .upsert_contract("consumer_b", "provider", "hash_b", "sha2")
+        .upsert_contract("consumer_b", "provider", "hash_b", "sha2", "blob_b")
         .unwrap();
 
     let for_a = storage.contract_expectations("consumer_a").unwrap();

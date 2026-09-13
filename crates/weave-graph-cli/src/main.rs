@@ -43,6 +43,7 @@ mod sync;
 mod traces;
 #[cfg(feature = "viz")]
 mod viz;
+mod waiver;
 #[cfg(feature = "watch")]
 mod watch;
 
@@ -189,6 +190,18 @@ enum Commands {
         /// Write to this file instead of stdout (pipe into `gh pr comment`)
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Max transitive hops from each touched symbol (`all`/`max` for unbounded)
+        #[arg(long, default_value = "2")]
+        depth: String,
+        /// Traversal direction: `callers` (who's affected, default), `callees` (what the change touches), or `both`
+        #[arg(long, default_value = "callers")]
+        direction: String,
+        /// Skip the blast-radius computation entirely (waiver, impl.md M3.10) — requires --reason
+        #[arg(long)]
+        skip: bool,
+        /// Audit reason for --skip (mandatory when --skip is passed)
+        #[arg(long)]
+        reason: Option<String>,
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
@@ -226,6 +239,25 @@ enum Commands {
     },
     /// CI gate on divergent boundary contracts (feature: federation)
     CheckContracts {
+        /// Print the symbol-level added/removed/changed breakdown on drift
+        #[arg(long)]
+        diff: bool,
+        /// Gate CI failure on only the symbols this repo actually imports
+        /// from the provider — everything else is reported, never blocking
+        #[arg(long)]
+        scoped: bool,
+        /// Waive drift across every linked repo (impl.md M3.10) — requires --reason
+        #[arg(long)]
+        allow_drift: bool,
+        /// Waive drift for one specific peer repo (impl.md M3.10) — requires --reason
+        #[arg(long)]
+        allow_drift_for: Option<String>,
+        /// Report drift but never fail the exit code, regardless of staleness_policy
+        #[arg(long)]
+        warn_only: bool,
+        /// Audit reason for --allow-drift/--allow-drift-for (mandatory when either is passed)
+        #[arg(long)]
+        reason: Option<String>,
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
@@ -379,6 +411,11 @@ enum SyncAction {
     Push {
         #[arg(long, default_value = ".")]
         path: PathBuf,
+        /// Snapshot signature from an external signer (e.g. one built on
+        /// `weave_graph_hub::SnapshotProvenanceVerifier`, feature
+        /// `hub-provenance`) — `weave` computes none of its own.
+        #[arg(long)]
+        signature: Option<String>,
     },
 }
 
@@ -491,8 +528,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             base,
             format,
             out,
+            depth,
+            direction,
+            skip,
+            reason,
             path,
-        } => blast::cmd_blast(&path, &base, &format, out.as_deref())?,
+        } => {
+            let skip_env = std::env::var("WEAVE_SKIP_BLAST").ok();
+            blast::cmd_blast(
+                &path,
+                &base,
+                &format,
+                out.as_deref(),
+                &depth,
+                &direction,
+                blast::BlastWaiver {
+                    skip,
+                    reason: reason.as_deref(),
+                    as_subject: as_subject.as_deref(),
+                    skip_env: skip_env.as_deref(),
+                },
+            )?
+        }
         Commands::Config { action } => match action {
             ConfigAction::Set { key, value, path } => cmd_config_set(&path, &key, &value)?,
             ConfigAction::Get { key, path } => cmd_config_get(&path, &key)?,
@@ -531,7 +588,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             feature_not_compiled("weave plan-migration", "federation")
         }
         #[cfg(feature = "federation")]
-        Commands::CheckContracts { path } => contracts::cmd_check_contracts(&path)?,
+        Commands::CheckContracts {
+            diff,
+            scoped,
+            allow_drift,
+            allow_drift_for,
+            warn_only,
+            reason,
+            path,
+        } => {
+            let skip_env = std::env::var("WEAVE_SKIP_CONTRACTS").ok();
+            let staleness_override_env = std::env::var("WEAVE_STALENESS_POLICY_OVERRIDE").ok();
+            let allow_drift_repos_env = std::env::var("WEAVE_ALLOW_DRIFT_REPOS").ok();
+            contracts::cmd_check_contracts(
+                &path,
+                diff,
+                scoped,
+                contracts::CheckContractsWaiver {
+                    allow_drift,
+                    allow_drift_for: allow_drift_for.as_deref(),
+                    warn_only,
+                    reason: reason.as_deref(),
+                    as_subject: as_subject.as_deref(),
+                    skip_env: skip_env.as_deref(),
+                    staleness_override_env: staleness_override_env.as_deref(),
+                    allow_drift_repos_env: allow_drift_repos_env.as_deref(),
+                },
+            )?
+        }
         #[cfg(not(feature = "federation"))]
         Commands::CheckContracts { .. } => {
             feature_not_compiled("weave check-contracts", "federation")
@@ -547,8 +631,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => sync::cmd_sync_pull(&path, commit.as_deref(), fallback_latest)?,
         #[cfg(feature = "hub")]
         Commands::Sync {
-            action: SyncAction::Push { path },
-        } => sync::cmd_sync_push(&path)?,
+            action: SyncAction::Push { path, signature },
+        } => sync::cmd_sync_push(&path, signature.as_deref())?,
         #[cfg(not(feature = "hub"))]
         Commands::Sync { .. } => feature_not_compiled("weave sync", "hub"),
         #[cfg(feature = "slm")]

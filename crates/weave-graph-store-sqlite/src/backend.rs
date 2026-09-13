@@ -125,15 +125,19 @@ impl SqliteStorage {
     }
 
     /// Records (or replaces) one consumer's expectation of a provider's
-    /// boundary contract hash (`impl.md` M2.2). The `contracts` table has no
-    /// unique natural key, so replacement is an explicit delete-then-insert
-    /// inside one transaction — an interrupted write can't leave two rows.
+    /// boundary contract hash, plus the sorted per-symbol entries that
+    /// hash was computed from — the snapshot `check-contracts` diffs a
+    /// later divergence against. The `contracts` table has no unique
+    /// natural key, so replacement is an
+    /// explicit delete-then-insert inside one transaction — an interrupted
+    /// write can't leave two rows.
     pub fn upsert_contract(
         &mut self,
         service_a: &str,
         service_b: &str,
         contract_hash: &str,
         source_commit_sha: &str,
+        entries_blob: &str,
     ) -> Result<(), StorageError> {
         let tx = self.conn.transaction().map_err(backend_err)?;
         tx.execute(
@@ -143,24 +147,33 @@ impl SqliteStorage {
         .map_err(backend_err)?;
         tx.execute(
             "INSERT INTO contracts (service_a, service_b, protocol, contract_hash, \
-             source_commit_sha, published_at) VALUES (?1, ?2, 'source', ?3, ?4, \
-             strftime('%s', 'now'))",
-            params![service_a, service_b, contract_hash, source_commit_sha],
+             source_commit_sha, published_at, entries_blob) VALUES (?1, ?2, 'source', ?3, ?4, \
+             strftime('%s', 'now'), ?5)",
+            params![
+                service_a,
+                service_b,
+                contract_hash,
+                source_commit_sha,
+                entries_blob
+            ],
         )
         .map_err(backend_err)?;
         tx.commit().map_err(backend_err)
     }
 
     /// Every contract expectation this repo (service_a) recorded, as
-    /// `(provider label, expected hash, provider commit sha)` triples.
+    /// `(provider label, expected hash, provider commit sha, entries blob)`
+    /// tuples. `entries_blob` reads back as `""` for a row written before
+    /// the `entries_blob` column existed, never a read error.
     pub fn contract_expectations(
         &self,
         service_a: &str,
-    ) -> Result<Vec<(String, String, String)>, StorageError> {
+    ) -> Result<Vec<(String, String, String, String)>, StorageError> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT service_b, contract_hash, source_commit_sha FROM contracts \
+                "SELECT service_b, contract_hash, source_commit_sha, \
+                 COALESCE(entries_blob, '') FROM contracts \
                  WHERE service_a = ?1 AND contract_hash IS NOT NULL",
             )
             .map_err(backend_err)?;
@@ -170,6 +183,7 @@ impl SqliteStorage {
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             })
             .map_err(backend_err)?;
@@ -222,6 +236,9 @@ impl SqliteStorage {
 
     /// Three-stage semantic search: binary ANN oversampled by
     /// `oversample`, reranked against int8 distance, capped at `limit`.
+    /// `visible` (SEC-01), when given, is applied to the reranked
+    /// candidates before the `limit` cap — never after — so a masked hit
+    /// never displaces a visible one out of the returned set.
     #[cfg(feature = "vector")]
     pub fn search_vector(
         &self,
@@ -229,8 +246,18 @@ impl SqliteStorage {
         query_text: &str,
         limit: usize,
         oversample: usize,
+        visible: Option<&dyn Fn(&Node) -> bool>,
     ) -> Result<Vec<NodeId>, StorageError> {
-        crate::vector::search(&self.conn, embedder, query_text, limit, oversample)
+        let node_visible = |id: NodeId| match self.get_node(id) {
+            Ok(Some(node)) => visible.is_none_or(|v| v(&node)),
+            _ => false,
+        };
+        let filter: Option<&dyn Fn(NodeId) -> bool> = if visible.is_some() {
+            Some(&node_visible as &dyn Fn(NodeId) -> bool)
+        } else {
+            None
+        };
+        crate::vector::search(&self.conn, embedder, query_text, limit, oversample, filter)
     }
 
     /// Records (or replaces) one doc link, optionally carrying a

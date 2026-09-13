@@ -58,6 +58,40 @@ fn masked_node_hides_content_but_keeps_id() {
 }
 
 #[test]
+fn can_waive_is_independent_of_is_internal() {
+    // `internal` (visibility) and `allow-drift` (waiver permission) are
+    // deliberately separate privileges — neither implies the other.
+    let internal_only = Identity {
+        subject: "alice".to_string(),
+        roles: vec!["internal".to_string()],
+    };
+    assert!(internal_only.is_internal());
+    assert!(!internal_only.can_waive());
+
+    let waiver_only = Identity {
+        subject: "release-bot".to_string(),
+        roles: vec!["allow-drift".to_string()],
+    };
+    assert!(!waiver_only.is_internal());
+    assert!(waiver_only.can_waive());
+
+    assert!(!Identity::anonymous().can_waive());
+}
+
+#[test]
+fn rbac_guard_can_waive_passes_through_the_bound_identity() {
+    let identity = Identity {
+        subject: "release-bot".to_string(),
+        roles: vec!["allow-drift".to_string()],
+    };
+    let guard = RbacGuard::new(identity, is_pub_prefixed);
+    assert!(guard.can_waive());
+
+    let guard = RbacGuard::new(Identity::anonymous(), is_pub_prefixed);
+    assert!(!guard.can_waive());
+}
+
+#[test]
 fn static_auth_provider_resolves_known_and_unknown_subjects() {
     let mut users = HashMap::new();
     users.insert("alice".to_string(), vec!["internal".to_string()]);

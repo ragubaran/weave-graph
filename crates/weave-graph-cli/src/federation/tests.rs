@@ -80,9 +80,9 @@ impl RepoFixture {
     }
 }
 
-/// Matches `impl.md` M2.1's own Verifies line: two fixture repos each
-/// containing `utils.ts` (with a same-named function) must compose into
-/// one addressable graph without either repo's node overwriting the other.
+/// Two fixture repos each containing `utils.ts` (with a same-named
+/// function) must compose into one addressable graph without either
+/// repo's node overwriting the other.
 #[test]
 fn linking_two_repos_with_a_name_collision_keeps_both_isolated() {
     let repo_a = RepoFixture::new();
@@ -133,9 +133,9 @@ fn linking_a_repo_to_itself_is_rejected_rather_than_silently_composed() {
     );
 }
 
-/// The real thing `impl.md` M2.1's own Verifies line asks for: a genuine
-/// circular dependency spanning two independently-indexed repos, found
-/// end-to-end through `cmd_link`'s actual pipeline (re-parsing raw source
+/// A genuine circular dependency spanning two independently-indexed
+/// repos, found end-to-end through `cmd_link`'s actual pipeline
+/// (re-parsing raw source
 /// and retrying each repo's otherwise-unresolved calls against the other
 /// repo's index) — not just at the `tarjan_scc` algorithm level.
 #[test]
@@ -352,7 +352,7 @@ fn repo_contract_hash_skips_unrecognized_languages() {
             weave_graph_parse::ParsedFile::default(),
         )],
     };
-    let hash = super::repo_contract_hash(&graph).unwrap();
+    let hash = super::repo_contract_hash(&graph, Path::new("/tmp")).unwrap();
     // An empty export set is a stable, well-defined hash — not an error.
     assert!(!hash.is_empty());
 }

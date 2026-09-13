@@ -9,12 +9,26 @@ description = "Optional delta ingestion/publish service for weave-graph. Never l
 [dependencies]
 thiserror = "2.0.20"
 weave-graph-core = { path = "../weave-graph-core" }
+weave-graph-store-sqlite = { path = "../weave-graph-store-sqlite", optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
 
 [dev-dependencies]
 tempfile = "3.27.0"
 
 [features]
-# Independently compilable per-capability features (impl.md M3.6) — a
+# Independently compilable per-capability features — a
 # deployment that only wants Merkle-signed snapshots shouldn't pull in
-# the (not yet built) canvas generator or webhook dispatcher, or vice versa.
+# the canvas generator or webhook dispatcher, or vice versa.
 hub-provenance = []
+# Registry-side canvas aggregation: opens the latest committed snapshot as
+# a real SQLite graph (hence the one new required dependency, scoped to
+# this feature alone) and renders the same Louvain module clustering
+# `weave report`'s LOD 1 uses (`weave-graph-core::modules`, the one shared
+# implementation both crates call — never forked).
+hub-canvas = ["dep:weave-graph-store-sqlite", "dep:serde", "dep:serde_json"]
+# Asynchronous webhook dispatch on successful push — no new dependency;
+# reuses the same hand-rolled `std::net::TcpStream` HTTP style already in
+# `client.rs`/`server.rs`, just POSTing to an operator-registered URL
+# instead of the registry's own.
+hub-webhooks = []

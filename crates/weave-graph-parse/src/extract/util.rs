@@ -15,11 +15,20 @@ pub(crate) fn text<'a>(node: Node, source: &'a [u8]) -> &'a str {
 /// collapsed to one line — the wiring card's `signature`. `line_start`/
 /// `line_end` cover the full node separately, for slice-editing.
 pub(crate) fn signature(node: Node, source: &[u8]) -> String {
-    let header_end = node
+    signature_spanning(node, node, source)
+}
+
+/// Same as `signature`, but the header text starts at `outer`'s own start
+/// byte instead of `inner`'s. TS/JS's `export function foo() {}` parses as
+/// an `export_statement` wrapping `function_declaration` — the `export`
+/// keyword belongs to the outer node, never part of the inner node's own
+/// byte range, so a plain `signature(inner, source)` silently drops it.
+pub(crate) fn signature_spanning(outer: Node, inner: Node, source: &[u8]) -> String {
+    let header_end = inner
         .child_by_field_name("body")
         .map(|b| b.start_byte())
-        .unwrap_or(node.end_byte());
-    let raw = std::str::from_utf8(&source[node.start_byte()..header_end]).unwrap_or_default();
+        .unwrap_or(inner.end_byte());
+    let raw = std::str::from_utf8(&source[outer.start_byte()..header_end]).unwrap_or_default();
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 

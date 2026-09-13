@@ -42,6 +42,20 @@ fn read_in_flight(weave_dir: &std::path::Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// A tool's own text sometimes carries a well-known failure prefix
+/// (`"symbol not found: "`, `"error: "`) — surfaced as a real MCP
+/// `isError: true` result instead of a silent success, so an agent can
+/// tell "nothing matched" from "here's the answer" from the envelope
+/// alone, not by parsing text. Same convention `call_pin_note` already
+/// used for its own `"error:"` prefix, applied consistently here too.
+fn as_tool_result(text: String) -> CallToolResult {
+    if text.starts_with("symbol not found:") || text.starts_with("error:") {
+        CallToolResult::err(text)
+    } else {
+        CallToolResult::ok(text)
+    }
+}
+
 /// Core MCP message processor executing against its own storage and CSR
 /// index (impl.md M2.15): the handler **owns** its `SqliteStorage` behind
 /// `RefCell` (both transports are single-threaded) and, when it opened a
@@ -406,6 +420,16 @@ impl McpHandler {
             .get("max_tokens")
             .and_then(|v| v.as_u64())
             .map(|d| d as usize);
+        #[cfg(feature = "rbac")]
+        let masker = self
+            .rbac_guard
+            .as_ref()
+            .map(|g| move |n: &Node| g.mask_node(n));
+        #[cfg(feature = "rbac")]
+        let mask: Option<&dyn Fn(&Node) -> Node> =
+            masker.as_ref().map(|c| c as &dyn Fn(&Node) -> Node);
+        #[cfg(not(feature = "rbac"))]
+        let mask: Option<&dyn Fn(&Node) -> Node> = None;
         let res = weave_repo_map(
             &*self.storage.borrow(),
             &self.csr.borrow(),
@@ -414,8 +438,9 @@ impl McpHandler {
                 module,
                 max_tokens,
             },
+            mask,
         );
-        CallToolResult::ok(res.text)
+        as_tool_result(res.text)
     }
 
     fn call_file_api(&self, args: &Value) -> CallToolResult {
@@ -427,12 +452,23 @@ impl McpHandler {
             .get("max_tokens")
             .and_then(|v| v.as_u64())
             .map(|d| d as usize);
+        #[cfg(feature = "rbac")]
+        let masker = self
+            .rbac_guard
+            .as_ref()
+            .map(|g| move |n: &Node| g.mask_node(n));
+        #[cfg(feature = "rbac")]
+        let mask: Option<&dyn Fn(&Node) -> Node> =
+            masker.as_ref().map(|c| c as &dyn Fn(&Node) -> Node);
+        #[cfg(not(feature = "rbac"))]
+        let mask: Option<&dyn Fn(&Node) -> Node> = None;
         let res = weave_file_api(
             &*self.storage.borrow(),
             FileApiArgs {
                 paths: &paths_vec,
                 max_tokens,
             },
+            mask,
         );
         CallToolResult::ok(crate::file_api::render_cards(&res.cards, max_tokens))
     }
@@ -471,7 +507,7 @@ impl McpHandler {
             },
             mask,
         );
-        CallToolResult::ok(res.text)
+        as_tool_result(res.text)
     }
 
     fn call_impact_radius(&self, args: &Value) -> CallToolResult {
@@ -499,7 +535,7 @@ impl McpHandler {
             ImpactRadiusArgs { symbol, max_tokens },
             mask,
         );
-        CallToolResult::ok(res.text)
+        as_tool_result(res.text)
     }
 
     #[cfg(feature = "notes")]

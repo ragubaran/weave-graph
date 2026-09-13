@@ -37,6 +37,23 @@ pub enum Language {
     Html,
     Css,
     R,
+    ArkTs,
+    ObjC,
+    Metal,
+    Cuda,
+    Svelte,
+    Vue,
+    Astro,
+    Liquid,
+    Pascal,
+    Luau,
+    Cfml,
+    Cobol,
+    VisualBasic,
+    Erlang,
+    Solidity,
+    Terraform,
+    Nix,
 }
 
 impl Language {
@@ -99,6 +116,40 @@ impl Language {
             "css" => Some(Language::Css),
             #[cfg(feature = "lang-extended")]
             "r" | "R" => Some(Language::R),
+            #[cfg(feature = "lang-extended")]
+            "ets" => Some(Language::ArkTs),
+            #[cfg(feature = "lang-extended")]
+            "m" | "mm" => Some(Language::ObjC),
+            #[cfg(feature = "lang-extended")]
+            "metal" => Some(Language::Metal),
+            #[cfg(feature = "lang-extended")]
+            "cu" | "cuh" => Some(Language::Cuda),
+            #[cfg(feature = "lang-extended")]
+            "svelte" => Some(Language::Svelte),
+            #[cfg(feature = "lang-extended")]
+            "vue" => Some(Language::Vue),
+            #[cfg(feature = "lang-extended")]
+            "astro" => Some(Language::Astro),
+            #[cfg(feature = "lang-extended")]
+            "liquid" => Some(Language::Liquid),
+            #[cfg(feature = "lang-extended")]
+            "pas" | "pp" => Some(Language::Pascal),
+            #[cfg(feature = "lang-extended")]
+            "luau" => Some(Language::Luau),
+            #[cfg(feature = "lang-extended")]
+            "cfm" | "cfc" => Some(Language::Cfml),
+            #[cfg(feature = "lang-extended")]
+            "cbl" | "cob" => Some(Language::Cobol),
+            #[cfg(feature = "lang-extended")]
+            "vb" => Some(Language::VisualBasic),
+            #[cfg(feature = "lang-extended")]
+            "erl" | "hrl" => Some(Language::Erlang),
+            #[cfg(feature = "lang-extended")]
+            "sol" => Some(Language::Solidity),
+            #[cfg(feature = "lang-extended")]
+            "tf" | "tofu" => Some(Language::Terraform),
+            #[cfg(feature = "lang-extended")]
+            "nix" => Some(Language::Nix),
             _ => None,
         }
     }
@@ -155,6 +206,40 @@ impl Language {
             Language::Css => tree_sitter_css::LANGUAGE.into(),
             #[cfg(feature = "lang-extended")]
             Language::R => tree_sitter_r::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::ArkTs => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::ObjC => tree_sitter_cpp::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::Metal => tree_sitter_cpp::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::Cuda => tree_sitter_cpp::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::Svelte => tree_sitter_html::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::Vue => tree_sitter_html::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::Astro => tree_sitter_html::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::Liquid => tree_sitter_html::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::Pascal => tree_sitter_lua::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::Luau => tree_sitter_lua::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::Cfml => tree_sitter_html::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::Cobol => tree_sitter_bash::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::VisualBasic => tree_sitter_c_sharp::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::Erlang => tree_sitter_elixir::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::Solidity => tree_sitter_javascript::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::Terraform => tree_sitter_ruby::LANGUAGE.into(),
+            #[cfg(feature = "lang-extended")]
+            Language::Nix => tree_sitter_elixir::LANGUAGE.into(),
             // Unreachable without `lang-extended`: `from_path` never
             // returns one of these variants in that build, so `grammar`
             // never needs to build a `tree_sitter::Language` for it.
@@ -179,7 +264,24 @@ impl Language {
             | Language::Sql
             | Language::Html
             | Language::Css
-            | Language::R => unreachable!(
+            | Language::R
+            | Language::ArkTs
+            | Language::ObjC
+            | Language::Metal
+            | Language::Cuda
+            | Language::Svelte
+            | Language::Vue
+            | Language::Astro
+            | Language::Liquid
+            | Language::Pascal
+            | Language::Luau
+            | Language::Cfml
+            | Language::Cobol
+            | Language::VisualBasic
+            | Language::Erlang
+            | Language::Solidity
+            | Language::Terraform
+            | Language::Nix => unreachable!(
                 "extended language grammar requested without `lang-extended` compiled in"
             ),
         }

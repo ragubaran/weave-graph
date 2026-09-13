@@ -4,12 +4,15 @@ This directory is the published, user-facing documentation for `weave` — the
 only part of `docs/` that ships in the repository (everything else is
 internal planning/audit material, gitignored on purpose).
 
-- **[Getting Started](getting-started.md)** — install, initialize a repo, run your first query.
-- **[CLI Reference](cli-reference.md)** — every command and flag.
-- **[Configuration Reference](configuration.md)** — `.weave/config.toml`, section by section.
-- **[Features](features.md)** — what each optional Cargo feature adds, and how to use it.
+- **[Getting Started](getting-started.md)** — install, initialize a repo, multi-repo federation, run queries.
+- **[CLI Reference](cli-reference.md)** — every command and flag, divided by profile and tier.
+- **[Configuration Reference](configuration.md)** — `.weave/config.toml`, section by section across all tiers.
+- **[Features](features.md)** — optional Cargo features, profiles, and capabilities.
+- **[Self-Hosted & Custom Mode](self-hosted.md)** — enterprise deployment, RBAC, SCIM 2.0 identity provisioning, policy linting, telemetry, and snapshot registry.
 - **[MCP Integration](mcp-integration.md)** — wiring `weave serve --mcp` into Claude, Cursor, or any MCP-speaking agent.
-- **[Release Notes](release-notes.md)** — what's in the first release, and what's known-incomplete.
+- **[CI/CD Pipelines](pipeline.md)** — GitHub Actions integration, L1 cache setup, single mode, multiple mode, and enterprise gates.
+- **[Release Notes](release-notes.md)** — release history and quality gates.
+
 
 ## What is weave-graph?
 

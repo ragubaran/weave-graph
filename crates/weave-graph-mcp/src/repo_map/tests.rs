@@ -43,6 +43,7 @@ fn repo_map_ranks_by_degree_and_respects_max_files() {
             module: None,
             max_tokens: None,
         },
+        None,
     );
     assert!(result.text.contains("hub.rs"), "hub.rs must appear");
     assert!(
@@ -68,6 +69,7 @@ fn repo_map_truncates_to_max_files() {
             module: None,
             max_tokens: None,
         },
+        None,
     );
     let file_lines = result
         .text
@@ -128,7 +130,7 @@ fn module_args() -> RepoMapArgs {
 #[test]
 fn module_map_covers_all_files_within_orientation_budget() {
     let fx = module_fixture();
-    let result = weave_repo_map(&fx.storage, &fx.csr, module_args());
+    let result = weave_repo_map(&fx.storage, &fx.csr, module_args(), None);
 
     // 100% file coverage: every indexed file appears in some module line.
     for path in [
@@ -164,7 +166,7 @@ fn module_map_covers_all_files_within_orientation_budget() {
 #[test]
 fn module_map_labels_modules_by_shared_directory() {
     let fx = module_fixture();
-    let result = weave_repo_map(&fx.storage, &fx.csr, module_args());
+    let result = weave_repo_map(&fx.storage, &fx.csr, module_args(), None);
     assert!(result.text.contains("src/parser"), "parser module label");
     assert!(result.text.contains("src/render"), "render module label");
 }
@@ -181,6 +183,7 @@ fn file_level_default_is_byte_identical_without_module_flag() {
             module: None,
             max_tokens: None,
         },
+        None,
     );
     let some_false = weave_repo_map(
         &fx.storage,
@@ -190,6 +193,7 @@ fn file_level_default_is_byte_identical_without_module_flag() {
             module: Some(false),
             max_tokens: None,
         },
+        None,
     );
     assert_eq!(none.text, some_false.text);
     // …and that output is the file-level shape, not module lines.
@@ -208,7 +212,7 @@ fn module_drill_down_reaches_the_same_wiring_cards_as_the_file_level_path() {
     use crate::tools::FileApiArgs;
 
     let fx = module_fixture();
-    let map = weave_repo_map(&fx.storage, &fx.csr, module_args());
+    let map = weave_repo_map(&fx.storage, &fx.csr, module_args(), None);
 
     // Parse every file named in the module map's membership lists.
     let all_paths = [
@@ -238,6 +242,7 @@ fn module_drill_down_reaches_the_same_wiring_cards_as_the_file_level_path() {
             paths: &module_files,
             max_tokens: None,
         },
+        None,
     );
     let direct = weave_file_api(
         &fx.storage,
@@ -245,6 +250,7 @@ fn module_drill_down_reaches_the_same_wiring_cards_as_the_file_level_path() {
             paths: &all_paths,
             max_tokens: None,
         },
+        None,
     );
     assert_wiring_cards_equal(&drill, &direct);
 }
@@ -278,6 +284,7 @@ fn max_tokens_replaces_max_files_truncation_when_set() {
             module: None,
             max_tokens: Some(20),
         },
+        None,
     );
     assert!(
         crate::tools::estimate_tokens(&result.text) <= 20,
@@ -300,6 +307,7 @@ fn max_tokens_replaces_max_files_truncation_when_set() {
             module: None,
             max_tokens: None,
         },
+        None,
     );
     let file_lines = default_result
         .text
@@ -307,4 +315,88 @@ fn max_tokens_replaces_max_files_truncation_when_set() {
         .filter(|l| l.trim_start().starts_with('f'))
         .count();
     assert_eq!(file_lines, 3);
+}
+
+// ─── RBAC masking (was previously entirely unenforced — see AGENTS.md
+// §1.7's query-layer invariant) ───────────────────────────────────────────
+
+fn hide_payment_files(n: &Node) -> Node {
+    if n.path.starts_with("src/payment/") {
+        Node {
+            id: n.id,
+            repo_id: n.repo_id.clone(),
+            path: "<rbac: hidden>".to_string(),
+            symbol: "<rbac: hidden>".to_string(),
+            kind: "<rbac: hidden>".to_string(),
+            line_start: 0,
+            line_end: 0,
+            signature: String::new(),
+        }
+    } else {
+        n.clone()
+    }
+}
+
+#[test]
+fn file_level_repo_map_never_names_a_masked_path() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    storage
+        .upsert_node(&node("src/payment/core.rs", "charge_card"))
+        .unwrap();
+    storage
+        .upsert_node(&node("src/public/api.rs", "list_products"))
+        .unwrap();
+    let csr = CsrGraph::load(&storage).unwrap();
+
+    let result = weave_repo_map(
+        &storage,
+        &csr,
+        RepoMapArgs {
+            max_files: 10,
+            module: None,
+            max_tokens: None,
+        },
+        Some(&hide_payment_files),
+    );
+    assert!(
+        !result.text.contains("payment") && !result.text.contains("charge_card"),
+        "masked path/symbol must never appear: {}",
+        result.text
+    );
+    assert!(result.text.contains("src/public/api.rs"), "{}", result.text);
+    assert!(result.text.contains("<rbac: hidden>"), "{}", result.text);
+}
+
+#[test]
+fn module_level_repo_map_folds_masked_files_into_one_hidden_bucket() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let a = storage
+        .upsert_node(&node("src/payment/core.rs", "charge_card"))
+        .unwrap();
+    let b = storage
+        .upsert_node(&node("src/payment/refund.rs", "refund_card"))
+        .unwrap();
+    storage.upsert_edge(&edge(a, b)).unwrap();
+    storage
+        .upsert_node(&node("src/public/api.rs", "list_products"))
+        .unwrap();
+    let csr = CsrGraph::load(&storage).unwrap();
+
+    let result = weave_repo_map(
+        &storage,
+        &csr,
+        RepoMapArgs {
+            max_files: 50,
+            module: Some(true),
+            max_tokens: None,
+        },
+        Some(&hide_payment_files),
+    );
+    assert!(
+        !result.text.contains("payment") && !result.text.contains("charge_card"),
+        "masked path/symbol must never appear in module membership: {}",
+        result.text
+    );
+    assert!(result.text.contains("src/public/api.rs"), "{}", result.text);
+    assert!(result.text.contains("<rbac: hidden>"), "{}", result.text);
 }

@@ -430,3 +430,107 @@ fn vanished_database_never_panics_the_handler() {
         "last-known-good snapshot kept: {text}"
     );
 }
+
+/// Regression for a real RBAC bypass: `weave_repo_map`/`weave_file_api`
+/// (unlike `weave_trace_calls`/`weave_impact_radius`) never touched the
+/// session's `RbacGuard` at all — a masked identity got the full,
+/// unredacted source structure through either tool. Both must now agree
+/// with `weave_trace_calls` about what a restricted identity can see.
+#[cfg(feature = "rbac")]
+#[test]
+fn repo_map_and_file_api_respect_the_bound_rbac_identity() {
+    use weave_graph_core::rbac::{Identity, RbacGuard};
+
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    storage
+        .upsert_node(&Node {
+            id: 1,
+            repo_id: "test".to_string(),
+            path: "src/payment/core.rs".to_string(),
+            symbol: "charge_card".to_string(),
+            kind: "function".to_string(),
+            line_start: 1,
+            line_end: 3,
+            signature: "fn charge_card()".to_string(),
+        })
+        .unwrap();
+    storage
+        .upsert_node(&Node {
+            id: 2,
+            repo_id: "test".to_string(),
+            path: "src/public/api.rs".to_string(),
+            symbol: "list_products".to_string(),
+            kind: "function".to_string(),
+            line_start: 1,
+            line_end: 3,
+            signature: "fn list_products()".to_string(),
+        })
+        .unwrap();
+
+    let identity = Identity {
+        subject: "contractor-bot".to_string(),
+        roles: vec!["contractor".to_string()],
+    };
+    let guard = RbacGuard::new(identity, |n: &Node| !n.path.starts_with("src/payment/"));
+    let handler = McpHandler::new(storage).unwrap().with_identity(guard);
+
+    let call = |name: &str, arguments: serde_json::Value| -> String {
+        let msg = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": name, "arguments": arguments }
+        })
+        .to_string();
+        let res = handler.handle_message(&msg).unwrap();
+        res.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    let file_api_text = call(
+        "weave_file_api",
+        json!({ "paths": ["src/payment/core.rs"] }),
+    );
+    assert!(
+        !file_api_text.contains("charge_card"),
+        "weave_file_api leaked a masked symbol: {file_api_text}"
+    );
+    assert!(file_api_text.contains("<rbac: hidden>"), "{file_api_text}");
+
+    let repo_map_text = call("weave_repo_map", json!({}));
+    assert!(
+        !repo_map_text.contains("payment") && !repo_map_text.contains("charge_card"),
+        "weave_repo_map leaked a masked path/symbol: {repo_map_text}"
+    );
+    assert!(
+        repo_map_text.contains("src/public/api.rs"),
+        "{repo_map_text}"
+    );
+}
+
+/// Doc regression: a failed symbol lookup must be a real MCP tool error
+/// (`isError: true`), not a silent success carrying a "not found" string —
+/// previously `weave_trace_calls`/`weave_impact_radius` always set
+/// `is_error: None` regardless of whether the symbol resolved.
+#[test]
+fn unresolved_symbol_lookups_set_is_error_true() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+
+    for (name, arguments) in [
+        ("weave_trace_calls", json!({ "symbol": "does_not_exist" })),
+        ("weave_impact_radius", json!({ "symbol": "does_not_exist" })),
+    ] {
+        let req = json!({
+            "jsonrpc": "2.0", "id": 50, "method": "tools/call",
+            "params": { "name": name, "arguments": arguments }
+        })
+        .to_string();
+        let res = handler.handle_message(&req).unwrap();
+        let result = res.result.unwrap();
+        assert_eq!(
+            result["isError"], true,
+            "{name} must set isError:true on an unresolved symbol: {result:?}"
+        );
+    }
+}

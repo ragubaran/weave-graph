@@ -6,31 +6,30 @@ compiling a feature you don't use costs nothing — no code linked in, no
 idle RSS, no latency change on the default paths (measured and enforced
 per-feature; see the [Release Notes](release-notes.md#quality-gates-this-release-was-held-to)).
 
-| Feature | Flag | Status |
-| :--- | :--- | :--- |
-| *(core)* | not required | **Done** — 29-language Tree-sitter indexing, CSR graph, incremental reindex, MCP server, `weave query` |
-| [`docs`](#docs) | `--features docs` | **Done** |
-| [`federation`](#federation) | `--features federation` | **Done** |
-| [`provenance`](#provenance) | `--features provenance` | **Done** |
-| [`notes`](#notes) | `--features notes` | **Done** |
-| [`watch`](#watch) | `--features watch` | **Done** |
-| `weave blast` | not required (base CLI) | **Done** |
-| [`viz`](#viz) | `--features viz` | **Done** |
-| [`hub`](#hub) | `--features hub` | **Done** (client + `weave-registry` server; provenance trait done, transport wiring pending) |
-| [`slm`](#slm) | `--features slm` | **Done** (deterministic scope; real-model latency pending downloaded weights) |
-| [`turso`](#turso) | `--features turso` | **Done** (library backend; roadmap in progress) |
-| [`python`](#python) | `--features python` | **Done** (separate `pip install` wheel, native binary untouched) |
-| MCP live reload | not required (base MCP tier) | **Done** |
-| MCP token budgeting | not required (base MCP tier) | **Done** |
-| `rbac` | `--features rbac` | **Done** (query-layer masking, M3.0; SCIM directory server, M3.4) |
-| `otel` | `--features otel` | **Done** (OTLP JSON trace import + `latency()` query, M3.3) |
-| `policy-lint` | `--features policy-lint` | **Done** (YAML boundary lint + drift analytics, M3.2) |
-| `fts` | `--features fts` | **Done** (FTS5 + synonym BM25, `weave search`, M3.7 Tier 1) |
-| `vector` | `--features vector` | **Not started** (sqlite-vec + quantization, M3.7 Tier 2) |
-| `hub-provenance` | `--features hub-provenance` | **Trait boundary done** (M3.6; transport wiring pending) |
+| Tier / Profile | Feature | Flag | Description |
+| :--- | :--- | :--- | :--- |
+| **Base Tier (Core)** | Core Engine | *(default)* | 29-language Tree-sitter indexing, CSR graph, incremental reindex, loopback MCP server, `weave query`, `weave blast` |
+| **Team Profile** | [`docs`](#docs) | `--features docs` | Markdown/Obsidian ingestion, wikilinks, backtick code rationales, JSON Canvas export |
+| | [`federation`](#federation) | `--features federation` | Multi-repo graph composition, cross-repo cycles, contract hashing & CI verification |
+| **Knowledge & DX Tier** | [`notes`](#notes) | `--features notes` | Pinned symbol notes, ephemeral (24h TTL) and crystallized tiers, moniker reattachment |
+| | [`watch`](#watch) | `--features watch` | Auto-sync file watcher, debounce queue, blast-radius safety ceiling |
+| | [`viz`](#viz) | `--features viz` | Offline standalone HTML viewer, loopback static report server |
+| **Custom / Self-Hosted Tier** | [`rbac`](#rbac) | `--features rbac` | Query-layer role-based masking, SCIM 2.0 provisioning server, IdP directory sync |
+| | [`policy-lint`](#policy-lint) | `--features policy-lint` | YAML architectural boundaries, dependency linting, architectural drift analytics |
+| | [`otel`](#otel) | `--features otel` | OTLP JSON trace import, node-level latency percentiles and error metrics |
+| | [`hub`](#hub) | `--features hub` | Centralized snapshot registry, `weave sync pull/push`, delta sync, CI hydration |
+| | [`fts`](#fts) | `--features fts` | BM25 full-text symbol search with AST synonym expansion (`weave search`) |
+| | [`vector`](#vector) | `--features vector` | Vector embeddings with `sqlite-vec` virtual tables for semantic symbol retrieval |
+| | [`slm`](#slm) | `--features slm` | Natural-language terminal query router (`weave ask`), model management, ADR review |
+| | [`provenance`](#provenance) | `--features provenance` | Merkle-signed note and document provenance verification |
+| **Extensibility & Runtimes** | [`turso`](#turso) | `--features turso` | Embedded libSQL storage backend for normal single-engine mode |
+| | [`python`](#python) | `--features python` | PyO3 Python bindings wheel (`weave-graph-python`) for offline graph analytics |
 
-Convenience bundles (`weave-graph-cli/Cargo.toml`): `team = [docs, federation]`,
-`custom = [team, hub, provenance, rbac, otel, policy-lint, fts, vector]`.
+### Feature Profiles (Cargo Bundles)
+- **Default Core**: 41.1 MB stripped release binary (all 29 languages, the actual default) — 9.6 MB with `--no-default-features` (8 core languages only). Peak RAM stays under the 80 MB ceiling (measured ~60 MB for 500k symbols). Single repo, local only.
+- **Team Profile (`--features team`)**: `docs` + `federation`. Multi-repo linking, contract checking, and Markdown knowledge integration.
+- **Custom Mode / Self-Hosted Profile (`--features custom`)**: `team, hub, hub-provenance, provenance, rbac, otel, policy-lint, fts, vector`. Complete enterprise intelligence suite for self-hosted deployments.
+
 
 ---
 
@@ -137,20 +136,15 @@ path-traversal refused.
 
 Centralized snapshot registry and client sync: `weave sync pull` hydrates the
 graph for a commit (falling back to the hub's `latest` snapshot on request),
-`weave sync push` publishes the current snapshot (refuses off the default branch,
+and `weave sync push` publishes the current snapshot (refuses off the default branch,
 retries once on a `409` conflict). Includes both the zero-dependency HTTP client
-and the lightweight `weave-registry` standalone server.
+and the lightweight `weave-registry` standalone server daemon.
 
-### Hub Ecosystem & Provenance Status
-- **Lodestone Nexus Provenance (`hub-provenance`)**:
-  `SnapshotProvenanceVerifier` trait and reference implementation are done and
-  tested standalone.
-- **Transport Wiring**:
-  Not yet wired into `weave sync push/pull` — needs a registry-side storage
-  schema change (signature sidecar) to actually transmit it. Stated honestly,
-  not silently skipped.
-- **Unstarted Ecosystem Extensions**:
-  `hub-canvas`, `hub-webhooks`, and chunked upload: not started this pass.
+- **Fast CI Hydration**: Replaces cold 29-language source tree indexing with a snapshot download and atomic database swap — no re-parse of the whole tree.
+- **Trunk Publication**: Automated post-merge webhook or CI step that builds and publishes canonical snapshots for master/main.
+- **Deduplicated Storage**: Content-addressed snapshot storage with configurable per-repo retention limits.
+- **Zero-Cloud Dependency**: Designed for private clouds, local VPCs, or self-hosted bare metal servers.
+
 
 ## `slm`
 
@@ -158,7 +152,7 @@ The `slm` feature integrates **Small Language Models (SLMs)** and links **Fronti
 
 ### 1. The 3-Tier Intelligence Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ Tier 1: Zero-LLM Deterministic Core (<2ms, 100% Offline, <80MB RAM)     │
 │   Tree-sitter AST parsers • CSR adjacency matrices • SQLite WAL store   │
@@ -191,7 +185,7 @@ A natural-language query router **for a human at a terminal** (`weave ask`), exp
 Weave Graph links frontier coding models (Claude 3.7 Sonnet, GPT-4o, o3, Gemini Pro) via standard Model Context Protocol:
 
 - **Subgraph Extraction over File Dumps**: Traditional workflows dump 50,000–100,000 raw source tokens into the LLM context window, causing prompt cost blowouts and attention dilution ("lost in the middle").
-- **Targeted MCP Graph Slices**: Weave Graph provides focused MCP tools (`callers`, `callees`, `impact`, `path`), returning exact 1,000-token subgraphs with transitive dependencies in $<2\text{ms}$ — slashing LLM context consumption by over **92%**.
+- **Targeted MCP Graph Slices**: Weave Graph provides focused MCP tools (`callers`, `callees`, `impact`, `path`), returning exact 1,000-token subgraphs with transitive dependencies in <2ms — slashing LLM context consumption by over **92%**.
 - **Synergistic Workflow**: Terminal developers use Tier 2 Local SLM (`weave ask`) for zero-cloud triage, while autonomous IDE agents leverage Tier 3 MCP tools for high-precision refactoring.
 
 ### 4. Knowledge & Document Linking Commands
@@ -199,17 +193,63 @@ Weave Graph links frontier coding models (Claude 3.7 Sonnet, GPT-4o, o3, Gemini 
 - `weave slm review-rules`: Scans Markdown design docs and ADRs for obligation-shaped sentences ("must", "must not", "should never") and extracts candidate architectural invariants into `.weave/rules.toml` for human confirmation (`--confirm`/`--reject`), bridging human prose with automated CI policy checks.
 - `weave journal [--since <ref>]`: Combines a Git diff against `<ref>` with the graph delta (touched symbols, callers, and blast radius) to synthesize structured changelog summaries with zero model inference overhead.
 
+## `rbac`
+
+Enterprise Role-Based Access Control enforcing code confidentiality and organizational boundaries:
+
+- **Query-Layer Masking**: Enforces visibility directly inside the graph traversal and storage boundary. CLI queries (`weave query`), reports (`weave report`), exports (`weave export`), and MCP tools (`weave serve --mcp`) all inherit the identical security guard.
+- **Role Scoping**: Only `"internal"` is special-cased — that identity sees everything. Every other role name (`engineer`, `admin`, `contractor`, or anything else) gets identical masked behavior: public API symbols visible, internal implementation redacted. There's no per-role permission grant beyond that one bit.
+- **SCIM 2.0 Directory Server**: `weave rbac serve-scim` runs a loopback SCIM endpoint that receives push provisioning and deprovisioning events from enterprise IdPs (Okta, Azure AD, Google Workspace) and writes to `.weave/rbac-directory.toml`.
+- **Identity Invocation**: Global `--as <identity>` flag enables testing and auditing views for specific users or roles.
+
+## `policy-lint`
+
+Declarative architectural boundary enforcement and drift detection:
+
+- **Boundary Rules (`.weave/policy.yaml`)**: Define explicit `disallow` and `require` constraints between architectural layers (e.g., forbidding UI modules from importing database drivers directly).
+- **CI Gate (`weave policy lint`)**: Evaluates the indexed graph against declared boundary rules, exiting non-zero on any violation to block offending pull requests.
+- **Architectural Drift Analytics (`weave policy drift`)**: Uncovers structural decay over time, identifying dependency cycles (via Tarjan's SCC), orphaned files, and unreferenced internal symbols.
+
+## `otel`
+
+Distributed trace span ingestion and graph latency overlay:
+
+- **OTLP Trace Import**: `weave traces import <trace.json>` parses OpenTelemetry OTLP/JSON export files from Jaeger, Datadog, or OpenTelemetry Collector without requiring a live network collector.
+- **Performance Graph Overlay**: Correlates runtime trace spans with static AST graph symbols (`code.function` or span names), tracking call frequencies, error rates, and latency percentiles (p50, p95, p99).
+- **Latency Traversal Queries**: Query runtime performance directly through `weave query "latency(AuthService.verify)"` to detect performance regressions and bottleneck hot spots.
+
+## `fts`
+
+Fast, offline lexical code search using SQLite FTS5:
+
+- **BM25 Ranking**: High-speed keyword matching over symbol names, doc comments, signatures, and file paths.
+- **AST Synonym Expansion**: Automatically expands camelCase, snake_case, and language-specific conventions to maximize recall.
+- **Zero-Network Execution**: Instant symbol lookups without embedding models or cloud dependencies via `weave search "<query>"`.
+
+## `vector`
+
+Semantic code retrieval over AST-bounded chunks:
+
+- **Syntactic Chunking**: Breaks code strictly along AST definitions (functions, classes, traits) rather than arbitrary byte boundaries.
+- **Vector Storage**: Integrated vector similarity search using `sqlite-vec` virtual tables.
+- **Hybrid Retrieval**: Combines BM25 lexical precision with semantic embedding similarity for agent query routing.
+
 ## `turso`
+
 
 An alternate `Storage` backend on embedded libSQL, implementing the exact
 same trait as the default `rusqlite` backend (same schema, same
 migrations, same transaction discipline).
 
-- **Normal Mode Alternative (`--features turso` / `vX.Y.Z-turso`)**:
+- **Normal Mode Alternative (`--features turso`)**:
   Turso is **only available for normal mode** (no vector support), replacing
-  bundled SQLite with embedded libSQL ($11.5\text{MB}$ stripped release).
+  bundled SQLite with embedded libSQL (41.1 MB stripped — statistically
+  identical to the default build). **Not yet reachable from any `weave`
+  command**: `weave-graph-cli` always opens `SqliteStorage` regardless of
+  which storage features are compiled in; `--features turso` links the
+  backend but nothing routes to it yet.
 - **SQLite Exclusivity for Default and Vector Modes**:
-  1. *Default Normal Mode (`vX.Y.Z`)* uses SQLite exclusively to keep the binary single-engine, ultra-small ($<6.8\text{MB}$), and zero-network.
+  1. *Default Normal Mode (`vX.Y.Z`)* uses SQLite exclusively to keep the binary single-engine and zero-network (41.1 MB stripped, or 9.6 MB with `--no-default-features`).
   2. *Vector Mode (`vX.Y.Z-vector`)* is SQLite-exclusive because Turso does not natively support `sqlite-vec` virtual tables yet.
 
 ## `python`

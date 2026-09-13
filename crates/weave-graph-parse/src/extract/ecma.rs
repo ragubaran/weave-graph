@@ -4,7 +4,7 @@
 
 use tree_sitter::Node;
 
-use super::util::{line_range, qualify, signature, text};
+use super::util::{line_range, qualify, signature_spanning, text};
 use crate::model::{
     ParsedFile, RawCall, RawStructuralEdge, StructuralEdgeKind, SymbolKind, WiringCard,
 };
@@ -27,51 +27,32 @@ fn walk(
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
-            "class_declaration" => {
-                let Some(name) = child.child_by_field_name("name") else {
-                    continue;
-                };
-                let name = text(name, source);
-                push_symbol(child, source, path, scope, name, SymbolKind::Class, file);
-
-                for (target, kind) in heritage(child, source) {
-                    file.structural_edges.push(RawStructuralEdge {
-                        source_moniker: moniker::build(path, &qualify(scope, name)),
-                        target_name: target,
-                        kind,
-                    });
-                }
-
-                let mut inner_scope = scope.to_vec();
-                inner_scope.push(name.to_string());
-                if let Some(body) = child.child_by_field_name("body") {
-                    walk(body, source, path, &inner_scope, is_typescript, file);
+            // `export function foo() {}` / `export class Foo {}` parse as
+            // this node wrapping the declaration — `export`'s own token
+            // belongs to `child`, never to the inner declaration's own
+            // byte range, so the declaration must be dispatched with
+            // `child` as the signature's start. Recursing straight into
+            // the inner declaration node here would drop the `export`
+            // token from the captured signature, silently breaking
+            // `contract::visibility_rule`'s TS/JS export check. `export
+            // { a, b }` / `export default <expr>` / `export * from "mod"`
+            // have no `declaration` field — a bare re-export isn't a
+            // declaration site.
+            "export_statement" => {
+                if let Some(decl) = child.child_by_field_name("declaration") {
+                    handle_declaration(decl, child, source, path, scope, is_typescript, file);
                 }
             }
-            "interface_declaration" if is_typescript => {
-                let Some(name) = child.child_by_field_name("name") else {
-                    continue;
-                };
-                let name = text(name, source);
-                push_symbol(
-                    child,
-                    source,
-                    path,
-                    scope,
-                    name,
-                    SymbolKind::Interface,
-                    file,
-                );
-
-                let mut inner_scope = scope.to_vec();
-                inner_scope.push(name.to_string());
-                if let Some(body) = child.child_by_field_name("body") {
-                    walk(body, source, path, &inner_scope, is_typescript, file);
-                }
+            "class_declaration"
+            | "interface_declaration"
+            | "function_declaration"
+            | "method_definition" => {
+                handle_declaration(child, child, source, path, scope, is_typescript, file);
             }
             "method_signature" if is_typescript => {
                 if let Some(name) = child.child_by_field_name("name") {
                     push_symbol(
+                        child,
                         child,
                         source,
                         path,
@@ -80,20 +61,6 @@ fn walk(
                         SymbolKind::Method,
                         file,
                     );
-                }
-            }
-            "function_declaration" | "method_definition" => {
-                if let Some(name) = child.child_by_field_name("name") {
-                    let kind = if child.kind() == "method_definition" {
-                        SymbolKind::Method
-                    } else {
-                        SymbolKind::Function
-                    };
-                    let caller_moniker =
-                        push_symbol(child, source, path, scope, text(name, source), kind, file);
-                    if let Some(body) = child.child_by_field_name("body") {
-                        collect_calls(body, source, &caller_moniker, file);
-                    }
                 }
             }
             "import_statement" => {
@@ -110,6 +77,99 @@ fn walk(
             }
             _ => walk(child, source, path, scope, is_typescript, file),
         }
+    }
+}
+
+/// `class_declaration`/`interface_declaration`/`function_declaration`/
+/// `method_definition` handling, shared between a plain top-level
+/// declaration (`sig_start == decl`) and one wrapped in `export_statement`
+/// (`sig_start` is the wrapping node, so the signature keeps its `export`
+/// prefix).
+fn handle_declaration(
+    decl: Node,
+    sig_start: Node,
+    source: &[u8],
+    path: &str,
+    scope: &[String],
+    is_typescript: bool,
+    file: &mut ParsedFile,
+) {
+    match decl.kind() {
+        "class_declaration" => {
+            let Some(name) = decl.child_by_field_name("name") else {
+                return;
+            };
+            let name = text(name, source);
+            push_symbol(
+                sig_start,
+                decl,
+                source,
+                path,
+                scope,
+                name,
+                SymbolKind::Class,
+                file,
+            );
+
+            for (target, kind) in heritage(decl, source) {
+                file.structural_edges.push(RawStructuralEdge {
+                    source_moniker: moniker::build(path, &qualify(scope, name)),
+                    target_name: target,
+                    kind,
+                });
+            }
+
+            let mut inner_scope = scope.to_vec();
+            inner_scope.push(name.to_string());
+            if let Some(body) = decl.child_by_field_name("body") {
+                walk(body, source, path, &inner_scope, is_typescript, file);
+            }
+        }
+        "interface_declaration" if is_typescript => {
+            let Some(name) = decl.child_by_field_name("name") else {
+                return;
+            };
+            let name = text(name, source);
+            push_symbol(
+                sig_start,
+                decl,
+                source,
+                path,
+                scope,
+                name,
+                SymbolKind::Interface,
+                file,
+            );
+
+            let mut inner_scope = scope.to_vec();
+            inner_scope.push(name.to_string());
+            if let Some(body) = decl.child_by_field_name("body") {
+                walk(body, source, path, &inner_scope, is_typescript, file);
+            }
+        }
+        "function_declaration" | "method_definition" => {
+            if let Some(name) = decl.child_by_field_name("name") {
+                let kind = if decl.kind() == "method_definition" {
+                    SymbolKind::Method
+                } else {
+                    SymbolKind::Function
+                };
+                let caller_moniker = push_symbol(
+                    sig_start,
+                    decl,
+                    source,
+                    path,
+                    scope,
+                    text(name, source),
+                    kind,
+                    file,
+                );
+                if let Some(body) = decl.child_by_field_name("body") {
+                    collect_calls(body, source, &caller_moniker, file);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -156,8 +216,17 @@ fn heritage(class_node: Node, source: &[u8]) -> Vec<(String, StructuralEdgeKind)
     out
 }
 
+/// `sig_start` is where the signature/line span begins — `decl` itself for
+/// a plain declaration, or the wrapping `export_statement` when one exists
+/// (see [`handle_declaration`]). The extra `sig_start` node over the rest
+/// of this file's walker functions is what pushes this past clippy's
+/// default 7-argument threshold; splitting the other six (all pre-existing
+/// walker context) into a struct wouldn't shrink this function, just move
+/// the same data through a different shape.
+#[allow(clippy::too_many_arguments)]
 fn push_symbol(
-    node: Node,
+    sig_start: Node,
+    decl: Node,
     source: &[u8],
     path: &str,
     scope: &[String],
@@ -167,14 +236,14 @@ fn push_symbol(
 ) -> String {
     let qualified = qualify(scope, name);
     let moniker = moniker::build(path, &qualified);
-    let (line_start, line_end) = line_range(node);
+    let (line_start, line_end) = line_range(sig_start);
     file.symbols.push(WiringCard {
         moniker: moniker.clone(),
         symbol: qualified,
         kind,
         line_start,
         line_end,
-        signature: signature(node, source),
+        signature: signature_spanning(sig_start, decl, source),
     });
     moniker
 }
