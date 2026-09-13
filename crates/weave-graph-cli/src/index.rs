@@ -168,12 +168,10 @@ fn upsert_all_edges(
             if let (Some(src_mid), Some(tgt_mid)) = (
                 project_index.get_moniker_id(&edge.source_moniker),
                 project_index.get_moniker_id(&edge.target_moniker),
-            )
-                && let (Some(&src_id), Some(&tgt_id)) = (
-                    moniker_id_to_node.get(&src_mid),
-                    moniker_id_to_node.get(&tgt_mid),
-                )
-            {
+            ) && let (Some(&src_id), Some(&tgt_id)) = (
+                moniker_id_to_node.get(&src_mid),
+                moniker_id_to_node.get(&tgt_mid),
+            ) {
                 use weave_graph_core::Edge;
                 storage.upsert_edge(&Edge {
                     id: 0,
@@ -474,7 +472,13 @@ pub(crate) fn incremental_reindex(
         // target_node_id dangling (no FK enforcement is enabled on this
         // connection); reattach_and_prune re-resolves by moniker below,
         // explicitly nulling out anything that no longer resolves (M2.10).
-        crate::notes::reattach_and_prune(&storage, root, files, &moniker_to_id)?;
+        crate::notes::reattach_and_prune(
+            &storage,
+            root,
+            files,
+            &project_index,
+            &moniker_id_to_node,
+        )?;
     }
     #[cfg(feature = "vector")]
     {
