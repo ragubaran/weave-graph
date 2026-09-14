@@ -27,13 +27,21 @@ use weave_graph_core::rbac::{AuthProvider, Identity, RbacGuard, StaticAuthProvid
 use weave_graph_parse::Language;
 use weave_graph_parse::contract::{short_name, visibility_rule};
 
-use crate::config::{UserConfig, read_github_roles, read_rbac_group_mappings, read_rbac_users};
+use crate::config::{
+    UserConfig, read_github_org_roles, read_github_roles, read_rbac_group_mappings, read_rbac_users,
+};
 
 #[cfg(feature = "github-auth")]
 #[derive(serde::Deserialize)]
 struct GithubUser {
     login: String,
     id: u64,
+}
+
+#[cfg(feature = "github-auth")]
+#[derive(serde::Deserialize)]
+struct GithubOrg {
+    login: String,
 }
 
 #[cfg(feature = "github-auth")]
@@ -62,20 +70,33 @@ fn github_identity_from_endpoint(endpoint: &str, token: &str) -> Option<Identity
         .timeout_connect(Some(Duration::from_secs(3)))
         .build()
         .new_agent();
-    let response = (0..2).find_map(|attempt| {
-        let result = agent
-            .get(endpoint)
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "weave-graph")
-            .call();
-        if result.is_err() && attempt == 0 {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        result.ok()
-    })?;
-    let body = response.into_body().read_to_string().ok()?;
-    github_identity_from_json(&body)
+    let request = |url: &str| {
+        (0..2).find_map(|attempt| {
+            let result = agent
+                .get(url)
+                .header("Authorization", format!("Bearer {token}"))
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "weave-graph")
+                .call();
+            if result.is_err() && attempt == 0 {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            result.ok()
+        })
+    };
+    let body = request(endpoint)?.into_body().read_to_string().ok()?;
+    let mut identity = github_identity_from_json(&body)?;
+    let base = endpoint.strip_suffix("/user").unwrap_or(endpoint);
+    if let Some(orgs) = request(&format!("{base}/user/orgs"))
+        .and_then(|response| response.into_body().read_to_string().ok())
+        .and_then(|json| serde_json::from_str::<Vec<GithubOrg>>(&json).ok())
+    {
+        identity.roles.extend(
+            orgs.into_iter()
+                .map(|org| format!("github-org:{}", org.login)),
+        );
+    }
+    Some(identity)
 }
 
 /// "Is this node part of the public API surface" — reuses the same
@@ -142,6 +163,15 @@ pub(crate) fn guard_for(root: &Path, as_subject: Option<&str>) -> RbacGuard {
                     if !identity.roles.contains(role) {
                         identity.roles.push(role.clone());
                     }
+                }
+            }
+            let org_roles = read_github_org_roles(&config_path);
+            for marker in identity.roles.clone() {
+                if let Some(org) = marker.strip_prefix("github-org:")
+                    && let Some(role) = org_roles.get(org)
+                    && !identity.roles.contains(role)
+                {
+                    identity.roles.push(role.clone());
                 }
             }
             identity
