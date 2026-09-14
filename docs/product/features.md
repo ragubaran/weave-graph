@@ -20,7 +20,7 @@ and semantic-quality targets remain subject to the gates in the internal audit.
 | | [`vector`](#vector) | `--features vector` | Vector embeddings with `sqlite-vec` virtual tables for semantic symbol retrieval |
 | | [`slm`](#slm) | `--features slm` | Natural-language terminal query router (`weave ask`), model management, ADR review |
 | | [`provenance`](#provenance) | `--features provenance` | Optional note and document provenance primitives |
-| **Extensibility & Runtimes** | [`turso`](#turso) | `--features turso` | Embedded libSQL storage backend for normal single-engine mode |
+| **Extensibility & Runtimes** | [`turso`](#turso) | Library feature only | Embedded libSQL `Storage` implementation; not available through `weave` commands |
 | | [`python`](#python) | `--features python` | PyO3 Python bindings wheel (`weave-graph-python`) for offline graph analytics |
 
 ### Feature Profiles (Cargo Bundles)
@@ -195,7 +195,7 @@ Semantic code retrieval over AST-bounded chunks:
 - **Vector Storage**: Integrated vector similarity search using `sqlite-vec` virtual tables.
 - **MCP tool (`weave_search_semantic`)**: exposes the same search to AI agents over MCP; a masked top hit is filtered out before the result is truncated to `limit`, never after, so it can't starve a visible runner-up out of a size-capped response — see [MCP Integration](mcp-integration.md).
 
-## `turso`
+## `turso` (library-only, not a CLI capability)
 
 An alternate `Storage` backend on embedded libSQL, implementing the exact
 same trait as the default `rusqlite` backend (same schema, same
@@ -208,17 +208,9 @@ migrations, same transaction discipline) — real, tested code
   does not replace or exclude `weave-graph-store-sqlite` (a plain,
   non-optional dependency of `weave-graph-cli` either way). There is no
   `[storage.turso]` config table and no CLI flag to select a backend.
-- **Why not just wire it in**: `rusqlite` and `libsql` each statically
-  link their own vendored `sqlite3.c`. A process that opens a connection
-  through one and then the other panics on libsql's own
-  threading-configuration self-check — confirmed with a real regression
-  test (`weave-graph-store-turso/tests/cross_compat.rs`), not a
-  hypothetical. Because `weave-graph-cli`'s indexing/write path always
-  uses `SqliteStorage`, any single `weave` binary that also links
-  `weave-graph-store-turso` carries this conflict — a real integration
-  needs a genuinely separate binary target (the way `weave-graph-python`'s
-  wheel, below, never links into the native `weave` binary at all), not a
-  runtime backend-selection flag inside the shared one.
+- **Integration status**: a future CLI selector requires a deliberate build
+  and distribution design, plus compatibility, performance, and recovery
+  tests. It is not a supported runtime configuration today.
 
 ## `python`
 

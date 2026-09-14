@@ -254,24 +254,31 @@ Configures lexical and semantic code search:
 
 ---
 
-# Part III: Turso Storage Engine (Not Yet Integrated)
+# Part III: Turso Storage Engine (Library-only)
 
 > [!WARNING]
 > **Corrected (2026-09-13)**: earlier revisions of this section described a "dedicated `weave-turso` binary variant" that builds separately from the default `weave` binary and safely avoids a C-symbol conflict by construction. No such binary exists anywhere in this repository — `grep -r "weave-turso"` across the workspace turns up nothing but this doc. There is exactly one CLI binary target (`weave`, `crates/weave-graph-cli`), and `--features turso` only adds `weave-graph-store-turso` as an *additional* optional dependency to that same binary — it does not replace or exclude `weave-graph-store-sqlite`, which is a plain, non-optional dependency of `weave-graph-cli` regardless of any feature flag. The paragraphs below describe what's actually true today, not what a future build could be.
 
-## 12. Why SQLite and Turso Can't Share One Process
+## 12. Current support boundary
 
 `TursoStorage` (`crates/weave-graph-store-turso`) is a complete `Storage` trait implementation — same transactional guarantees, same schema migrations as `SqliteStorage` — built on embedded **libSQL** (`libsql = "0.9"`) instead of `rusqlite`. It is real, tested code, benchmarked in its own `benches/turso_latency.rs`.
 
-The C-symbol conflict is real and reproducible: `rusqlite`'s bundled `libsqlite3-sys` and `libsql`'s bundled `libsql-ffi` each statically link their own vendored `sqlite3.c`, defining the same symbols (`sqlite3_open`, `sqlite3_step`, etc.). A process that opens a connection through one and then the other panics on libsql's own threading-configuration self-check — confirmed with a real regression test, not a hypothetical: `crates/weave-graph-store-turso/tests/cross_compat.rs::opening_turso_after_sqlite_in_the_same_process_panics`.
+The supported `weave` CLI uses SQLite. The repository contains a separately
+tested `TursoStorage` library implementation, but it is not wired into CLI or
+MCP storage selection. No Turso backend selector or Turso distribution is
+currently supported; do not configure `storage.backend = "turso"`.
 
-**This is why `weave-graph-cli` never constructs a `TursoStorage` today.** Every CLI command still opens `SqliteStorage` regardless of which features are compiled in — `--features turso` links the backend into the `weave` binary, but nothing routes to it, and nothing safely could without more work:
+`weave-graph-cli` never constructs a `TursoStorage` today. Every CLI command
+opens `SqliteStorage`; `--features turso` only compiles the library dependency:
 - There is no `[storage.turso]` config table, no `sync_url`/`auth_token`/replication config, and no CLI flag to select a backend.
-- Building such a flag today, in the shared `weave` binary, would compile clean and then panic the first time it was actually used — because `weave-graph-cli`'s indexing/write path calls `SqliteStorage::open` unconditionally, any single `weave` binary that also links `weave-graph-store-turso` carries the conflict above.
-- A real integration needs a genuinely separate binary target that never links `weave-graph-store-sqlite` at all (a new `[[bin]]`, its own CI job and release artifact) — not a runtime `if` inside the existing `weave` binary.
+- A future selector requires a deliberate build/distribution design and its
+  own compatibility, performance, and recovery tests; it is not a runtime
+  configuration claim today.
 
 ### What's Real Today
-`TursoStorage::open(path)` / `open_in_memory()` are usable as a library from other Rust code (a host application embedding `weave-graph-store-turso` directly, never alongside `weave-graph-store-sqlite` in the same process) — but there is nothing in `.weave/config.toml` or the `weave` CLI that points at it yet.
+`TursoStorage::open(path)` / `open_in_memory()` are usable as a library from
+other Rust code. There is nothing in `.weave/config.toml` or the `weave` CLI
+that selects it yet.
 
 ---
 
@@ -291,4 +298,3 @@ weave config set watch.blast_radius_ceiling 300
 
 > [!NOTE]
 > `weave config set` only writes scalar values (strings, booleans, numbers). Array keys such as `[federation] linked_repos` or user tables such as `[rbac.users]` require editing `.weave/config.toml` directly.
-

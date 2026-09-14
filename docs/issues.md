@@ -50,7 +50,7 @@ deployment threat model.
 
 | Original ID | Status | Current interpretation / next action |
 | --- | --- | --- |
-| CORE-01 | Open, decision | CLI/MCP still construct SQLite. A same-process rusqlite/libSQL test found a native SQLite conflict, so a runtime backend enum is unsafe as originally proposed. Choose an isolated Turso binary/process or explicitly narrow support. |
+| CORE-01 | Open, scope clarified | `TursoStorage` is implemented and tested as a library backend, but CLI/MCP construct SQLite and expose no backend selector. The current supported product is SQLite-only; schedule a separate Turso binary/process only if there is a concrete deployment need. |
 | CORE-02 | Closed | Search methods were added to the `Storage` trait; this does **not** resolve CORE-01. |
 | CORE-03 | Closed | Optional MCP semantic and policy tools were registered and feature forwarding through the CLI was fixed. |
 | SEC-01 | Closed, caveat | Vector visibility is applied before final rerank truncation. Continue to test top-k behavior and timing/metadata exposure under realistic RBAC policies. |
@@ -149,7 +149,7 @@ mistaken for implementation or release approval.
 | SLMs provide measured accuracy/TTFT, ADR extraction, autonomous refactoring, or zero-RSS guarantees. | Model artifacts and end-to-end evaluation are not part of the verified release surface. | PERF-G10; Phase 4 P4-E |
 | Weave provides built-in SSO/OIDC/SAML integrations or vendor-specific IdP adapters. | The implemented surface is generic SCIM plus static role mapping; OAuth/OIDC and group mapping are not shipped. | IDP-01, RBAC-02 |
 | Provenance is Merkle/PKI/non-repudiation protection. | The current opt-in registry path uses an operator-supplied shared secret and provides integrity checking only. | PROV-01 |
-| Turso can be selected from the normal `weave` CLI or safely coexists with SQLite in one process. | The current CLI always opens SQLite; native library symbol/threading conflicts require a separate build/process decision. | CORE-01 |
+| Turso is a selectable backend of the normal `weave` CLI. | `TursoStorage` is library-only today; no CLI selector or supported Turso distribution exists. | CORE-01 |
 | Hub provides authenticated, per-identity RBAC diagrams or a centralized mesh policy endpoint. | Authentication is opt-in, canvas exclusion is not per-identity RBAC, and cross-repository policy linting is not implemented. | HUB-01, HUB-02, HUB-03, FED-01 |
 | Universal sub-millisecond latency, 92% token reduction, or cross-platform certification. | These were projections or environment-specific observations without reproducible release gates for every supported profile/platform. | PERF-G02, PERF-G03, PERF-G12, PERF-G13 |
 

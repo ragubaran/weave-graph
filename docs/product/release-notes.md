@@ -35,7 +35,12 @@ Security and API-surface fixes from the Phase 3 issue audit, applied across `rba
 - **Semantic search (`weave search --semantic`, `weave_search_semantic`)**: the RBAC visibility filter is now applied to reranked candidates _before_ the result is truncated to `limit`, not after — a masked top hit can no longer starve a visible runner-up out of a size-capped result (previously: the top-K could be entirely masked, returning zero results even when visible matches existed further down).
 - **`search_symbols`/`search_vector` moved onto the `Storage` trait** (`weave-graph-core`), with a default "unsupported" implementation — any current or future backend gets both without stub work; previously these were inherent methods only `SqliteStorage` had.
 - **Two new MCP tools**: `weave_search_semantic` (feature `vector`) and `weave_policy_lint` (feature `policy-lint`), both masked through the same session-bound `RbacGuard` every other tool already uses. `weave serve --mcp` now advertises up to 8 tools (4 base + 2 `notes` + 1 `vector` + 1 `policy-lint`), up from 4–6.
-- **Documentation correction**: the `turso` feature's docs previously implied a separate, isolated `weave-turso` binary variant existed. It doesn't — there is one CLI binary (`weave`), and `--features turso` only adds `weave-graph-store-turso` as an optional dependency alongside the always-linked `weave-graph-store-sqlite`. The two can't safely open a connection in the same process (confirmed by a new regression test, `weave-graph-store-turso/tests/cross_compat.rs`) — `weave-graph-cli` correctly never constructs a `TursoStorage` today, and a real integration needs a genuinely separate binary target, not a runtime flag in the shared one. See `docs/product/configuration.md` Part III and `docs/product/features.md`'s `turso` section for the corrected explanation.
+- **Documentation correction**: there is one CLI binary (`weave`), and
+  `--features turso` only compiles the tested `weave-graph-store-turso`
+  library alongside the default SQLite backend. The CLI never constructs
+  `TursoStorage` and provides no backend selector or Turso distribution. A
+  future CLI integration requires its own build, compatibility, and recovery
+  decision; it is not a current product capability.
 
 ### Corrected Binary Sizes, Tree-Sitter Feature-Gating, Federated Query Persistence
 
@@ -91,8 +96,9 @@ Previous release: `v1.0.0`.
 - **Single-Engine Packaging**:
   - Standard Normal Mode: the core artifact target is the stripped `--no-default-features` build. Do not use this entry as evidence of a published release or certified RAM envelope.
   - Vector mode is optional storage groundwork; package size, learned quality, and ANN performance are not certified.
-- **Turso Feature Mode (`v1.0.1-turso`, executable `weave`)**:
-  - Available strictly for Normal Mode (no vector support), replacing SQLite with the libSQL embedded replica backend (<11.5 MB stripped).
+- **Turso library feature**: `weave-graph-store-turso` is implemented and
+  tested as a library backend, but no `v1.0.1-turso` executable or CLI backend
+  selector is published.
 - **CLI Self-Identification**:
   - `weave --version` now reports current binary version (`weave 1.0.1`).
 - **Hub Ecosystem & Provenance Status**:
