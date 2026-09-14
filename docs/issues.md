@@ -79,7 +79,7 @@ deployment threat model.
 | POL-05 | Deferred capability | Waiver role hierarchy and bypass audit trail require a policy decision; do not rely on the obsolete `WEAVE_ALLOW_DRIFT` claim. |
 | FED-01 | Deferred capability | Cross-repository boundary linting is not yet a local federation capability. |
 | PROV-01 | Closed, opt-in | Hub registry can verify with an operator-supplied provenance key before commit; no key means no verification. Do not present the test verifier as public-key provenance. |
-| HUB-01 | Partial | Hub canvas exclusion config and snapshot sanitization were wired in later review. Per-identity authorization of every diagram endpoint still needs an end-to-end threat-model check; a config exclude list is not RBAC. |
+| HUB-01 | Partial | Hub canvas now exposes an opt-in `CanvasAuthorizer` callback that receives the request credential and filters module nodes before JSON serialization. End-to-end identity/RBAC wiring, mesh-canvas filtering, and threat-model tests remain open; static exclusion alone is not RBAC. |
 | HUB-02 | Closed, opt-in | Hub bearer authentication is available, but unset-token deployments retain the unauthenticated loopback default. |
 | HUB-03 | Deferred capability | Central mesh policy endpoint depends on an approved FED-01 design. |
 

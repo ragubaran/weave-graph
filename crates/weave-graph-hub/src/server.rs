@@ -18,6 +18,11 @@ use weave_graph_core::auth::bearer_token_matches;
 
 use crate::registry::{PullResult, PushDecision, Registry, is_safe_path_component};
 
+#[cfg(feature = "hub-canvas")]
+pub trait CanvasAuthorizer: Send + Sync {
+    fn can_view(&self, credential: Option<&str>, module_label: &str) -> bool;
+}
+
 const MAX_HUB_HEADER_BYTES: usize = 16 * 1024;
 const MAX_HUB_CHUNK_BYTES: usize = 5 * 1024 * 1024;
 const MAX_CONCURRENT_CONNECTIONS: usize = 64;
@@ -27,6 +32,8 @@ pub struct RegistryServer {
     listener: TcpListener,
     registry: Arc<Registry>,
     auth_token: Option<Arc<str>>,
+    #[cfg(feature = "hub-canvas")]
+    canvas_authorizer: Option<Arc<dyn CanvasAuthorizer>>,
 }
 
 struct ConnectionSlot(Arc<AtomicUsize>);
@@ -55,7 +62,15 @@ impl RegistryServer {
             listener: TcpListener::bind(addr)?,
             registry: Arc::new(registry),
             auth_token: token.map(Arc::from),
+            #[cfg(feature = "hub-canvas")]
+            canvas_authorizer: None,
         })
+    }
+
+    #[cfg(feature = "hub-canvas")]
+    pub fn with_canvas_authorizer(mut self, authorizer: Arc<dyn CanvasAuthorizer>) -> Self {
+        self.canvas_authorizer = Some(authorizer);
+        self
     }
 
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
@@ -86,10 +101,18 @@ impl RegistryServer {
             }
             let registry = Arc::clone(&self.registry);
             let auth_token = self.auth_token.clone();
+            #[cfg(feature = "hub-canvas")]
+            let canvas_authorizer = self.canvas_authorizer.clone();
             let active_connections = Arc::clone(&active_connections);
             thread::spawn(move || {
                 let _slot = ConnectionSlot(active_connections);
-                let _ = handle_connection(stream, &registry, auth_token.as_deref());
+                let _ = handle_connection(
+                    stream,
+                    &registry,
+                    auth_token.as_deref(),
+                    #[cfg(feature = "hub-canvas")]
+                    canvas_authorizer.as_deref(),
+                );
             });
             if reached_max_connections {
                 break;
@@ -220,24 +243,43 @@ fn parse_repo_scoped_path(path: &str, suffix: &str) -> Option<String> {
 }
 
 #[cfg(feature = "hub-canvas")]
-fn handle_canvas(stream: &mut TcpStream, registry: &Registry, repo_id: &str) {
+fn handle_canvas(
+    stream: &mut TcpStream,
+    registry: &Registry,
+    repo_id: &str,
+    credential: Option<&str>,
+    authorizer: Option<&dyn CanvasAuthorizer>,
+) {
     match registry.canvas(repo_id) {
-        Some(Ok(canvas)) => match serde_json::to_vec(&canvas) {
-            Ok(body) => write_response(
-                stream,
-                200,
-                "OK",
-                &[("Content-Type", "application/json".to_string())],
-                &body,
-            ),
-            Err(e) => write_response(
-                stream,
-                500,
-                "Internal Server Error",
-                &[],
-                e.to_string().as_bytes(),
-            ),
-        },
+        Some(Ok(mut canvas)) => {
+            if let Some(authorizer) = authorizer {
+                canvas.nodes.retain(|node| {
+                    authorizer.can_view(
+                        credential,
+                        node.text
+                            .strip_prefix("# ")
+                            .and_then(|s| s.split('\n').next())
+                            .unwrap_or(&node.text),
+                    )
+                });
+            }
+            match serde_json::to_vec(&canvas) {
+                Ok(body) => write_response(
+                    stream,
+                    200,
+                    "OK",
+                    &[("Content-Type", "application/json".to_string())],
+                    &body,
+                ),
+                Err(e) => write_response(
+                    stream,
+                    500,
+                    "Internal Server Error",
+                    &[],
+                    e.to_string().as_bytes(),
+                ),
+            }
+        }
         Some(Err(e)) => write_response(stream, 500, "Internal Server Error", &[], e.as_bytes()),
         None => write_response(
             stream,
@@ -269,7 +311,13 @@ fn parse_mesh_canvas_path(path: &str) -> Option<Vec<String>> {
 }
 
 #[cfg(feature = "hub-canvas")]
-fn handle_mesh_canvas(stream: &mut TcpStream, registry: &Registry, repo_ids: &[String]) {
+fn handle_mesh_canvas(
+    stream: &mut TcpStream,
+    registry: &Registry,
+    repo_ids: &[String],
+    _credential: Option<&str>,
+    _authorizer: Option<&dyn CanvasAuthorizer>,
+) {
     let canvas = registry.mesh_canvas(repo_ids);
     match serde_json::to_vec(&canvas) {
         Ok(body) => write_response(
@@ -329,6 +377,7 @@ fn handle_connection(
     mut stream: TcpStream,
     registry: &Registry,
     auth_token: Option<&str>,
+    #[cfg(feature = "hub-canvas")] canvas_authorizer: Option<&dyn CanvasAuthorizer>,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(CLIENT_IO_TIMEOUT))?;
     stream.set_write_timeout(Some(CLIENT_IO_TIMEOUT))?;
@@ -365,14 +414,26 @@ fn handle_connection(
     if req.method == "GET"
         && let Some(repo_ids) = parse_mesh_canvas_path(&req.path)
     {
-        handle_mesh_canvas(&mut stream, registry, &repo_ids);
+        handle_mesh_canvas(
+            &mut stream,
+            registry,
+            &repo_ids,
+            header(&req, "Authorization"),
+            canvas_authorizer,
+        );
         return Ok(());
     }
     #[cfg(feature = "hub-canvas")]
     if req.method == "GET"
         && let Some(repo_id) = parse_repo_scoped_path(&req.path, "canvas")
     {
-        handle_canvas(&mut stream, registry, &repo_id);
+        handle_canvas(
+            &mut stream,
+            registry,
+            &repo_id,
+            header(&req, "Authorization"),
+            canvas_authorizer,
+        );
         return Ok(());
     }
     #[cfg(feature = "hub-webhooks")]

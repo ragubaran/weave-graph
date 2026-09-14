@@ -28,4 +28,6 @@ pub use client::{HubClient, HubError, PullOutcome, PushOutcome};
 #[cfg(feature = "hub-provenance")]
 pub use provenance::{MockSnapshotProvenanceVerifier, ProvenanceError, SnapshotProvenanceVerifier};
 pub use registry::{PullResult, PushDecision, Registry, RegistryConfig};
+#[cfg(feature = "hub-canvas")]
+pub use server::CanvasAuthorizer;
 pub use server::RegistryServer;
