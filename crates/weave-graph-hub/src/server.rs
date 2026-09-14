@@ -23,6 +23,25 @@ pub trait CanvasAuthorizer: Send + Sync {
     fn can_view(&self, credential: Option<&str>, module_label: &str) -> bool;
 }
 
+#[cfg(feature = "hub-canvas")]
+fn filter_canvas(
+    mut canvas: crate::canvas::Canvas,
+    credential: Option<&str>,
+    authorizer: Option<&dyn CanvasAuthorizer>,
+) -> crate::canvas::Canvas {
+    if let Some(authorizer) = authorizer {
+        canvas.nodes.retain(|node| {
+            let label = node
+                .text
+                .strip_prefix("# ")
+                .and_then(|text| text.split('\n').next())
+                .unwrap_or(&node.text);
+            authorizer.can_view(credential, label)
+        });
+    }
+    canvas
+}
+
 const MAX_HUB_HEADER_BYTES: usize = 16 * 1024;
 const MAX_HUB_CHUNK_BYTES: usize = 5 * 1024 * 1024;
 const MAX_CONCURRENT_CONNECTIONS: usize = 64;
@@ -251,18 +270,8 @@ fn handle_canvas(
     authorizer: Option<&dyn CanvasAuthorizer>,
 ) {
     match registry.canvas(repo_id) {
-        Some(Ok(mut canvas)) => {
-            if let Some(authorizer) = authorizer {
-                canvas.nodes.retain(|node| {
-                    authorizer.can_view(
-                        credential,
-                        node.text
-                            .strip_prefix("# ")
-                            .and_then(|s| s.split('\n').next())
-                            .unwrap_or(&node.text),
-                    )
-                });
-            }
+        Some(Ok(canvas)) => {
+            let canvas = filter_canvas(canvas, credential, authorizer);
             match serde_json::to_vec(&canvas) {
                 Ok(body) => write_response(
                     stream,

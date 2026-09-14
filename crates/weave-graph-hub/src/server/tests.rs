@@ -403,6 +403,48 @@ fn canvas_endpoint_is_404_before_any_push_and_200_after_commit() {
 
 #[cfg(feature = "hub-canvas")]
 #[test]
+fn canvas_authorizer_filters_modules_before_serialization() {
+    use crate::canvas::{Canvas, CanvasNode};
+    use std::sync::Arc;
+
+    struct AllowPlatform;
+    impl CanvasAuthorizer for AllowPlatform {
+        fn can_view(&self, credential: Option<&str>, module_label: &str) -> bool {
+            credential == Some("Bearer good") && module_label == "platform"
+        }
+    }
+
+    let canvas = Canvas {
+        nodes: vec![
+            CanvasNode {
+                id: "a".into(),
+                kind: "text",
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                text: "# platform\n\n1 file(s)".into(),
+            },
+            CanvasNode {
+                id: "b".into(),
+                kind: "text",
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+                text: "# secret\n\n1 file(s)".into(),
+            },
+        ],
+        overflow_count: 0,
+    };
+    let authorizer = Arc::new(AllowPlatform);
+    let filtered = super::filter_canvas(canvas, Some("Bearer good"), Some(authorizer.as_ref()));
+    assert_eq!(filtered.nodes.len(), 1);
+    assert!(filtered.nodes[0].text.contains("platform"));
+}
+
+#[cfg(feature = "hub-canvas")]
+#[test]
 fn mesh_canvas_endpoint_stitches_multiple_repos_in_one_call() {
     use weave_graph_core::{Node, Storage};
     use weave_graph_store_sqlite::SqliteStorage;
