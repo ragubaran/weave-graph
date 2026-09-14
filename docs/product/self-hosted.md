@@ -99,7 +99,7 @@ weave --as charlie serve --mcp
 
 ## 3. SCIM 2.0 Identity Provisioning
 
-Weave Graph accepts role assignments pushed from an enterprise IdP through a generic SCIM 2.0 endpoint — it doesn't implement OAuth/OIDC or a GitHub-specific integration itself; it's a standard SCIM subject→roles push target any SCIM-capable IdP (Okta, Azure AD, Google Workspace, a custom script) can point at.
+Weave Graph accepts role assignments pushed from an enterprise IdP through a generic SCIM 2.0 endpoint. An optional `github-auth` build can also resolve a supplied GitHub token through GitHub's authenticated-user API; it is not generic OAuth/OIDC or interactive SSO.
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐

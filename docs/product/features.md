@@ -13,6 +13,7 @@ and semantic-quality targets remain subject to the gates in the internal audit.
 | | [`watch`](#watch) | `--features watch` | Auto-sync file watcher, debounce queue, blast-radius safety ceiling |
 | | [`viz`](#viz) | `--features viz` | Offline standalone HTML viewer, loopback static report server |
 | **Custom / Self-Hosted Tier** | [`rbac`](#rbac) | `--features rbac` | Query-layer role-based masking, SCIM 2.0 provisioning server, IdP directory sync |
+| **GitHub token identity (optional)** | [`github-auth`](#github-token-identity) | `--features github-auth` | GitHub API identity lookup from `WEAVE_GITHUB_TOKEN` |
 | | [`policy-lint`](#policy-lint) | `--features policy-lint` | YAML architectural boundaries, dependency linting, architectural drift analytics |
 | | [`otel`](#otel) | `--features otel` | OTLP JSON trace import, node-level latency percentiles and error metrics |
 | | [`hub`](#hub) | `--features hub` | Centralized snapshot registry, `weave sync pull/push`, delta sync, CI hydration |
@@ -67,6 +68,16 @@ links exist; it never attaches provenance itself. Merkle/PKI provenance is
 provided by an external application such as Lodestone Nexus (or another
 deployment-supplied provider) wired against this trait — no signer or PKI
 implementation is a hard dependency of `weave`.
+
+## `github-auth`
+
+When enabled with `--features github-auth`, commands resolve
+`WEAVE_GITHUB_TOKEN` through GitHub's authenticated-user API and use the
+returned login and stable user ID as the query identity. Invalid, missing,
+or unreachable tokens fail closed to the normal anonymous/public view. The
+token is never persisted or emitted in errors or MCP responses. This is a
+GitHub token identity lookup only; it is not generic OAuth/OIDC, SAML, or
+interactive SSO, and it requires outbound HTTPS access to GitHub.
 
 ## `notes`
 

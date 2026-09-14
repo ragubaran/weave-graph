@@ -150,7 +150,7 @@ Outputs every file, line number, and consuming symbol across all linked reposito
 
 For centralized team infrastructure, private cloud VPCs, or compliance environments, Weave Graph provides the **Custom Mode Profile** (`--features custom`).
 
-- **Role-Based Access Control (RBAC)**: Query-layer security masking across CLI, reports, and MCP tools. Identity comes from `.weave/config.toml`'s `[rbac.users]` (a static subject→roles map) or, for enterprise provisioning, a loopback SCIM 2.0 endpoint (`weave rbac serve-scim`) any SCIM-capable IdP can push to — there's no GitHub-specific or OAuth integration.
+- **Role-Based Access Control (RBAC)**: Query-layer security masking across CLI, reports, and MCP tools. Identity comes from `.weave/config.toml`'s `[rbac.users]`, loopback SCIM provisioning, or (with the optional `github-auth` feature) a GitHub token in `WEAVE_GITHUB_TOKEN`.
 - **Architectural Policy Linting**: Declare architectural layers in `.weave/policy.yaml` and gate CI pull requests with `weave policy lint`.
 - **Distributed Traces & Telemetry**: Import OTLP JSON traces (`weave traces import`) to overlay p50/p95/p99 latencies directly on graph symbols.
 - **Schema Registry & Snapshot Hub**: Centralized snapshot synchronization with the standalone `weave-registry` daemon — atomic file-swap hydration (`weave sync pull`) instead of a cold re-parse.

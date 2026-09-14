@@ -27,6 +27,33 @@ use weave_graph_parse::contract::{short_name, visibility_rule};
 
 use crate::config::{UserConfig, read_rbac_users};
 
+#[cfg(feature = "github-auth")]
+#[derive(serde::Deserialize)]
+struct GithubUser {
+    login: String,
+    id: u64,
+}
+
+/// Resolve a GitHub bearer token through the authenticated-user API.
+/// Tokens are never persisted or included in errors; failures deny access.
+#[cfg(feature = "github-auth")]
+fn github_identity(token: &str) -> Option<Identity> {
+    if token.trim().is_empty() {
+        return None;
+    }
+    let response = ureq::get("https://api.github.com/user")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "weave-graph")
+        .call()
+        .ok()?;
+    let user: GithubUser = response.into_body().read_json().ok()?;
+    Some(Identity {
+        subject: format!("github:{}:{}", user.login, user.id),
+        roles: vec!["github".to_string()],
+    })
+}
+
 /// "Is this node part of the public API surface" — reuses the same
 /// per-language heuristic `contract.rs` uses for the M2.2 contract hash,
 /// so RBAC visibility and that gate never disagree. A path with no
@@ -57,11 +84,17 @@ pub(crate) fn guard_for(root: &Path, as_subject: Option<&str>) -> RbacGuard {
     }
 
     // Convert to the simplified roles-only map for the static auth provider
-    let role_users = users
+    let role_users: HashMap<String, Vec<String>> = users
         .into_iter()
         .map(|(subject, user_config)| (subject, user_config.roles))
         .collect();
 
+    #[cfg(feature = "github-auth")]
+    let identity = std::env::var("WEAVE_GITHUB_TOKEN")
+        .ok()
+        .and_then(|token| github_identity(&token))
+        .unwrap_or_else(|| StaticAuthProvider::new(role_users.clone()).resolve(as_subject));
+    #[cfg(not(feature = "github-auth"))]
     let identity: Identity = StaticAuthProvider::new(role_users).resolve(as_subject);
     RbacGuard::new(identity, is_public)
 }

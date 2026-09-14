@@ -224,7 +224,7 @@ Runs the loopback SCIM 2.0 provisioning endpoint for enterprise IdP synchronizat
 weave rbac serve-scim [--port <port>] [--path <dir>]
 ```
 - `--port <port>` *(default: `9292`)*.
-- Generic SCIM 2.0 (`POST /` provision, `DELETE /{subject}` deprovision, `POST /sync` refresh) — any SCIM-capable IdP can push to it; no GitHub-specific or OAuth integration exists.
+- Generic SCIM 2.0 (`POST /` provision, `DELETE /{subject}` deprovision, `POST /sync` refresh) — any SCIM-capable IdP can push to it. GitHub token identity is a separate optional `github-auth` feature, not part of this SCIM endpoint.
 - Writes identities and roles to `.weave/rbac-directory.toml`.
 
 ### `weave policy lint` & `weave policy drift` (feature: `policy-lint`)
