@@ -40,6 +40,12 @@ The Phase 4 work packages and acceptance criteria for these gaps are in
 [impl.md](impl.md#5-phase-4-developer-performance-evidence-based-review--optional-local-assistance).
 The accepted profile/model boundaries are in [plan.md](plan.md).
 
+## Documentation interoperability verification
+
+| ID | Status | Issue and required closure |
+| --- | --- | --- |
+| DOC-OBS-01 | Open, environment-blocked | JSON Canvas export is covered by a passing schema test, but the Obsidian desktop rendering check is not complete. `/Applications/Obsidian.app` exists on the verification host, yet macOS reports `kLSNoExecutableErr` because the bundle has no Resources payload. Reinstall a complete Obsidian application, open a generated `.canvas` in a temporary vault, and record a successful render before marking this claim closed. |
+
 ## Security, storage and Phase 3 capability register
 
 The original Phase 3 audit used some inaccurate `feature_matrix.md` claims as

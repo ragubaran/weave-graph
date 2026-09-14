@@ -42,10 +42,10 @@ becomes an `EXPLAINS_RATIONALE` edge — an unresolvable reference produces
 no edge, never a dangling one. `.canvas` export (`weave report`) picks
 these nodes up automatically — the exported JSON is schema-correct
 [JSON Canvas](https://jsoncanvas.org), which Obsidian's Graph View (and
-other zero-install canvas viewers) consumes natively. Not independently
-verified inside the actual Obsidian application in this repo's own test
-environment; the schema conformance is tested, opening the file in
-Obsidian itself is not.
+other zero-install canvas viewers) consumes natively. The repository's
+schema test passes, but desktop rendering is still unverified: Obsidian's
+bundle is present on the verification host, yet macOS cannot launch it
+(`kLSNoExecutableErr`, incomplete application bundle).
 
 ## `federation`
 
