@@ -456,6 +456,16 @@ fn github_identity_json_rejects_missing_identity_fields() {
 
 #[cfg(feature = "github-auth")]
 #[test]
+fn github_org_response_maps_logins_to_role_markers() {
+    assert_eq!(
+        super::github_org_markers(r#"[{"login":"platform"},{"login":"security"}]"#),
+        vec!["github-org:platform", "github-org:security"]
+    );
+    assert!(super::github_org_markers("not-json").is_empty());
+}
+
+#[cfg(feature = "github-auth")]
+#[test]
 fn github_identity_lookup_sends_bearer_and_parses_api_response() {
     use std::io::{Read, Write};
     use std::net::TcpListener;

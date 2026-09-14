@@ -45,6 +45,17 @@ struct GithubOrg {
 }
 
 #[cfg(feature = "github-auth")]
+fn github_org_markers(body: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<GithubOrg>>(body)
+        .map(|orgs| {
+            orgs.into_iter()
+                .map(|org| format!("github-org:{}", org.login))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "github-auth")]
 fn github_identity_from_json(body: &str) -> Option<Identity> {
     let user: GithubUser = serde_json::from_str(body).ok()?;
     Some(Identity {
@@ -89,12 +100,9 @@ fn github_identity_from_endpoint(endpoint: &str, token: &str) -> Option<Identity
     let base = endpoint.strip_suffix("/user").unwrap_or(endpoint);
     if let Some(orgs) = request(&format!("{base}/user/orgs"))
         .and_then(|response| response.into_body().read_to_string().ok())
-        .and_then(|json| serde_json::from_str::<Vec<GithubOrg>>(&json).ok())
+        .map(|json| github_org_markers(&json))
     {
-        identity.roles.extend(
-            orgs.into_iter()
-                .map(|org| format!("github-org:{}", org.login)),
-        );
+        identity.roles.extend(orgs);
     }
     Some(identity)
 }
