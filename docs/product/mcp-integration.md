@@ -117,6 +117,21 @@ Add to your Zed `settings.json`:
 }
 ```
 
+### Kiro
+Add to `~/.kiro/settings/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "weave": {
+      "command": "weave",
+      "args": ["serve", "--mcp"],
+      "cwd": "/path/to/your/project"
+    }
+  }
+}
+```
+
 ### With RBAC Role Enforcement
 To bind the agent session to a non-`internal` identity (sees only `pub`-visible symbols; see §9 for the visibility model):
 

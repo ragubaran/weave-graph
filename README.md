@@ -130,7 +130,7 @@ weave report                 # WEAVE_REPORT.md + .canvas export
 weave serve --mcp            # local MCP server for AI agents (stdio, loopback-only)
 ```
 
-**Zero-Config AI Agent Integration**: `weave init` automatically creates or merges into `.mcp.json` at your repository root (`"weave": { "command": "weave", "args": ["serve", "--mcp"] }`), ready for immediate use by Claude Code, Cursor, Windsurf, Google Antigravity, Gemini Code Assist, GitHub Copilot, Codex, OpenCode, and Hermes Agent while preserving any existing servers (like `graft`). It also configures `.gitignore` and `.ignore` with `.weave/*` and `!.weave/config.toml` so `.weave/config.toml` is tracked and committable in version control while derived database and rebuild files are cleanly ignored.
+**Zero-Config AI Agent Integration**: `weave init` automatically creates or merges into `.mcp.json` at your repository root (`"weave": { "command": "weave", "args": ["serve", "--mcp"] }`), ready for immediate use by Claude Code, Cursor, Windsurf, Google Antigravity, Gemini Code Assist, GitHub Copilot, Codex, OpenCode, Hermes Agent, and Kiro while preserving any existing servers (like `graft`). It also configures `.gitignore` and `.ignore` with `.weave/*` and `!.weave/config.toml` so `.weave/config.toml` is tracked and committable in version control while derived database and rebuild files are cleanly ignored.
 
 ### Multiple mode — several local repos, no hosted service
 
