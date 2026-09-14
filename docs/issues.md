@@ -68,10 +68,10 @@ deployment threat model.
 | SEC-05 | Closed for opt-in policy | `--require-as` / `[rbac] require_identity` gate MCP startup. Do not silently impose RBAC on unconfigured solo repos; verify each future transport's identity path. |
 | SEC-06 | Closed for configured grants | Anonymous waivers are denied when the repo grants `allow-drift` to configured users. |
 | SEC-07 | Closed | HTTP bearer identity is checked before body read, and stdio now accepts per-request `_meta.token` credentials through the same transient handler path. Added regression coverage proving a valid stdio token resolves an identity and is not reflected in output; invalid/missing credentials remain fail-closed when `require_auth` is enabled. |
-| IDP-01 | Partial | RFC 7643 object-array `roles` are parsed; group ingestion awaits RBAC-02. |
+| IDP-01 | Partial | RFC 7643 object-array `roles` and `groups` are now ingested as `group:<value>` markers. End-to-end SCIM group payload coverage is still required before closure. |
 | IDP-02 | Closed, opt-in | Loopback SCIM can enforce a configured bearer token; an unset token retains the earlier local unauthenticated mode. |
 | RBAC-01 | Deferred capability | Path-scoped roles need an approved role-model expansion and authorization tests. |
-| RBAC-02 | Deferred capability | IdP group-to-capability mapping and SCIM group parsing need a concrete policy design. |
+| RBAC-02 | Partial | `[rbac.group_mappings]` now maps SCIM `group:<value>` markers to Weave roles during guard construction. Policy validation, precedence, and end-to-end authorization tests remain open. |
 | POL-01 | Open | RBAC-masked policy lint can report false clean results in CI. Define whether CI uses an unmasked privileged identity or fails on incomplete visibility; do not invent an existing flag. |
 | POL-02 | Deferred capability | Semantic-coupling policy checks are not implemented; require a quality and false-positive evaluation before gating CI. |
 | POL-03 | Closed | Mask-induced orphan reports are annotated, using one graph fetch for both views. |

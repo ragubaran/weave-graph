@@ -25,7 +25,7 @@ use weave_graph_core::rbac::{AuthProvider, Identity, RbacGuard, StaticAuthProvid
 use weave_graph_parse::Language;
 use weave_graph_parse::contract::{short_name, visibility_rule};
 
-use crate::config::{UserConfig, read_rbac_users};
+use crate::config::{UserConfig, read_rbac_group_mappings, read_rbac_users};
 
 #[cfg(feature = "github-auth")]
 #[derive(serde::Deserialize)]
@@ -85,7 +85,19 @@ fn is_public(node: &Node) -> bool {
 pub(crate) fn guard_for(root: &Path, as_subject: Option<&str>) -> RbacGuard {
     let config_path = root.join(".weave").join("config.toml");
     let mut users = read_rbac_users(&config_path);
+    let group_mappings = read_rbac_group_mappings(&config_path);
     for (subject, user_config) in load_directory(&directory_file(root)) {
+        let mut user_config = user_config;
+        for group in user_config
+            .roles
+            .iter()
+            .filter_map(|r| r.strip_prefix("group:").map(String::from))
+            .collect::<Vec<_>>()
+        {
+            if let Some(role) = group_mappings.get(&group) {
+                user_config.roles.push(role.clone());
+            }
+        }
         users.insert(subject, user_config);
     }
 
@@ -416,7 +428,7 @@ fn provision_request(body: &str) -> Result<DirectoryMutation, String> {
     // (`[{"value": "internal"}]`) as well as a flat string array — real
     // IdPs (Okta, Azure AD) send the former; the prior string-only match
     // silently dropped every object element, producing zero roles.
-    let roles = json
+    let mut roles = json
         .get("roles")
         .and_then(|v| v.as_array())
         .map(|a| {
@@ -429,6 +441,16 @@ fn provision_request(body: &str) -> Result<DirectoryMutation, String> {
                 .collect()
         })
         .unwrap_or_else(|| vec!["reader".to_string()]);
+    if let Some(groups) = json.get("groups").and_then(|v| v.as_array()) {
+        roles.extend(groups.iter().filter_map(|group| {
+            group.as_str().map(|s| format!("group:{s}")).or_else(|| {
+                group
+                    .get("value")
+                    .and_then(|v| v.as_str())
+                    .map(|s| format!("group:{s}"))
+            })
+        }));
+    }
     Ok(DirectoryMutation::Provision { subject, roles })
 }
 

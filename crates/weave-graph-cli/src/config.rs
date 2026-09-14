@@ -148,6 +148,29 @@ pub(crate) fn read_rbac_users(config_path: &Path) -> std::collections::HashMap<S
         .collect()
 }
 
+#[cfg(feature = "rbac")]
+pub(crate) fn read_rbac_group_mappings(
+    config_path: &Path,
+) -> std::collections::HashMap<String, String> {
+    let Ok(content) = fs::read_to_string(config_path) else {
+        return std::collections::HashMap::new();
+    };
+    let Ok(table) = content.parse::<toml::Table>() else {
+        return std::collections::HashMap::new();
+    };
+    table
+        .get("rbac")
+        .and_then(|v| v.get("group_mappings"))
+        .and_then(|v| v.as_table())
+        .map(|groups| {
+            groups
+                .iter()
+                .filter_map(|(group, role)| role.as_str().map(|r| (group.clone(), r.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(feature = "vector")]
 pub(crate) fn read_vector_exclude(config_path: &Path) -> Vec<String> {
     let content = match fs::read_to_string(config_path) {
