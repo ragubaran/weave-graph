@@ -33,8 +33,12 @@ cargo build --release -p weave-graph-cli --features team
 cp target/release/weave ~/.local/bin/
 ```
 
-- `--features team` (`docs` + `federation`) is the recommended default build for developers and teams.
-- A bare `cargo build --release` with no flags produces the default 41.1 MB binary (all 29 languages linked in, since `lang-extended` is on by default). For the smallest binary, add `--no-default-features` explicitly — that's the build that gets to 9.6 MB (8 core languages only).
+- `--features team` (`docs` + `federation`) is an optional developer/team
+  profile, not required for a single repository.
+- The core-size target applies to `cargo build --release -p
+  weave-graph-cli --no-default-features`; a prior local build measured about
+  9.6 MiB. Cargo-default extended-language artifacts are larger and must be
+  measured separately.
 - `--features custom` builds the full self-hosted enterprise suite. See [Self-Hosted](self-hosted.md) and [Features](features.md).
 
 ---
@@ -46,7 +50,7 @@ No optional features required. Operates 100% locally with zero cloud egress.
 ```bash
 cd my-repo
 weave init --mode single       # writes .weave/config.toml, auto-registers .mcp.json, updates .gitignore/.ignore
-weave index                    # indexes 29 languages into .weave/graph.db
+weave index                    # indexes configured languages into .weave/graph.db
 weave query "callers(AuthService.verify)"
 weave report                   # writes WEAVE_REPORT.md + interactive .canvas file
 weave serve --mcp              # starts local MCP server for AI coding agents
@@ -160,5 +164,5 @@ For centralized team infrastructure, private cloud VPCs, or compliance environme
 - **[CLI Reference](cli-reference.md)** — Complete command reference grouped by Profile/Tier.
 - **[Configuration Reference](configuration.md)** — `.weave/config.toml` options and environment variables.
 - **[Features](features.md)** — In-depth breakdown of optional Cargo features.
-- **[Self-Hosted Guide](self-hosted.md)** — Enterprise deployment, RBAC, SSO, and Policy Linting.
+- **[Self-Hosted Guide](self-hosted.md)** — Deployment, query-layer RBAC, generic SCIM provisioning, and policy linting.
 - **[MCP Integration](mcp-integration.md)** — Setting up Claude Code, Cursor, or Windsurf with `weave serve --mcp`.

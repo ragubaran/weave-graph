@@ -6,7 +6,7 @@
 
 use std::sync::Once;
 
-use rusqlite::{Connection, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use weave_graph_core::embedding::EmbeddingProvider;
 use weave_graph_core::{NodeId, StorageError};
 
@@ -59,17 +59,65 @@ pub(crate) fn ensure_vector_table(conn: &Connection) -> Result<(), StorageError>
         "CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
             binary_vec bit[{DIMENSIONS}],
             int8_vec int8[{DIMENSIONS}]
+        );
+        CREATE TABLE IF NOT EXISTS vector_metadata (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            model_id TEXT NOT NULL
         );"
     ))
     .map_err(backend_err)
 }
 
-fn embedding_bytes(embedder: &dyn EmbeddingProvider, text: &str) -> Vec<u8> {
+fn embedding_bytes(embedder: &dyn EmbeddingProvider, text: &str) -> Result<Vec<u8>, StorageError> {
     embedder
         .embed(text)
-        .iter()
-        .flat_map(|f| f.to_le_bytes())
-        .collect()
+        .map_err(|err| StorageError::Backend(err.to_string()))
+        .map(|embedding| embedding.iter().flat_map(|f| f.to_le_bytes()).collect())
+}
+
+fn validate_dimensions(embedder: &dyn EmbeddingProvider) -> Result<(), StorageError> {
+    if embedder.dimensions() == DIMENSIONS {
+        Ok(())
+    } else {
+        Err(StorageError::Backend(format!(
+            "vector dimensions {} do not match index dimensions {DIMENSIONS}",
+            embedder.dimensions()
+        )))
+    }
+}
+
+fn write_model_id(conn: &Connection, embedder: &dyn EmbeddingProvider) -> Result<(), StorageError> {
+    conn.execute(
+        "INSERT INTO vector_metadata(singleton, model_id) VALUES (1, ?1) \
+         ON CONFLICT(singleton) DO UPDATE SET model_id = excluded.model_id",
+        [embedder.model_id()],
+    )
+    .map_err(backend_err)?;
+    Ok(())
+}
+
+fn validate_model_id(
+    conn: &Connection,
+    embedder: &dyn EmbeddingProvider,
+) -> Result<(), StorageError> {
+    let stored = conn
+        .query_row(
+            "SELECT model_id FROM vector_metadata WHERE singleton = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(backend_err)?;
+    match stored {
+        Some(model_id) if model_id == embedder.model_id() => Ok(()),
+        Some(model_id) => Err(StorageError::Backend(format!(
+            "vector index was built with {model_id}; rebuild it with {}",
+            embedder.model_id()
+        ))),
+        None => Err(StorageError::Backend(
+            "vector index has no model identity; run a full reindex".to_string(),
+        )),
+    }
 }
 
 /// Rebuilds `vec_chunks` from `chunks` — `(node_id, chunk_text)` pairs the
@@ -81,6 +129,7 @@ pub(crate) fn rebuild(
     embedder: &dyn EmbeddingProvider,
     chunks: &[(NodeId, String)],
 ) -> Result<(), StorageError> {
+    validate_dimensions(embedder)?;
     conn.execute("DELETE FROM vec_chunks", [])
         .map_err(backend_err)?;
     let mut insert = conn
@@ -90,9 +139,10 @@ pub(crate) fn rebuild(
         )
         .map_err(backend_err)?;
     for (id, text) in chunks {
-        let bytes = embedding_bytes(embedder, text);
+        let bytes = embedding_bytes(embedder, text)?;
         insert.execute(params![*id, bytes]).map_err(backend_err)?;
     }
+    write_model_id(conn, embedder)?;
     Ok(())
 }
 
@@ -103,6 +153,7 @@ pub(crate) fn rebuild_streaming(
         &mut dyn FnMut(NodeId, &str) -> Result<(), StorageError>,
     ) -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
+    validate_dimensions(embedder)?;
     conn.execute("DELETE FROM vec_chunks", [])
         .map_err(backend_err)?;
     let mut insert = conn
@@ -112,11 +163,39 @@ pub(crate) fn rebuild_streaming(
         )
         .map_err(backend_err)?;
     let mut insert_chunk = |id: NodeId, text: &str| {
-        let bytes = embedding_bytes(embedder, text);
+        let bytes = embedding_bytes(embedder, text)?;
         insert.execute(params![id, bytes]).map_err(backend_err)?;
         Ok(())
     };
-    produce(&mut insert_chunk)
+    produce(&mut insert_chunk)?;
+    write_model_id(conn, embedder)
+}
+
+pub(crate) fn upsert_streaming(
+    conn: &Connection,
+    embedder: &dyn EmbeddingProvider,
+    produce: impl FnOnce(
+        &mut dyn FnMut(NodeId, &str) -> Result<(), StorageError>,
+    ) -> Result<(), StorageError>,
+) -> Result<(), StorageError> {
+    validate_dimensions(embedder)?;
+    validate_model_id(conn, embedder)?;
+    let mut delete = conn
+        .prepare("DELETE FROM vec_chunks WHERE rowid = ?1")
+        .map_err(backend_err)?;
+    let mut insert = conn
+        .prepare(
+            "INSERT INTO vec_chunks(rowid, binary_vec, int8_vec) \
+             VALUES (?1, vec_quantize_binary(?2), vec_quantize_int8(?2, 'unit'))",
+        )
+        .map_err(backend_err)?;
+    let mut upsert_chunk = |id: NodeId, text: &str| {
+        delete.execute(params![id]).map_err(backend_err)?;
+        let bytes = embedding_bytes(embedder, text)?;
+        insert.execute(params![id, bytes]).map_err(backend_err)?;
+        Ok(())
+    };
+    produce(&mut upsert_chunk)
 }
 
 pub(crate) fn purge_excluded_paths(
@@ -162,7 +241,19 @@ pub(crate) fn search(
     oversample: usize,
     visible: Option<&dyn Fn(NodeId) -> bool>,
 ) -> Result<Vec<NodeId>, StorageError> {
-    let query = embedder.embed(query_text);
+    validate_dimensions(embedder)?;
+    let has_vectors: bool = conn
+        .query_row("SELECT EXISTS(SELECT 1 FROM vec_chunks)", [], |row| {
+            row.get(0)
+        })
+        .map_err(backend_err)?;
+    if !has_vectors {
+        return Ok(Vec::new());
+    }
+    validate_model_id(conn, embedder)?;
+    let query = embedder
+        .embed_query(query_text)
+        .map_err(|err| StorageError::Backend(err.to_string()))?;
     let query_bytes: Vec<u8> = query.iter().flat_map(|f| f.to_le_bytes()).collect();
     let candidate_limit = limit.saturating_mul(oversample).max(limit);
 

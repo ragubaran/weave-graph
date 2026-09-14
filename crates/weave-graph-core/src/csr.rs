@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use roaring::RoaringBitmap;
 
@@ -11,17 +10,10 @@ use crate::storage::Storage;
 /// authoritative; this is rebuilt from it on every load — there is no path
 /// to sync a `CsrGraph` mutation back to SQL.** Don't build one.
 ///
-/// Holds the forward CSR (outbound edges — a symbol's callees) always, and
-/// builds a transposed `reverse_csr` (inbound edges — its callers) lazily,
-/// on the first [`callers_within`](Self::callers_within) call — every
-/// consumer that never asks for callers (`weave query`/`report`/`export`,
-/// every MCP tool, `weave blast --direction callees`) never builds or
-/// holds it. Edges carry no weight: nothing in this crate ever reads an
-/// edge's weight back off the CSR, only `neighbors_slice`'s indices —
-/// carrying one was dead storage.
+/// Holds only forward CSR adjacency between calls. Caller traversals build a
+/// temporary reverse view so a one-off query cannot permanently raise RSS.
 pub struct CsrGraph {
     csr: CompactCsr,
-    reverse_csr: OnceLock<CompactCsr>,
     index_to_id: Vec<NodeId>,
 }
 
@@ -122,7 +114,7 @@ impl CompactCsr {
 /// Unweighted BFS from `from_index` over `csr`, bounded to `max_hops`,
 /// using a `RoaringBitmap` visited set for fast union/intersection across
 /// traversals. Shared by [`CsrGraph::reachable_within`]
-/// (forward `csr`) and [`CsrGraph::callers_within`] (`reverse_csr`) —
+/// (forward `csr`) and [`CsrGraph::callers_within`] (a reverse CSR) —
 /// identical hop-bounding logic, different adjacency to walk.
 fn bfs_within(csr: &CompactCsr, from_index: u32, max_hops: u32) -> RoaringBitmap {
     let mut reached = RoaringBitmap::new();
@@ -152,7 +144,6 @@ impl CsrGraph {
     pub fn empty() -> Self {
         Self {
             csr: CompactCsr::new(),
-            reverse_csr: OnceLock::new(),
             index_to_id: Vec::new(),
         }
     }
@@ -182,11 +173,7 @@ impl CsrGraph {
 
         let csr = CompactCsr::from_sorted_edges(&compact_edges, index_to_id.len());
 
-        Ok(Self {
-            csr,
-            reverse_csr: OnceLock::new(),
-            index_to_id,
-        })
+        Ok(Self { csr, index_to_id })
     }
 
     // Constructs CsrGraph directly from memory slices for WASM/offline use.
@@ -213,11 +200,7 @@ impl CsrGraph {
 
         let csr = CompactCsr::from_sorted_edges(&compact_edges, index_to_id.len());
 
-        Ok(Self {
-            csr,
-            reverse_csr: OnceLock::new(),
-            index_to_id,
-        })
+        Ok(Self { csr, index_to_id })
     }
 
     pub fn node_count(&self) -> usize {
@@ -298,26 +281,18 @@ impl CsrGraph {
         bfs_within(&self.csr, from_index, max_hops)
     }
 
-    /// Every node that reaches `from` within `max_hops` inbound steps
-    /// (its transitive callers) — depth-bounded caller traversal, walking a
-    /// `reverse_csr` built lazily on first call rather than unconditionally
-    /// at load time so callers-only workloads never pay to build or hold
-    /// it. `Storage::get_callers`'s SQL path answers the same question
-    /// unbounded; this is the CSR-side, depth-bounded counterpart
-    /// `weave blast --direction callers`/`both` needs.
+    /// Every node that reaches `from` within `max_hops` inbound steps.
+    /// The reverse adjacency is temporary to keep idle graph memory bounded.
     pub fn callers_within(&self, from: NodeId, max_hops: u32) -> RoaringBitmap {
         let Ok(from_index) = self.index_to_id.binary_search(&from) else {
             return RoaringBitmap::new();
         };
         let from_index = from_index as u32;
-        let reverse = self.reverse_csr.get_or_init(|| self.build_reverse_csr());
-        bfs_within(reverse, from_index, max_hops)
+        let reverse = self.build_reverse_csr();
+        bfs_within(&reverse, from_index, max_hops)
     }
 
-    /// Transposes the already-built forward `csr` by walking its own
-    /// adjacency once, rather than retaining a separate edge list just for
-    /// this — callers that never reach `callers_within` never carry that
-    /// cost either.
+    /// Transposes forward CSR only for the active caller traversal.
     fn build_reverse_csr(&self) -> CompactCsr {
         self.csr.build_reverse()
     }

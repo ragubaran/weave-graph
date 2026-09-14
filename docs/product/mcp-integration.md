@@ -175,7 +175,7 @@ flowchart LR
 | `weave_impact_radius`| Base | Transitive topological blast radius of code edits. | Adaptive |
 | `weave_pin_note` | Knowledge (`notes`) | Pin persistent or ephemeral architectural context. | Low |
 | `weave_recall_notes` | Knowledge (`notes`) | Retrieve live pinned notes (expired notes filtered). | Low |
-| `weave_search_semantic` | Search (`vector`) | Binary-ANN-then-int8-rerank semantic search over AST-bounded chunks. | Adaptive |
+| `weave_search_semantic` | Search (`vector`) | Optional vector similarity search over AST-bounded chunks. Learned semantic quality and ANN performance are not certified. | Adaptive |
 | `weave_policy_lint` | Governance (`policy-lint`) | Evaluates `.weave/policy.yaml` architectural boundary rules against the indexed graph. | Adaptive |
 
 ---
@@ -224,7 +224,9 @@ Leaves architectural hints, invariants, or refactoring warnings for future agent
 Reads all active notes pinned to symbols across the workspace. Expired ephemeral notes are automatically excluded, and notes whose target symbols were deleted are flagged as orphaned.
 
 #### 7. `weave_search_semantic` *(Feature: `vector`)*
-Binary-ANN-then-int8-rerank semantic search over AST-bounded source chunks, using the same reference embedding provider as `weave search --semantic`.
+Optional vector similarity search over AST-bounded source chunks, using the
+same provider as `weave search --semantic`. The current provider is mock
+groundwork; this tool is not a learned-quality or ANN guarantee.
 - **Parameters**:
   - `query` *(string, **required**)*: Natural-language or code-shaped search query.
   - `limit` *(integer, optional, default: 5)*: Max hits to return.
@@ -304,7 +306,7 @@ sequenceDiagram
 | **Initial Discovery** | 20,000 – 60,000 tokens | ~200 tokens (`weave_repo_map`) | **99%** |
 | **File API Inspection** | 4,000 – 10,000 tokens / file | ~60 tokens / file (`weave_file_api`) | **98%** |
 | **Call Graph Discovery** | Multi-file regex grep (~15k tokens) | ~100 tokens (`weave_trace_calls`) | **93%** |
-| **Total Task Context** | 50,000 – 120,000 tokens | **< 800 tokens total** | **92%+** |
+| **Total Task Context** | Full source dumps | Targeted graph/file responses | Measure for your repository; no universal reduction is claimed |
 | **Accuracy / Hallucination** | Frequent *"lost in the middle"* errors | Exact AST-grounded spans & symbol names | **100% Grounded** |
 
 ---
@@ -452,9 +454,9 @@ Because masking is enforced inside `weave-graph-core`'s traversal engine — app
 | MCP Design Best Practice | Weave Graph Implementation |
 | :--- | :--- |
 | **Progressive Tool Discovery** | Implements the 3-tier catalog-inspect-execute pattern (`repo_map` → `file_api` → `trace_calls`) to avoid upfront context window bloat. |
-| **Prompt Cache Optimization** | Emits `tools/list` with deterministic ordering and stable schemas to maximize Anthropic and OpenAI prompt prefix cache hit rates (>90%). |
-| **Actionable Tool Errors** | Failed lookups (`weave_trace_calls`, `weave_impact_radius`, `weave_repo_map`) return `isError: true` with a `"symbol not found: <name>"` / `"error: ..."` content block, so an agent can tell "nothing matched" from a normal success at the envelope level. **Known gap**: no fuzzy-matched candidate suggestions yet — the error names what didn't resolve, not what might have been meant. Tracked as follow-on work. |
-| **Read-Only / Idempotent Queries** | All structural traversal tools (`repo_map`, `file_api`, `trace_calls`, `impact_radius`) are side-effect free and idempotent, ensuring safe execution in autonomous loops. |
+| **Stable Tool Schemas** | Emits `tools/list` with deterministic ordering and stable schemas. |
+| **Actionable Tool Errors** | Failed lookups return `isError: true` with a clear error content block, so an agent can distinguish a failed lookup from a normal success. |
+| **Read-Only / Idempotent Queries** | Structural traversal tools are side-effect free and idempotent. |
 | **Programmatic Composition ("Code Mode")** | Returns compact structured outputs with line spans (`L{start}-{end}`) suitable for direct consumption by agent sandboxes without round-tripping intermediate payloads. |
 | **Loopback Security Boundary** | Binds exclusively to `127.0.0.1` by default, safeguarding AST code intelligence from accidental LAN or cloud exposure. |
 

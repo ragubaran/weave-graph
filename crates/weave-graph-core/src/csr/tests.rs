@@ -264,24 +264,10 @@ fn from_nodes_and_edges_dedups_duplicate_pairs_regardless_of_the_weight_argument
     assert_eq!(graph.outbound(1), vec![2]);
 }
 
-/// `reverse_csr` must not be built at load time — every consumer that
-/// never calls `callers_within` (`weave query`/`report`/`export`, every MCP
-/// tool, `weave blast --direction callees`) must never pay to build or
-/// hold it.
 #[test]
-fn reverse_csr_is_not_built_until_callers_within_is_first_called() {
+fn callers_within_does_not_change_subsequent_results() {
     let graph = CsrGraph::load(&gapped_chain()).unwrap();
-    assert!(
-        graph.reverse_csr.get().is_none(),
-        "must not build the reverse CSR eagerly at load time"
-    );
-
-    let _ = graph.callers_within(30, 1);
-
-    assert!(
-        graph.reverse_csr.get().is_some(),
-        "must build it lazily on first callers_within call"
-    );
+    assert_eq!(graph.callers_within(30, 1), graph.callers_within(30, 1));
 }
 
 #[test]

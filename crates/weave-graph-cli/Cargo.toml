@@ -21,6 +21,10 @@ name = "slm_accuracy"
 harness = false
 required-features = ["slm"]
 
+[[bench]]
+name = "indexing_throughput"
+harness = false
+
 [dependencies]
 weave-graph-core = { path = "../weave-graph-core" }
 weave-graph-parse = { path = "../weave-graph-parse", default-features = false }

@@ -11,7 +11,10 @@ Rebuild with `--features <feature>`, or install the prebuilt `weave` / `weave-cu
 
 ## Tier 1: Base Tier (Deterministic Core — No Features Required)
 
-These commands execute 100% deterministically with zero network calls, zero LLMs, and zero external service dependencies. Available in all builds: 41.1 MB stripped release binary by default (`cargo build --release`, all 29 languages), 9.6 MB with `--no-default-features` (8 core languages only); peak RAM stays under the 80 MB ceiling (measured ~60 MB for 500k symbols).
+These commands execute deterministically with zero network calls and zero LLMs.
+The <15 MB target applies only to an explicitly built
+`--no-default-features` core artifact; the complete 500k-symbol RSS gate is
+not yet release-certified.
 
 ### `weave init`
 Initializes the repository for Weave Graph intelligence, registers the MCP server configuration for AI coding agents, and configures version control / search ignore rules.
@@ -48,7 +51,7 @@ weave init [--mode single|multiple] [--path <dir>]
    - Idempotent: safe to run multiple times without duplicating ignore entries.
 
 ### `weave index`
-Builds or updates the SQLite code intelligence graph (`.weave/graph.db`) using Tree-sitter parsers across 29 languages.
+Builds or updates the SQLite code intelligence graph (`.weave/graph.db`) using the Tree-sitter languages compiled into the selected build.
 ```bash
 weave index [--path <dir>] [--incremental] [--watch]
 ```
@@ -251,11 +254,15 @@ weave sync push [--signature <sig>] [--path <dir>]
 - `push`: Publishes a canonical graph snapshot from trunk branches upon merge. `--signature <sig>` (feature `hub-provenance`): attaches a signature computed by an external signer (e.g. `weave_graph_hub::SnapshotProvenanceVerifier`) — `weave` computes none of its own. The registry only checks it if started with `--provenance-key` (see the [Self-Hosted Guide](self-hosted.md) §6.0); the expected wire format is hex-encoded bytes, and an unconfigured registry accepts any value or none.
 
 ### `weave search` (feature: `fts` / `vector`)
-Performs hybrid code search combining BM25 full-text indexing and semantic AST embeddings.
+Performs lexical BM25 search, or optional vector similarity search when
+`--semantic` is selected. Hybrid ranking and learned semantic quality are not
+release-certified.
 ```bash
 weave search "<query>" [--limit <n>] [--semantic] [--path <dir>]
 ```
-- `--semantic` *(feature: `vector`)*: Activates vector similarity search using `sqlite-vec`.
+- `--semantic` *(feature: `vector`)*: Activates the optional `sqlite-vec`
+  similarity path. The current provider is deterministic mock groundwork; do
+  not interpret results as learned BGE relevance.
 
 ### `weave ask`, `weave slm`, `weave journal` (feature: `slm`)
 Terminal natural-language query routing and local SLM management.

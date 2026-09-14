@@ -120,6 +120,85 @@ fn incremental_reindex_recreates_edge_from_unchanged_file_into_changed_file() {
 }
 
 #[test]
+fn incremental_reindex_preserves_edges_into_unchanged_affected_callers() {
+    let fx = Fixture::new();
+    fx.write("a.rs", "pub fn helper() {}\n");
+    fx.write("b.rs", "pub fn caller() { helper(); }\n");
+    fx.write("c.rs", "fn upstream() { caller(); }\n");
+    let files = fx.discovered_files(&["a.rs", "b.rs", "c.rs"]);
+    full_reindex(fx.root(), &fx.weave_dir, &fx.active_db, &files).unwrap();
+    let helper_id = fx
+        .storage()
+        .all_nodes()
+        .unwrap()
+        .into_iter()
+        .find(|node| node.symbol == "helper")
+        .unwrap()
+        .id;
+
+    fx.write("a.rs", "\npub fn helper() {}\n");
+    incremental_reindex(
+        fx.root(),
+        &fx.weave_dir,
+        &fx.active_db,
+        &files,
+        &["a.rs".to_string()],
+    )
+    .unwrap();
+
+    let storage = fx.storage();
+    let nodes = storage.all_nodes().unwrap();
+    assert_eq!(
+        nodes
+            .iter()
+            .find(|node| node.symbol == "helper")
+            .unwrap()
+            .id,
+        helper_id
+    );
+    let caller = nodes.iter().find(|node| node.symbol == "caller").unwrap();
+    let upstream = nodes.iter().find(|node| node.symbol == "upstream").unwrap();
+    assert!(
+        storage
+            .get_edges(upstream.id)
+            .unwrap()
+            .iter()
+            .any(|edge| edge.target_id == caller.id)
+    );
+}
+
+#[test]
+fn incremental_reindex_resolves_a_reference_after_its_target_is_added() {
+    let fx = Fixture::new();
+    fx.write("a.rs", "fn caller() { helper(); }\n");
+    fx.write("b.rs", "pub fn other() {}\n");
+    let files = fx.discovered_files(&["a.rs", "b.rs"]);
+    full_reindex(fx.root(), &fx.weave_dir, &fx.active_db, &files).unwrap();
+
+    fx.write("b.rs", "pub fn helper() {}\n");
+    incremental_reindex(
+        fx.root(),
+        &fx.weave_dir,
+        &fx.active_db,
+        &files,
+        &["b.rs".to_string()],
+    )
+    .unwrap();
+
+    let storage = fx.storage();
+    let nodes = storage.all_nodes().unwrap();
+    let caller = nodes.iter().find(|node| node.symbol == "caller").unwrap();
+    let helper = nodes.iter().find(|node| node.symbol == "helper").unwrap();
+    assert!(
+        storage
+            .get_edges(caller.id)
+            .unwrap()
+            .iter()
+            .any(|edge| edge.target_id == helper.id)
+    );
+}
+
+#[test]
 fn incremental_reindex_purges_a_deleted_file_without_reinserting_it() {
     let fx = Fixture::new();
     fx.write("a.rs", "pub fn helper() {}\n");
@@ -213,4 +292,49 @@ fn stale_rebuild_files_are_removed_before_both_reindex_paths() {
     fs::copy(&fx.active_db, fx.weave_dir.join("graph.db.rebuild")).unwrap();
     incremental_reindex(fx.root(), &fx.weave_dir, &fx.active_db, &files, &changed).unwrap();
     assert!(!fx.weave_dir.join("graph.db.rebuild").exists());
+}
+
+#[cfg(feature = "vector")]
+#[test]
+fn vector_spans_borrow_from_one_source_buffer() {
+    let source = "first\nsecond\nthird\n";
+    let starts = source_line_starts(source);
+
+    assert_eq!(source_span(source, &starts, 2, 3), Some("second\nthird\n"));
+    assert_eq!(source_span(source, &starts, 4, 4), None);
+}
+
+#[cfg(feature = "vector")]
+#[test]
+fn incremental_reindex_removes_vectors_for_replaced_nodes() {
+    let fx = Fixture::new();
+    fx.write("a.rs", "pub fn old_auth_handler() {}\n");
+    fx.write("b.rs", "pub fn stable_helper() {}\n");
+    let files = fx.discovered_files(&["a.rs", "b.rs"]);
+    full_reindex(fx.root(), &fx.weave_dir, &fx.active_db, &files).unwrap();
+    let old_id = fx
+        .storage()
+        .all_nodes()
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap()
+        .id;
+
+    fx.write("a.rs", "pub fn new_layout_handler() {}\n");
+    incremental_reindex(
+        fx.root(),
+        &fx.weave_dir,
+        &fx.active_db,
+        &files,
+        &["a.rs".to_string()],
+    )
+    .unwrap();
+
+    let storage = fx.storage();
+    let embedder = weave_graph_core::embedding::MockEmbeddingProvider::new();
+    let hits = storage
+        .search_vector(&embedder, "old auth handler", 10, 4, None)
+        .unwrap();
+    assert!(!hits.contains(&old_id));
 }

@@ -47,6 +47,12 @@ pub(crate) fn replace_row(
     insert_row(conn, id, symbol, signature)
 }
 
+pub(crate) fn delete_row(conn: &Connection, id: i64) -> Result<(), StorageError> {
+    conn.execute("DELETE FROM symbol_fts WHERE rowid = ?1", params![id])
+        .map_err(backend_err)?;
+    Ok(())
+}
+
 pub(crate) fn purge_path(conn: &Connection, repo_id: &str, path: &str) -> Result<(), StorageError> {
     conn.execute(
         "DELETE FROM symbol_fts WHERE rowid IN (

@@ -2,13 +2,15 @@
 
 Weave Graph is engineered from the ground up for **zero-cloud, private enterprise environments**. The entire core intelligence engine executes in pure Rust with zero network calls, zero third-party telemetry, zero external database services, and zero LLM dependencies.
 
-For teams running in private VPCs, on-premise data centers, or compliance-restricted air-gapped networks, Weave Graph provides the **Custom Mode Profile** (`--features custom`), enabling enterprise access controls, Single Sign-On (SSO), architectural policy enforcement, runtime telemetry overlays, and centralized snapshot synchronization.
+For teams running in private VPCs, on-premise data centers, or compliance-restricted air-gapped networks, Weave Graph provides the **Custom Mode Profile** (`--features custom`), enabling query-layer access controls, architectural policy checks, runtime trace import, and optional snapshot synchronization. It does not provide a built-in SSO/OIDC integration.
 
 ---
 
 ## 1. Custom Mode Profile (`--features custom`)
 
-The `custom` feature bundle builds the complete enterprise intelligence suite into a single native binary:
+The `custom` feature bundle builds the available enterprise feature set into a
+single native binary. It does not by itself certify authentication,
+provenance, policy, semantic-quality, or resource-envelope requirements.
 
 ```toml
 # weave-graph-cli/Cargo.toml
@@ -16,7 +18,7 @@ custom = [
     "team",            # Multi-repo federation and Markdown documentation
     "hub",             # Centralized snapshot sync client and daemon
     "hub-provenance",  # Cryptographic snapshot verification
-    "provenance",      # Merkle-signed note and link provenance
+    "provenance",      # Optional note/link provenance primitives
     "rbac",            # Query-layer role-based access control and SCIM server
     "otel",            # OpenTelemetry OTLP trace span ingestion and latency overlays
     "policy-lint",     # Declarative architectural boundary linting and drift analytics

@@ -41,6 +41,42 @@ jobs:
       - name: Run Clippy Linter
         run: cargo clippy --workspace --all-targets --all-features --exclude weave-graph-python -- -D warnings
 
+  artifact-budget:
+    name: Core Artifact Budget
+    runs-on: ubuntu-latest
+    needs: [lint]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      # The 15 MiB ceiling is a *core-only* budget (AGENTS.md mission line):
+      # optional-feature builds are measured for the trend report but never
+      # gated — ML runtimes and network stacks legitimately exceed it.
+      - name: Build and measure release artifacts
+        shell: bash
+        run: |
+          cargo build --release -p weave-graph-cli --no-default-features
+          core_bytes=$(wc -c < target/release/weave)
+          test "$core_bytes" -le 15728640
+          cargo build --release -p weave-graph-cli
+          extended_bytes=$(wc -c < target/release/weave)
+          cargo build --release -p weave-graph-cli --no-default-features --features vector
+          vector_bytes=$(wc -c < target/release/weave)
+          printf 'core_no_features_bytes=%s\nextended_bytes=%s\ncore_vector_bytes=%s\n' \
+            "$core_bytes" "$extended_bytes" "$vector_bytes" > artifact-sizes.txt
+
+      - name: Upload artifact-size report
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-sizes
+          path: artifact-sizes.txt
+
   # ---------------------------------------------------------------------------
   # 2. Unit Tests & Code Coverage (> 90% Line Threshold)
   # ---------------------------------------------------------------------------
@@ -161,6 +197,26 @@ jobs:
   # latency. Assertions live in the script (RSS delta and latency
   # tolerances); this job is what makes them run on every PR instead of
   # only in manual /usr/bin/time spot checks.
+  # Core Invariant 4: peak RSS must stay under 80MB for 500k symbols.
+  # The example self-measures via getrusage and exits non-zero above the
+  # ceiling, so this job is a hard gate, not a reported number.
+  ram-envelope:
+    name: 500k Symbol RAM Envelope (80MB)
+    runs-on: ubuntu-latest
+    needs: [lint]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run 500k-symbol peak-RSS check
+        run: cargo run --release -p weave-graph-store-sqlite --example mem_500k
+
   feature-isolation:
     name: Feature Isolation Gate (L8)
     runs-on: ubuntu-latest
@@ -211,7 +267,8 @@ jobs:
         run: >
           cargo bench --workspace --all-features --exclude weave-graph-python
           --bench csr_memory --bench parser_throughput --bench sqlite_latency
-          --bench turso_latency --bench slm_routing --bench slm_accuracy
+          --bench vector_recall --bench turso_latency --bench slm_routing
+          --bench slm_accuracy --bench indexing_throughput
           -- --save-baseline main
 
       - name: Run benchmarks (compare against main)
@@ -219,5 +276,6 @@ jobs:
         run: >
           cargo bench --workspace --all-features --exclude weave-graph-python
           --bench csr_memory --bench parser_throughput --bench sqlite_latency
-          --bench turso_latency --bench slm_routing --bench slm_accuracy
+          --bench vector_recall --bench turso_latency --bench slm_routing
+          --bench slm_accuracy --bench indexing_throughput
           -- --baseline main || true

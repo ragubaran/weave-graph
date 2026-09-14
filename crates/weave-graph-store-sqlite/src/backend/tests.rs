@@ -60,6 +60,86 @@ fn upsert_node_on_same_natural_key_updates_in_place() {
 }
 
 #[test]
+fn upsert_node_preserves_identity_when_only_its_span_moves() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let first = node("r", "src/lib.rs", "foo", 10);
+    let id = storage.upsert_node(&first).unwrap();
+
+    let mut shifted = first;
+    shifted.line_start = 50;
+    shifted.line_end = 52;
+    assert_eq!(storage.upsert_node(&shifted).unwrap(), id);
+    assert_eq!(storage.get_node(id).unwrap().unwrap().line_start, 50);
+}
+
+/// The persisted semantic key must survive a span-only edit (the node
+/// keeps its id) and stay resolvable through `node_id_by_semantic_key` —
+/// the overload-safe identity the line-number natural key can't give.
+#[test]
+fn semantic_key_preserves_identity_across_span_moves_and_resolves_overloads() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let first = node("r", "a.rs", "foo", 1);
+    let id = storage.upsert_node(&first).unwrap();
+
+    // Line span moves, signature unchanged: same semantic identity.
+    let mut shifted = first.clone();
+    shifted.line_start = 50;
+    shifted.line_end = 52;
+    assert_eq!(storage.upsert_node(&shifted).unwrap(), id);
+    assert_eq!(
+        storage
+            .node_id_by_semantic_key("r", "a.rs", "foo", "function", "fn foo()")
+            .unwrap(),
+        Some(id)
+    );
+
+    // Two same-name overloads are distinct identities.
+    let mut overload = first;
+    overload.line_start = 10;
+    overload.signature = "fn foo(&str)".into();
+    let overload_id = storage.upsert_node(&overload).unwrap();
+    assert_ne!(id, overload_id);
+    assert_eq!(
+        storage
+            .node_id_by_semantic_key("r", "a.rs", "foo", "function", "fn foo(&str)")
+            .unwrap(),
+        Some(overload_id)
+    );
+    assert_eq!(
+        storage
+            .node_id_by_semantic_key("r", "a.rs", "foo", "function", "no such sig")
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn batch_upserts_preserve_overloads_and_remove_only_stale_nodes() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let mut first = node("r", "src/lib.rs", "foo", 1);
+    first.signature = "fn foo(i32)".into();
+    let mut second = node("r", "src/lib.rs", "foo", 10);
+    second.signature = "fn foo(&str)".into();
+    let ids = storage
+        .upsert_nodes(&[first.clone(), second.clone()])
+        .unwrap();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1]);
+
+    first.line_start = 30;
+    first.line_end = 32;
+    let retained = storage.upsert_nodes(&[first]).unwrap();
+    storage
+        .purge_file_nodes_except("r", "src/lib.rs", &retained)
+        .unwrap();
+    assert_eq!(storage.all_nodes().unwrap().len(), 1);
+    assert_eq!(
+        storage.get_node(retained[0]).unwrap().unwrap().line_start,
+        30
+    );
+}
+
+#[test]
 fn upsert_edge_on_same_natural_key_updates_weight_not_row_count() {
     let mut storage = SqliteStorage::open_in_memory().unwrap();
     let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
@@ -386,6 +466,25 @@ fn open_rebuild_creates_a_new_db_in_wal_mode() {
     let rebuild_path = dir.path().join("graph.db.rebuild");
     let storage = SqliteStorage::open_rebuild(&rebuild_path).unwrap();
     assert_eq!(storage.schema_version().unwrap(), LATEST_SCHEMA_VERSION);
+}
+
+/// The staging copy must carry un-checkpointed WAL content too — a raw
+/// byte copy of the main file would silently drop pages still sitting in
+/// the `-wal` sidecar and produce a stale rebuild database.
+#[test]
+fn backup_to_includes_uncheckpointed_wal_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("source.db");
+    let mut storage = SqliteStorage::open(&source_path).unwrap();
+    storage.upsert_node(&node("r", "a.rs", "fn_a", 1)).unwrap();
+
+    let dest_path = dir.path().join("staged.db");
+    storage.backup_to(&dest_path).unwrap();
+
+    let staged = SqliteStorage::open_read_only(&dest_path).unwrap();
+    let nodes = staged.all_nodes().unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].symbol, "fn_a");
 }
 
 #[test]

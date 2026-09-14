@@ -20,6 +20,7 @@
 .claude/
 .gemini
 .agents/
+.roo
 opencode.json
 
 # published product documentation for end users (docs/product/).

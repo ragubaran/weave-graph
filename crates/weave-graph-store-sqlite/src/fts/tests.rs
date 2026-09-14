@@ -118,6 +118,43 @@ fn node_writes_and_purges_maintain_fts_without_a_full_rebuild() {
     );
 }
 
+/// A masked-heavy ranking must not underfill `limit`: the adaptive
+/// over-fetch keeps widening the candidate window until `limit` visible
+/// hits surface or the index is exhausted (query-layer RBAC retained).
+#[test]
+fn masked_heavy_ranking_still_fills_the_limit_with_visible_hits() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    // 30 masked hits rank ahead of 3 visible ones.
+    for i in 0..30 {
+        storage
+            .upsert_node(&node_at(
+                &format!("privateAuth{i}"),
+                "private.rs",
+                &format!("fn privateAuth{i}() {{ auth auth auth {i} }}"),
+            ))
+            .unwrap();
+    }
+    for i in 0..3 {
+        storage
+            .upsert_node(&node_at(
+                &format!("publicAuth{i}"),
+                "public.rs",
+                &format!("fn publicAuth{i}() {{ auth }}"),
+            ))
+            .unwrap();
+    }
+
+    let hits = storage
+        .search_symbol_nodes("\"auth\"", 3, Some(&|node| node.path == "public.rs"))
+        .unwrap();
+
+    assert_eq!(hits.len(), 3, "masked-heavy ranking must not underfill");
+    assert!(
+        hits.iter().all(|n| n.path == "public.rs"),
+        "no masked hit may leak"
+    );
+}
+
 #[test]
 fn search_filters_masked_hits_before_applying_the_limit() {
     let mut storage = SqliteStorage::open_in_memory().unwrap();

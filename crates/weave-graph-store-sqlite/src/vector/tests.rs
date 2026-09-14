@@ -1,7 +1,23 @@
-use weave_graph_core::embedding::MockEmbeddingProvider;
+use weave_graph_core::embedding::{EmbeddingError, EmbeddingProvider, MockEmbeddingProvider};
 use weave_graph_core::{Node, Storage};
 
 use crate::SqliteStorage;
+
+struct AlternateEmbeddingProvider;
+
+impl EmbeddingProvider for AlternateEmbeddingProvider {
+    fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+        MockEmbeddingProvider::new().embed(text)
+    }
+
+    fn dimensions(&self) -> usize {
+        384
+    }
+
+    fn model_id(&self) -> &str {
+        "test-alternate-v1"
+    }
+}
 
 fn node(path: &str) -> Node {
     Node {
@@ -107,6 +123,38 @@ fn search_respects_the_limit() {
         .search_vector(&embedder, "auth handler", 2, 4, None)
         .unwrap();
     assert_eq!(hits.len(), 2);
+}
+
+#[test]
+fn vector_operations_reject_the_wrong_embedding_dimension() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let embedder = MockEmbeddingProvider::with_dimensions(32);
+
+    let err = storage
+        .rebuild_vector_index(&embedder, &[(1, "auth handler".to_string())])
+        .unwrap_err();
+
+    assert!(err.to_string().contains("do not match index dimensions"));
+}
+
+#[test]
+fn vector_operations_reject_a_mixed_model_index() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let original = MockEmbeddingProvider::new();
+    let alternate = AlternateEmbeddingProvider;
+    storage
+        .rebuild_vector_index(&original, &[(1, "auth handler".to_string())])
+        .unwrap();
+
+    let search_error = storage
+        .search_vector(&alternate, "auth handler", 5, 4, None)
+        .unwrap_err();
+    assert!(search_error.to_string().contains("built with mock-fnv-v1"));
+
+    let update_error = storage
+        .upsert_vector_index_streaming(&alternate, |insert| insert(1, "auth handler"))
+        .unwrap_err();
+    assert!(update_error.to_string().contains("built with mock-fnv-v1"));
 }
 
 /// SEC-01: the best-ranked candidate being masked must not shrink the

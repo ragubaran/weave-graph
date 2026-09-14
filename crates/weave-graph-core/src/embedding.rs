@@ -4,9 +4,26 @@
 //! "boundary here, real provider supplied by a deployment" shape already
 //! used for `AuthProvider`/`ProvenanceProvider`/`SnapshotProvenanceVerifier`.
 
+#[derive(Debug, thiserror::Error)]
+pub enum EmbeddingError {
+    #[error("embedding provider failed: {0}")]
+    Provider(String),
+    #[error("embedding provider returned {actual} dimensions; expected {expected}")]
+    Dimensions { actual: usize, expected: usize },
+    #[error("embedding provider returned no vector")]
+    Empty,
+}
+
 pub trait EmbeddingProvider: Send + Sync {
-    fn embed(&self, text: &str) -> Vec<f32>;
+    fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError>;
+
+    fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+        self.embed(text)
+    }
+
     fn dimensions(&self) -> usize;
+
+    fn model_id(&self) -> &str;
 }
 
 /// Deterministic bag-of-hashed-words vector, L2-normalized. Not a real
@@ -44,7 +61,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 }
 
 impl EmbeddingProvider for MockEmbeddingProvider {
-    fn embed(&self, text: &str) -> Vec<f32> {
+    fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
         let mut vector = vec![0.0f32; self.dims];
         for word in text.split(|c: char| !c.is_alphanumeric()) {
             if word.is_empty() {
@@ -59,11 +76,15 @@ impl EmbeddingProvider for MockEmbeddingProvider {
                 *x /= norm;
             }
         }
-        vector
+        Ok(vector)
     }
 
     fn dimensions(&self) -> usize {
         self.dims
+    }
+
+    fn model_id(&self) -> &str {
+        "mock-fnv-v1"
     }
 }
 

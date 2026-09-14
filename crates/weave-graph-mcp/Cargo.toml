@@ -33,4 +33,3 @@ policy-lint = ["dep:serde_yaml", "weave-graph-core/policy-lint"]
 [dev-dependencies]
 tempfile = "3.27.0"
 weave-graph-store-sqlite = { path = "../weave-graph-store-sqlite" }
-

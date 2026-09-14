@@ -181,6 +181,185 @@ impl SqliteStorage {
         self.conn.execute_batch("BEGIN").map_err(backend_err)
     }
 
+    /// The persisted overload-safe identity: `repo_id|path|symbol|kind|
+    /// signature`. Unlike the natural key it excludes `line_start`, so a
+    /// span-only edit keeps the same identity and two same-name overloads
+    /// stay distinguishable across reindexes.
+    fn semantic_key(node: &Node) -> String {
+        format!(
+            "{}|{}|{}|{}|{}",
+            node.repo_id, node.path, node.symbol, node.kind, node.signature
+        )
+    }
+
+    /// Resolves a node by its persisted overload-safe semantic key.
+    pub fn node_id_by_semantic_key(
+        &self,
+        repo_id: &str,
+        path: &str,
+        symbol: &str,
+        kind: &str,
+        signature: &str,
+    ) -> Result<Option<NodeId>, StorageError> {
+        self.conn
+            .query_row(
+                "SELECT id FROM nodes WHERE repo_id = ?1 AND path = ?2 AND symbol = ?3 \
+                 AND kind = ?4 AND signature = ?5",
+                params![repo_id, path, symbol, kind, signature],
+                |row| row.get::<_, i64>(0).map(|v| v as NodeId),
+            )
+            .optional()
+            .map_err(backend_err)
+    }
+
+    /// Upserts a parsed batch while reusing the lookup and write statements.
+    pub fn upsert_nodes(&mut self, nodes: &[Node]) -> Result<Vec<NodeId>, StorageError> {
+        let ids = {
+            let mut candidates = self
+                .conn
+                .prepare_cached(
+                    "SELECT id, signature, line_start FROM nodes
+                     WHERE repo_id = ?1 AND path = ?2 AND symbol = ?3 AND kind = ?4",
+                )
+                .map_err(backend_err)?;
+            let mut update = self
+                .conn
+                .prepare_cached(
+                    "UPDATE nodes SET line_start = ?1, line_end = ?2, signature = ?3, \
+                     semantic_key = ?4 WHERE id = ?5",
+                )
+                .map_err(backend_err)?;
+            let mut insert = self
+                .conn
+                .prepare_cached(
+                    "INSERT INTO nodes (repo_id, path, symbol, kind, line_start, line_end, \
+                     signature, semantic_key)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) RETURNING id",
+                )
+                .map_err(backend_err)?;
+
+            nodes
+                .iter()
+                .map(|node| {
+                    let rows = candidates
+                        .query_map(
+                            params![node.repo_id, node.path, node.symbol, node.kind],
+                            |row| {
+                                Ok((
+                                    row.get::<_, i64>(0)? as NodeId,
+                                    row.get::<_, String>(1)?,
+                                    row.get::<_, u32>(2)?,
+                                ))
+                            },
+                        )
+                        .map_err(backend_err)?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(backend_err)?;
+                    let existing = rows
+                        .iter()
+                        .find(|(_, signature, _)| signature == &node.signature)
+                        .or_else(|| {
+                            rows.iter()
+                                .find(|(_, _, line_start)| *line_start == node.line_start)
+                        });
+                    if let Some((id, _, _)) = existing {
+                        update
+                            .execute(params![
+                                node.line_start,
+                                node.line_end,
+                                node.signature,
+                                Self::semantic_key(node),
+                                id
+                            ])
+                            .map_err(backend_err)?;
+                        Ok(*id)
+                    } else {
+                        insert
+                            .query_row(
+                                params![
+                                    node.repo_id,
+                                    node.path,
+                                    node.symbol,
+                                    node.kind,
+                                    node.line_start,
+                                    node.line_end,
+                                    node.signature,
+                                    Self::semantic_key(node)
+                                ],
+                                |row| row.get::<_, i64>(0),
+                            )
+                            .map(|id| id as NodeId)
+                            .map_err(backend_err)
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
+
+        #[cfg(feature = "fts")]
+        for (node, id) in nodes.iter().zip(&ids) {
+            crate::fts::replace_row(&self.conn, i64::from(*id), &node.symbol, &node.signature)?;
+        }
+        Ok(ids)
+    }
+
+    /// Upserts a resolved edge batch with one cached statement.
+    pub fn upsert_edges(&mut self, edges: &[Edge]) -> Result<(), StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare_cached(
+                "INSERT INTO edges (source_id, target_id, kind, weight)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(source_id, target_id, kind) DO UPDATE SET weight = excluded.weight",
+            )
+            .map_err(backend_err)?;
+        for edge in edges {
+            stmt.execute(params![
+                edge.source_id,
+                edge.target_id,
+                edge.kind,
+                edge.weight
+            ])
+            .map_err(backend_err)?;
+        }
+        Ok(())
+    }
+
+    /// Removes stale nodes after a changed file's stable nodes were upserted.
+    pub fn purge_file_nodes_except(
+        &mut self,
+        repo_id: &str,
+        path: &str,
+        retained: &[NodeId],
+    ) -> Result<u64, StorageError> {
+        let retained: HashSet<NodeId> = retained.iter().copied().collect();
+        let stale = {
+            let mut stmt = self
+                .conn
+                .prepare_cached("SELECT id FROM nodes WHERE repo_id = ?1 AND path = ?2")
+                .map_err(backend_err)?;
+            stmt.query_map(params![repo_id, path], |row| row.get::<_, i64>(0))
+                .map_err(backend_err)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(backend_err)?
+                .into_iter()
+                .map(|id| id as NodeId)
+                .filter(|id| !retained.contains(id))
+                .collect::<Vec<_>>()
+        };
+        let mut stmt = self
+            .conn
+            .prepare_cached("DELETE FROM nodes WHERE id = ?1")
+            .map_err(backend_err)?;
+        for id in &stale {
+            stmt.execute(params![id]).map_err(backend_err)?;
+        }
+        #[cfg(feature = "fts")]
+        for id in &stale {
+            crate::fts::delete_row(&self.conn, i64::from(*id))?;
+        }
+        Ok(stale.len() as u64)
+    }
+
     /// Records (or replaces) one consumer's expectation of a provider's
     /// boundary contract hash, plus the sorted per-symbol entries that
     /// hash was computed from — the snapshot `check-contracts` diffs a
@@ -261,6 +440,19 @@ impl SqliteStorage {
             .map_err(backend_err)
     }
 
+    /// Stages a crash-safe copy of this database at `dest_path` via SQLite's
+    /// online backup API. Unlike a raw file copy this includes un-checkpointed
+    /// WAL content, and it copies page-by-page so peak memory stays bounded
+    /// regardless of database size.
+    pub fn backup_to(&self, dest_path: &Path) -> Result<(), StorageError> {
+        let mut dest = Connection::open(dest_path).map_err(backend_err)?;
+        let backup = rusqlite::backup::Backup::new(&self.conn, &mut dest).map_err(backend_err)?;
+        backup
+            .run_to_completion(256, std::time::Duration::from_millis(5), None)
+            .map_err(backend_err)?;
+        Ok(())
+    }
+
     /// Rebuilds the FTS5 symbol index from every current `nodes` row
     /// (`impl.md` M3.7 Tier 1) — call after writing nodes, inside the same
     /// bulk-write transaction.
@@ -277,17 +469,27 @@ impl SqliteStorage {
     ) -> Result<Vec<Node>, StorageError> {
         #[cfg(feature = "fts")]
         {
-            let candidate_limit = if visible.is_some() {
-                limit.saturating_mul(4).max(limit)
-            } else {
-                limit
-            };
-            let mut nodes = crate::fts::search_nodes(&self.conn, match_expr, candidate_limit)?;
-            if let Some(visible) = visible {
-                nodes.retain(visible);
+            // Adaptive over-fetch: grow the candidate window until `limit`
+            // visible hits are found or the index is exhausted, so a
+            // masked-heavy ranking can never underfill the page. Masking
+            // stays a query-layer closure — one RBAC guard, no SQL copy.
+            let mut factor = 4usize;
+            loop {
+                let candidate_limit = limit.saturating_mul(factor).max(limit);
+                let mut nodes = crate::fts::search_nodes(&self.conn, match_expr, candidate_limit)?;
+                // Exhaustion is judged on the unfiltered count: a filtered
+                // `nodes.len()` reflects masking, not index depth.
+                let raw_count = nodes.len();
+                if let Some(visible) = visible {
+                    nodes.retain(visible);
+                }
+                let exhausted = raw_count < candidate_limit;
+                if nodes.len() >= limit || exhausted || factor >= 256 {
+                    nodes.truncate(limit);
+                    return Ok(nodes);
+                }
+                factor = factor.saturating_mul(4);
             }
-            nodes.truncate(limit);
-            Ok(nodes)
         }
         #[cfg(not(feature = "fts"))]
         {
@@ -322,6 +524,17 @@ impl SqliteStorage {
         crate::vector::rebuild_streaming(&self.conn, embedder, produce)
     }
 
+    #[cfg(feature = "vector")]
+    pub fn upsert_vector_index_streaming(
+        &self,
+        embedder: &dyn weave_graph_core::embedding::EmbeddingProvider,
+        produce: impl FnOnce(
+            &mut dyn FnMut(NodeId, &str) -> Result<(), StorageError>,
+        ) -> Result<(), StorageError>,
+    ) -> Result<(), StorageError> {
+        crate::vector::upsert_streaming(&self.conn, embedder, produce)
+    }
+
     /// Deletes vector rows for paths that must not leave the repository.
     #[cfg(feature = "vector")]
     pub fn purge_vector_paths(&self, excluded_paths: &[String]) -> Result<u64, StorageError> {
@@ -344,6 +557,28 @@ impl SqliteStorage {
         let mut rows = stmt.query([]).map_err(backend_err)?;
         while let Some(row) = rows.next().map_err(backend_err)? {
             f(row_to_node(row).map_err(backend_err)?)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "vector")]
+    pub fn for_each_node_in_paths(
+        &self,
+        paths: &[String],
+        f: &mut dyn FnMut(Node) -> Result<(), StorageError>,
+    ) -> Result<(), StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, repo_id, path, symbol, kind, line_start, line_end, signature \
+                 FROM nodes WHERE path = ?1 ORDER BY line_start, id",
+            )
+            .map_err(backend_err)?;
+        for path in paths {
+            let mut rows = stmt.query(params![path]).map_err(backend_err)?;
+            while let Some(row) = rows.next().map_err(backend_err)? {
+                f(row_to_node(row).map_err(backend_err)?)?;
+            }
         }
         Ok(())
     }
@@ -538,39 +773,8 @@ impl Storage for SqliteStorage {
     }
 
     fn upsert_node(&mut self, node: &Node) -> Result<NodeId, StorageError> {
-        let mut stmt = self
-            .conn
-            .prepare_cached(
-                "INSERT INTO nodes (repo_id, path, symbol, kind, line_start, line_end, signature)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(repo_id, path, symbol, line_start) DO UPDATE SET
-                    kind = excluded.kind,
-                    line_end = excluded.line_end,
-                    signature = excluded.signature
-                 RETURNING id",
-            )
-            .map_err(backend_err)?;
-
-        let id = stmt
-            .query_row(
-                params![
-                    node.repo_id,
-                    node.path,
-                    node.symbol,
-                    node.kind,
-                    node.line_start,
-                    node.line_end,
-                    node.signature
-                ],
-                |row| row.get::<_, i64>(0),
-            )
-            .map(|id| id as NodeId)
-            .map_err(backend_err)?;
-
-        #[cfg(feature = "fts")]
-        crate::fts::replace_row(&self.conn, id as i64, &node.symbol, &node.signature)?;
-
-        Ok(id)
+        self.upsert_nodes(std::slice::from_ref(node))
+            .map(|ids| ids[0])
     }
 
     fn upsert_edge(&mut self, edge: &Edge) -> Result<u32, StorageError> {

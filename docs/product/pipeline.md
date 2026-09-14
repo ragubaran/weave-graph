@@ -1,6 +1,9 @@
 # GitHub Actions & CI/CD Pipeline Integration
 
-Integrating `weave` into your GitHub Actions workflow turns your code graph into an automated quality gate. Because `weave` executes **100% deterministically without network or LLM dependencies**, CI checks complete in milliseconds with zero per-run token costs.
+Integrating `weave` into GitHub Actions provides deterministic graph and
+contract checks without network or LLM dependencies. Actual CI duration depends
+on repository size, cache state, and runner hardware; no universal millisecond
+claim is made here.
 
 This guide provides tested GitHub Actions workflow recipes and configuration strategies for:
 1. **Single Mode (`mode = "single"`)**: PR blast-radius commenting, contract diffing, and health reporting for monorepos and standalone services.

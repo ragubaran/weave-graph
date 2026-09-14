@@ -1,14 +1,12 @@
 # Features
 
-Everything beyond the deterministic core is an off-by-default Cargo
-feature. Enabling one never changes the meaning of core behavior, and
-compiling a feature you don't use costs nothing — no code linked in, no
-idle RSS, no latency change on the default paths (measured and enforced
-per-feature; see the [Release Notes](release-notes.md#quality-gates-this-release-was-held-to)).
+Everything beyond the deterministic core is an off-by-default Cargo feature.
+The pages below describe implemented interfaces; package, memory, latency,
+and semantic-quality targets remain subject to the gates in the internal audit.
 
 | Tier / Profile | Feature | Flag | Description |
 | :--- | :--- | :--- | :--- |
-| **Base Tier (Core)** | Core Engine | *(default)* | 29-language Tree-sitter indexing, CSR graph, incremental reindex, loopback MCP server, `weave query`, `weave blast` |
+| **Base Tier (Core)** | Core Engine | `--no-default-features` | Core-language Tree-sitter indexing, CSR graph, incremental reindex, loopback MCP server, `weave query`, `weave blast` |
 | **Team Profile** | [`docs`](#docs) | `--features docs` | Markdown/Obsidian ingestion, wikilinks, backtick code rationales, JSON Canvas export |
 | | [`federation`](#federation) | `--features federation` | Multi-repo graph composition, cross-repo cycles, contract hashing & CI verification |
 | **Knowledge & DX Tier** | [`notes`](#notes) | `--features notes` | Pinned symbol notes, ephemeral (24h TTL) and crystallized tiers, moniker reattachment |
@@ -21,14 +19,14 @@ per-feature; see the [Release Notes](release-notes.md#quality-gates-this-release
 | | [`fts`](#fts) | `--features fts` | BM25 full-text symbol search with AST synonym expansion (`weave search`) |
 | | [`vector`](#vector) | `--features vector` | Vector embeddings with `sqlite-vec` virtual tables for semantic symbol retrieval |
 | | [`slm`](#slm) | `--features slm` | Natural-language terminal query router (`weave ask`), model management, ADR review |
-| | [`provenance`](#provenance) | `--features provenance` | Merkle-signed note and document provenance verification |
+| | [`provenance`](#provenance) | `--features provenance` | Optional note and document provenance primitives |
 | **Extensibility & Runtimes** | [`turso`](#turso) | `--features turso` | Embedded libSQL storage backend for normal single-engine mode |
 | | [`python`](#python) | `--features python` | PyO3 Python bindings wheel (`weave-graph-python`) for offline graph analytics |
 
 ### Feature Profiles (Cargo Bundles)
-- **Default Core**: 41.1 MB stripped release binary (all 29 languages, the actual default) — 9.6 MB with `--no-default-features` (8 core languages only). Peak RAM stays under the 80 MB ceiling (measured ~60 MB for 500k symbols). Single repo, local only.
+- **Core artifact**: A prior local `--no-default-features` build measured about 9.6 MiB. The <15 MB target applies only to that artifact; the complete 500k-symbol indexing RSS gate remains open.
 - **Team Profile (`--features team`)**: `docs` + `federation`. Multi-repo linking, contract checking, and Markdown knowledge integration.
-- **Custom Mode / Self-Hosted Profile (`--features custom`)**: `team, hub, hub-provenance, provenance, rbac, otel, policy-lint, fts, vector`. Complete enterprise intelligence suite for self-hosted deployments.
+- **Custom Mode / Self-Hosted Profile (`--features custom`)**: Enables the compiled enterprise feature set. Review each capability's authentication and verification status before deployment; this profile is not a certification of every enterprise control.
 
 
 ---
@@ -61,8 +59,8 @@ CI. See [CLI Reference](cli-reference.md#weave-link-feature-federation) and
 
 ## `provenance`
 
-A `ProvenanceProvider` trait boundary for Merkle-signed note/link
-provenance — `attach(doc_id, commit_hash)` / `verify(...)`. `weave` ships a
+A `ProvenanceProvider` trait boundary for note/link provenance
+(`attach(doc_id, commit_hash)` / `verify(...)`). `weave` ships a
 `MockProvenanceProvider` and renders a `## Document Provenance` section in
 `weave report` / a `doc_provenance` field in `weave export` whenever signed
 links exist; it never attaches provenance itself. A real provider (e.g. an
@@ -150,50 +148,9 @@ and the lightweight `weave-registry` standalone server daemon.
 
 ## `slm`
 
-The `slm` feature integrates **Small Language Models (SLMs)** and links **Frontier LLMs** with Weave Graph through a structured 3-tier architecture.
-
-### 1. The 3-Tier Intelligence Architecture
-
-```text
-┌─────────────────────────────────────────────────────────────────────────┐
-│ Tier 1: Zero-LLM Deterministic Core (<2ms, 100% Offline, <80MB RAM)     │
-│   Tree-sitter AST parsers • CSR adjacency matrices • SQLite WAL store   │
-└────────────────────────────────────┬────────────────────────────────────┘
-                                     │
-         ┌───────────────────────────┴───────────────────────────┐
-         ▼                                                       ▼
-┌─────────────────────────────────┐   ┌───────────────────────────────────┐
-│ Tier 2: Local SLM (0.5B–3B)     │   │ Tier 3: Frontier LLM Agents       │
-│ • Terminal NL Router (weave ask)│   │ • Claude Code, Cursor, Windsurf   │
-│ • Grounded parameter resolution │   │ • Native MCP Protocol (stdio/SSE) │
-│ • ADR rule extraction           │   │ • 92% context token reduction     │
-│ • Zero cloud data egress        │   │ • Subgraph & blast radius pruning │
-└─────────────────────────────────┘   └───────────────────────────────────┘
-```
-
-### 2. Local SLM Linking (`weave ask` & `weave slm`)
-
-A natural-language query router **for a human at a terminal** (`weave ask`), explicitly never on the MCP/agent path (agents already emit exact tool calls — an intermediate translation layer would only add latency and lose fidelity).
-
-- **Strict AST Parameter Grounding**: Translates natural language intents (e.g., *"Which services call JWT verification?"*) into exact graph traversals (`callers("verifyJWT", depth=2)`). Every symbol is resolved against the live symbol table before dispatch; unresolvable or ambiguous tokens immediately report a routing failure rather than hallucinating.
-- **Model Lifecycle & Management**:
-  - `weave slm pull <model> --sha256 <digest>`: Downloads and checksum-verifies compact GGUF models (e.g., `qwen2.5-coder-0.5b`, `llama-3.2-1b`) into `$XDG_CACHE_HOME/weave/models/`.
-  - `weave slm list`: Displays registered models, quantization levels (Q4_K_M), and local cache availability.
-  - `weave slm doctor`: Executes a built-in validation suite against held-out prompts, asserting tool-selection accuracy, symbol-grounding rate, and Time-to-First-Token (TTFT).
-- **Zero Idle Overhead**: Falls back to an instant deterministic heuristic router when no local model is pulled. Model weights load lazily — compiling with `--features slm` incurs **0 MB idle RSS** until `weave ask` is invoked.
-
-### 3. Frontier LLM Linking via MCP Server
-
-Weave Graph links frontier coding models (Claude 3.7 Sonnet, GPT-4o, o3, Gemini Pro) via standard Model Context Protocol:
-
-- **Subgraph Extraction over File Dumps**: Traditional workflows dump 50,000–100,000 raw source tokens into the LLM context window, causing prompt cost blowouts and attention dilution ("lost in the middle").
-- **Targeted MCP Graph Slices**: Weave Graph provides focused MCP tools (`callers`, `callees`, `impact`, `path`), returning exact 1,000-token subgraphs with transitive dependencies in <2ms — slashing LLM context consumption by over **92%**.
-- **Synergistic Workflow**: Terminal developers use Tier 2 Local SLM (`weave ask`) for zero-cloud triage, while autonomous IDE agents leverage Tier 3 MCP tools for high-precision refactoring.
-
-### 4. Knowledge & Document Linking Commands
-
-- `weave slm review-rules`: Scans Markdown design docs and ADRs for obligation-shaped sentences ("must", "must not", "should never") and extracts candidate architectural invariants into `.weave/rules.toml` for human confirmation (`--confirm`/`--reject`), bridging human prose with automated CI policy checks.
-- `weave journal [--since <ref>]`: Combines a Git diff against `<ref>` with the graph delta (touched symbols, callers, and blast radius) to synthesize structured changelog summaries with zero model inference overhead.
+The local-model feature is intentionally not described as a production
+capability yet. Model selection, downloads, grounding, resource limits, and
+quality evaluation remain open; see [unverified claims](../unverified_claims.md).
 
 ## `rbac`
 
@@ -201,7 +158,7 @@ Enterprise Role-Based Access Control enforcing code confidentiality and organiza
 
 - **Query-Layer Masking**: Enforces visibility directly inside the graph traversal and storage boundary. CLI queries (`weave query`), reports (`weave report`), exports (`weave export`), and MCP tools (`weave serve --mcp`) all inherit the identical security guard.
 - **Role Scoping**: Only `"internal"` is special-cased — that identity sees everything. Every other role name (`engineer`, `admin`, `contractor`, or anything else) gets identical masked behavior: public API symbols visible, internal implementation redacted. There's no per-role permission grant beyond that one bit.
-- **SCIM 2.0 Directory Server**: `weave rbac serve-scim` runs a loopback SCIM endpoint that receives push provisioning and deprovisioning events from enterprise IdPs (Okta, Azure AD, Google Workspace) and writes to `.weave/rbac-directory.toml`; optionally requires an `Authorization: Bearer <token>` (`[rbac.scim] token`) on every request.
+- **SCIM 2.0 Directory Server**: `weave rbac serve-scim` runs a loopback SCIM endpoint for generic subject/role provisioning and writes to `.weave/rbac-directory.toml`; optionally requires an `Authorization: Bearer <token>` (`[rbac.scim] token`) on every request. Vendor-specific SSO integration is not included.
 - **Identity Invocation**: Global `--as <identity>` flag enables testing and auditing views for specific users or roles. `weave serve --mcp --require-as` (or `[rbac] require_identity = true`) refuses to start a session at all without one — for shared/multi-tenant deployments where an unmasked session by omission is unacceptable.
 - **Waiver Gating**: `"allow-drift"` is the other special-cased role — it grants permission to waive a `check-contracts`/`blast` CI gate. Once granted to anyone, an identity-less waiver attempt is rejected outright.
 
@@ -230,13 +187,12 @@ Fast, offline lexical code search using SQLite FTS5:
 - **AST Synonym Expansion**: Automatically expands camelCase, snake_case, and language-specific conventions to maximize recall.
 - **Zero-Network Execution**: Instant symbol lookups without embedding models or cloud dependencies via `weave search "<query>"`.
 
-## `vector`
+## `vector` (storage groundwork; learned semantic quality unverified)
 
 Semantic code retrieval over AST-bounded chunks:
 
 - **Syntactic Chunking**: Breaks code strictly along AST definitions (functions, classes, traits) rather than arbitrary byte boundaries.
 - **Vector Storage**: Integrated vector similarity search using `sqlite-vec` virtual tables.
-- **Hybrid Retrieval**: Combines BM25 lexical precision with semantic embedding similarity for agent query routing.
 - **MCP tool (`weave_search_semantic`)**: exposes the same search to AI agents over MCP; a masked top hit is filtered out before the result is truncated to `limit`, never after, so it can't starve a visible runner-up out of a size-capped response — see [MCP Integration](mcp-integration.md).
 
 ## `turso`

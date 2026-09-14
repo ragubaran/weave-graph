@@ -1,6 +1,7 @@
 use super::*;
 use weave_graph_core::schema::{
     LATEST_SCHEMA_VERSION, V1_CREATE_TABLES, V2_TRAVERSAL_INDICES, V3_DOC_LINK_PROVENANCE,
+    V4_NOTES_TABLE, V5_TRACE_SPANS_TABLE, V6_CONTRACT_ENTRIES, V7_RESOLVER_INPUTS,
 };
 
 #[test]
@@ -135,4 +136,28 @@ fn legacy_v3_db_upgrades_to_v4_notes_table() {
         )
         .unwrap();
     assert!(notes_table, "notes table must exist after v4");
+}
+
+#[test]
+fn legacy_v7_db_upgrades_to_v8_semantic_key_column() {
+    let conn = Connection::open_in_memory().unwrap();
+    let v7_only = format!(
+        "BEGIN;\n{V1_CREATE_TABLES}\n{V2_TRAVERSAL_INDICES}\n{V3_DOC_LINK_PROVENANCE}\n\
+         {V4_NOTES_TABLE}\n{V5_TRACE_SPANS_TABLE}\n{V6_CONTRACT_ENTRIES}\n{V7_RESOLVER_INPUTS}\n\
+         INSERT INTO schema_version (version, applied_at) VALUES (7, strftime('%s', 'now'));\nCOMMIT;"
+    );
+    conn.execute_batch(&v7_only).unwrap();
+    assert_eq!(schema_version(&conn).unwrap(), 7);
+
+    migrate(&conn).unwrap();
+    assert_eq!(schema_version(&conn).unwrap(), LATEST_SCHEMA_VERSION);
+
+    let has_column: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('nodes') WHERE name = 'semantic_key')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(has_column, "nodes.semantic_key must exist after v8");
 }

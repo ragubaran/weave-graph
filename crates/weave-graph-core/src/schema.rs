@@ -7,7 +7,7 @@
 
 /// Highest schema version any migration in `MIGRATIONS` brings a database
 /// to — round-trip tests assert against it.
-pub const LATEST_SCHEMA_VERSION: u32 = 7;
+pub const LATEST_SCHEMA_VERSION: u32 = 8;
 
 /// Base schema: `nodes`, `edges`, `doc_links`, `contracts`,
 /// `schema_version`. Unique indices on each table's natural key make
@@ -146,6 +146,16 @@ CREATE INDEX idx_unresolved_refs_name ON unresolved_refs(short_name);
 CREATE INDEX idx_unresolved_refs_path ON unresolved_refs(repo_id, path);
 ";
 
+/// Overload-safe node identity: a persisted `path|symbol|kind|signature`
+/// key survives span-only edits that move line numbers, so two same-name
+/// overloads keep distinct identities across reindexes. Nullable — rows
+/// written before this migration read back NULL and are repopulated by
+/// the next upsert.
+pub const V8_NODE_SEMANTIC_KEY: &str = "
+ALTER TABLE nodes ADD COLUMN semantic_key TEXT;
+CREATE INDEX idx_nodes_semantic_key ON nodes(repo_id, path, symbol, kind, signature);
+";
+
 /// Ordered migration history. Each backend replays every `(version, sql)`
 /// newer than the database's recorded version, in its own transaction.
 pub const MIGRATIONS: &[(u32, &str)] = &[
@@ -156,4 +166,5 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (5, V5_TRACE_SPANS_TABLE),
     (6, V6_CONTRACT_ENTRIES),
     (7, V7_RESOLVER_INPUTS),
+    (8, V8_NODE_SEMANTIC_KEY),
 ];
