@@ -69,6 +69,7 @@ provenance = ["weave-graph-core/provenance", "weave-graph-store-sqlite/provenanc
 slm = ["dep:sha2"]
 rbac = ["weave-graph-core/rbac", "weave-graph-mcp/rbac"]
 github-auth = ["rbac", "dep:ureq"]
+http-compression = ["weave-graph-mcp/http-compression"]
 otel = []
 policy-lint = ["dep:serde_yaml", "weave-graph-core/policy-lint", "weave-graph-mcp/policy-lint"]
 fts = ["weave-graph-core/fts", "weave-graph-store-sqlite/fts"]

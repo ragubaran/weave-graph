@@ -1118,14 +1118,15 @@ _Status: Phase 4 release gates remain open; P4-A has preliminary CI/benchmark gr
 
 #### P4-G — Optional JSON/HTTP response compression
 
-**Depends on:** P4-A transport and payload-size baselines. **Status:** `[ ] Not started`; current MCP and Hub HTTP responses are uncompressed JSON.
+**Depends on:** P4-A transport and payload-size baselines. **Status:** `[~] MCP HTTP gzip path implemented; Hub transport and full crossover benchmarks remain open.`
 
 - [ ] Measure representative MCP (`tools/list`, repo map, file cards, trace, and impact) and Hub responses before adding a codec. Report raw bytes, compressed bytes, CPU time, and end-to-end latency at small, medium, and large payload sizes.
-- [ ] Add HTTP `Accept-Encoding` negotiation and `Content-Encoding` responses for supported codecs. Start with gzip only if its dependency and binary cost fit the Basic profile; evaluate zstd as an opt-in alternative rather than adding both by default.
+- [x] Add optional MCP HTTP `Accept-Encoding: gzip` negotiation and `Content-Encoding: gzip` responses behind `http-compression` (`flate2`). Unsupported or absent encodings remain uncompressed; responses are compressed only when the gzip payload is smaller.
+- [ ] Extend negotiation to Hub HTTP responses after measuring the separate registry/client payload paths. Evaluate zstd as an opt-in alternative rather than adding both by default.
 - [ ] Keep compression disabled for small responses below a measured crossover threshold, where codec overhead costs more than the saved transfer bytes. Preserve `Content-Length` correctness and return uncompressed JSON when the client sends no supported encoding.
 - [ ] Apply the same bounded-response and RBAC rules before serialization/compression. Compression must never be used to hide an unbounded response or move authorization after filtering.
 - [ ] Keep MCP stdio unchanged: it has no HTTP content-encoding negotiation. The feature applies only to HTTP MCP and Hub transports and must not add a network dependency to the core crate.
-- [ ] Add round-trip tests for each enabled codec, unsupported-encoding fallback, malformed compressed input handling, small-payload bypass, and compatibility with existing JSON-RPC clients. Add release-build package/RSS measurements for each profile.
+- [ ] Add round-trip tests for gzip, unsupported-encoding fallback, small-payload bypass, and compatibility with existing JSON-RPC clients. Add release-build package/RSS measurements for each profile.
 
 **Exit criteria:** Compression demonstrates a repeatable transfer-size win at an accepted CPU/latency cost, remains below the profile's package/RAM budget, preserves byte-for-byte JSON semantics after decompression, and is disabled by default unless the measured profile decision explicitly enables it.
 

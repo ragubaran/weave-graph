@@ -120,6 +120,7 @@ impl HttpTransport {
         let mut header_bytes = request_line.len();
         let mut content_length = None;
         let mut authorization = None;
+        let mut accept_encoding = None;
         while let Some(header_line) = read_limited_line(&mut reader, MAX_HTTP_HEADER_BYTES)? {
             header_bytes += header_line.len();
             if header_bytes > MAX_HTTP_HEADER_BYTES {
@@ -139,6 +140,8 @@ impl HttpTransport {
                 })?);
             } else if name.eq_ignore_ascii_case("authorization") {
                 authorization = Some(value.trim().to_string());
+            } else if name.eq_ignore_ascii_case("accept-encoding") {
+                accept_encoding = Some(value.trim().to_ascii_lowercase());
             }
         }
 
@@ -152,6 +155,7 @@ impl HttpTransport {
                 401,
                 "Unauthorized",
                 r#"{"error":"unauthorized"}"#,
+                accept_encoding.as_deref(),
             )?;
             return Ok(());
         }
@@ -164,6 +168,7 @@ impl HttpTransport {
                 413,
                 "Payload Too Large",
                 r#"{"error":"request body exceeds limit"}"#,
+                accept_encoding.as_deref(),
             )?;
             return Ok(());
         }
@@ -183,7 +188,13 @@ impl HttpTransport {
             Some(res) => serde_json::to_string(&res)?,
             None => r#"{"status":"ok"}"#.to_string(),
         };
-        write_http_response(&mut stream, 200, "OK", &response_body)?;
+        write_http_response(
+            &mut stream,
+            200,
+            "OK",
+            &response_body,
+            accept_encoding.as_deref(),
+        )?;
         Ok(())
     }
 
@@ -217,12 +228,32 @@ fn write_http_response<S: Write>(
     status: u16,
     reason: &str,
     body: &str,
+    accept_encoding: Option<&str>,
 ) -> io::Result<()> {
+    #[cfg(feature = "http-compression")]
+    let compressed = accept_encoding
+        .is_some_and(|value| value.split(',').any(|part| part.trim().starts_with("gzip")))
+        .then(|| {
+            use flate2::{Compression, write::GzEncoder};
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+            encoder.write_all(body.as_bytes()).ok()?;
+            encoder.finish().ok()
+        })
+        .flatten()
+        .filter(|bytes| bytes.len() < body.len());
+    #[cfg(not(feature = "http-compression"))]
+    let compressed: Option<Vec<u8>> = None;
+    let payload = compressed.as_deref().unwrap_or(body.as_bytes());
+    let encoding = compressed
+        .is_some()
+        .then_some("\r\nContent-Encoding: gzip")
+        .unwrap_or("");
     let response = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json{encoding}\r\nVary: Accept-Encoding\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        payload.len()
     );
     stream.write_all(response.as_bytes())?;
+    stream.write_all(payload)?;
     stream.flush()
 }
 

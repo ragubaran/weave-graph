@@ -216,6 +216,26 @@ fn http_transport_handle_empty_stream() {
     assert!(stream.write_buf.is_empty());
 }
 
+#[cfg(feature = "http-compression")]
+#[test]
+fn gzip_response_is_used_only_when_smaller() {
+    use std::io::Read;
+
+    let body = &format!(
+        r#"{{"status":"ok","detail":"{}"}}"#,
+        "repeated ".repeat(200)
+    );
+    let mut out = Vec::new();
+    super::write_http_response(&mut out, 200, "OK", body, Some("gzip")).expect("response writes");
+    let split = out.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+    let headers = String::from_utf8_lossy(&out[..split]);
+    assert!(headers.contains("Content-Encoding: gzip"));
+    let mut decoder = flate2::read::GzDecoder::new(&out[split + 4..]);
+    let mut decoded = String::new();
+    decoder.read_to_string(&mut decoded).unwrap();
+    assert_eq!(decoded, body.as_str());
+}
+
 #[test]
 fn http_transport_run_security_check() {
     let storage = setup_storage();
