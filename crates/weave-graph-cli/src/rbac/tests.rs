@@ -215,6 +215,38 @@ fn provision_request_still_accepts_a_flat_string_array() {
     assert_eq!(roles, vec!["internal".to_string()]);
 }
 
+#[test]
+fn provision_request_ingests_rfc_7643_groups_as_markers() {
+    let mutation = provision_request(
+        r#"{"userName":"erin","roles":[],"groups":[{"value":"platform","display":"Platform"},"auditors"]}"#,
+    )
+    .unwrap();
+    let DirectoryMutation::Provision { roles, .. } = mutation else {
+        panic!("expected a Provision mutation");
+    };
+    assert_eq!(roles, vec!["group:platform", "group:auditors"]);
+}
+
+#[test]
+fn group_mapping_grants_configured_role() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".weave")).unwrap();
+    fs::write(
+        dir.path().join(".weave/config.toml"),
+        "[rbac.group_mappings]\nplatform = \"internal\"\n",
+    )
+    .unwrap();
+    let mut directory = ScimDirectory::load(crate::rbac::directory_file(dir.path()));
+    let _ = ScimServer::handle_request(
+        &mut directory,
+        "POST",
+        "/Users",
+        r#"{"userName":"erin","roles":[],"groups":[{"value":"platform"}]}"#,
+    );
+    let _ = directory.sync();
+    assert!(guard_for(dir.path(), Some("erin")).visible(&node("src/lib.rs", "x", "fn x()")));
+}
+
 /// IDP-02: a configured bearer token rejects any request lacking it (or
 /// carrying the wrong one), and admits one carrying the right one.
 #[test]
