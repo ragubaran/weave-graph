@@ -49,6 +49,11 @@ fn github_identity_from_json(body: &str) -> Option<Identity> {
 /// Tokens are never persisted or included in errors; failures deny access.
 #[cfg(feature = "github-auth")]
 fn github_identity(token: &str) -> Option<Identity> {
+    github_identity_from_endpoint("https://api.github.com/user", token)
+}
+
+#[cfg(feature = "github-auth")]
+fn github_identity_from_endpoint(endpoint: &str, token: &str) -> Option<Identity> {
     if token.trim().is_empty() {
         return None;
     }
@@ -58,7 +63,7 @@ fn github_identity(token: &str) -> Option<Identity> {
         .build()
         .new_agent();
     let response = agent
-        .get("https://api.github.com/user")
+        .get(endpoint)
         .header("Authorization", format!("Bearer {token}"))
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", "weave-graph")

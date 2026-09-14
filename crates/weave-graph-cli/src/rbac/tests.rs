@@ -454,6 +454,34 @@ fn github_identity_json_rejects_missing_identity_fields() {
     assert!(super::github_identity_from_json(r#"{"login":"octocat"}"#).is_none());
 }
 
+#[cfg(feature = "github-auth")]
+#[test]
+fn github_identity_lookup_sends_bearer_and_parses_api_response() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 2048];
+        let size = stream.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
+        assert!(request.contains("authorization: bearer test-token"));
+        let body = r#"{"login":"octocat","id":1}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+    });
+    let endpoint = format!("http://{address}/user");
+    let identity = super::github_identity_from_endpoint(&endpoint, "test-token").unwrap();
+    server.join().unwrap();
+    assert_eq!(identity.subject, "github:octocat:1");
+}
+
 /// IDP-02: `[rbac.scim] token` in `.weave/config.toml` reaches
 /// `cmd_serve_scim` and is enforced on the real socket.
 #[test]
