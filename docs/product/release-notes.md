@@ -185,14 +185,15 @@ one does and how to enable it.
 
 ### Not in this release (planned for a later phase)
 
-- `rbac` — query-layer access masking via an `AuthProvider` trait
-  (Okta/Azure AD/SAML/OIDC).
+- Built-in SSO/OIDC/SAML login and vendor-specific IdP adapters. The current
+  `rbac` release provides query-layer masking plus generic SCIM provisioning;
+  an external IdP must push subjects and roles to the loopback SCIM endpoint.
 - `otel` — OpenTelemetry/APM trace overlay on graph nodes.
 - `policy-lint` — YAML architectural boundary rules with a CI gate.
 
-None of the three above have any code or a Cargo feature flag yet; they're
-scoped for a later, RBAC-first phase since every other Phase 3 feature
-that touches visibility depends on that enforcement point landing first.
+The SSO/OIDC item above has no code or Cargo feature flag. RBAC, SCIM,
+OpenTelemetry, and policy-lint are available only in their documented
+feature builds; do not infer interactive SSO from SCIM support.
 
 ### Quality gates this release was held to
 
