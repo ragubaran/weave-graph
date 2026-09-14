@@ -60,14 +60,15 @@ CI. See [CLI Reference](cli-reference.md#weave-link-feature-federation) and
 
 ## `provenance`
 
-A `ProvenanceProvider` trait boundary for note/link provenance
+An optional `ProvenanceProvider` trait boundary for note/link provenance
 (`attach(doc_id, commit_hash)` / `verify(...)`). `weave` ships a
 `MockProvenanceProvider` and renders a `## Document Provenance` section in
 `weave report` / a `doc_provenance` field in `weave export` whenever signed
-links exist; it never attaches provenance itself. Merkle/PKI provenance is
-provided by an external application such as Lodestone Nexus (or another
-deployment-supplied provider) wired against this trait — no signer or PKI
-implementation is a hard dependency of `weave`.
+links exist; it never attaches provenance itself. Core indexing, querying,
+and MCP operation do not depend on any provenance service. If provenance is
+enabled, Merkle/PKI signing is supplied by an external application such as
+Lodestone Nexus (or another deployment-supplied provider) wired against this
+trait; no signer or PKI implementation is a hard dependency of `weave`.
 
 ## `github-auth`
 

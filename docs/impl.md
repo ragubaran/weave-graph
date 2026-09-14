@@ -958,7 +958,7 @@ _Audit date: 2026-09-14. “Implemented” means the named source path and its r
 | M2.0 docs | Markdown/wiki-link/ADR indexing exists and JSON Canvas schema tests pass. Obsidian desktop visual verification remains open because the installed `/Applications/Obsidian.app` bundle is not launchable (`kLSNoExecutableErr`). |
 | M2.1 federation | Local linked-repo graph, `query-federated` and pairwise report paths exist. This does not imply a hub-served cross-repo edge graph. |
 | M2.2 contracts | Hashing, strict `check-contracts` test and later symbol-level diff/scoped checks exist. CI has a named strict-divergence test. |
-| M2.3 provenance | Provider boundary and storage/report/export paths exist; Merkle/PKI signing is supplied by an external provider (for example Lodestone Nexus), not installed in this feature. |
+| M2.3 provenance | Optional provider boundary and storage/report/export paths exist; core operation is standalone. Merkle/PKI signing is supplied by an external provider (for example Lodestone Nexus), not installed or required by this feature. |
 | M2.4 `slm` | Deterministic intent routing, external `llama-cli` adapter and management verbs exist. Generated, source-cited answers and feature-design assistance are P4-E work. The recorded `route_ms` completion metric is not streaming time-to-first-token. Real-model accuracy/latency remains unmeasured. |
 | M2.5 hub client | Push/pull client is implemented and the M3.1 registry supplies its tested server. Treat a queued `202 Accepted` response as acceptance, not proof a snapshot has been committed. |
 | M2.6 onboarding | Team onboarding and CI tooling described in its milestone are present; the global CI gaps listed below still apply. |

@@ -361,7 +361,7 @@ flowchart TD
     *   The core defines a `ProvenanceProvider` trait; **Lodestone Nexus (`/Users/ragu/Code/LoadstoneNexus`) is one implementation of it**, not the interface. If that project's API changes or it is retired, `weave-graph` keeps working and another provider can be supplied.
     *   `weave-graph-core` remains consumable as a plain Rust crate by any external host, including `lodestone-core`.
 *   **Provenance Linking**:
-    *   Connect code nodes to Merkle-signed notes (`[doc_id:commit_hash]`), letting AI agents trace an architectural rule to its verified author, timestamp, and commit.
+    *   Optionally connect code nodes to Merkle-signed notes (`[doc_id:commit_hash]`) through a deployment-supplied provider, letting AI agents trace an architectural rule to its verified author, timestamp, and commit. Core indexing and querying remain independent of that provider.
 *   **Shared MCP Transport**:
     *   Code graph queries and knowledge-vault search can be served from one MCP daemon. Transport lives behind the `McpTransport` adapter (§0.4), so a host application composes it rather than the core hard-wiring to a specific CLI.
 
