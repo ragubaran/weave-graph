@@ -71,7 +71,7 @@ deployment threat model.
 | IDP-01 | Closed | RFC 7643 object-array `roles` and `groups` are ingested, with regression coverage for both flat and object-array payloads. Group values are preserved as `group:<value>` markers for policy mapping. |
 | IDP-02 | Closed, opt-in | Loopback SCIM can enforce a configured bearer token; an unset token retains the earlier local unauthenticated mode. |
 | RBAC-01 | Deferred capability | Path-scoped roles need an approved role-model expansion and authorization tests. |
-| RBAC-02 | Partial | `[rbac.group_mappings]` now maps SCIM `group:<value>` markers to Weave roles during guard construction. Policy validation, precedence, and end-to-end authorization tests remain open. |
+| RBAC-02 | Closed | `[rbac.group_mappings]` maps SCIM `group:<value>` markers to Weave roles during guard construction. Direct roles are preserved, mapped roles are deduplicated, malformed mappings are ignored, and focused RBAC tests cover ingestion plus authorization. |
 | POL-01 | Open | RBAC-masked policy lint can report false clean results in CI. Define whether CI uses an unmasked privileged identity or fails on incomplete visibility; do not invent an existing flag. |
 | POL-02 | Deferred capability | Semantic-coupling policy checks are not implemented; require a quality and false-positive evaluation before gating CI. |
 | POL-03 | Closed | Mask-induced orphan reports are annotated, using one graph fetch for both views. |

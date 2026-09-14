@@ -247,6 +247,39 @@ fn group_mapping_grants_configured_role() {
     assert!(guard_for(dir.path(), Some("erin")).visible(&node("src/lib.rs", "x", "fn x()")));
 }
 
+#[test]
+fn group_mapping_keeps_direct_roles_and_deduplicates_mapped_roles() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".weave")).unwrap();
+    fs::write(
+        dir.path().join(".weave/config.toml"),
+        "[rbac.group_mappings]\nplatform = \"internal\"\n",
+    )
+    .unwrap();
+    let path = crate::rbac::directory_file(dir.path());
+    fs::write(
+        &path,
+        "[users.erin]\nroles = [\"internal\", \"group:platform\"]\n",
+    )
+    .unwrap();
+    let guard = guard_for(dir.path(), Some("erin"));
+    assert!(guard.visible(&node("src/lib.rs", "x", "fn x()")));
+}
+
+#[test]
+fn malformed_group_mapping_is_ignored_without_changing_direct_roles() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".weave")).unwrap();
+    fs::write(
+        dir.path().join(".weave/config.toml"),
+        "[rbac.group_mappings]\nplatform = 42\n",
+    )
+    .unwrap();
+    let path = crate::rbac::directory_file(dir.path());
+    fs::write(&path, "[users.erin]\nroles = [\"group:platform\"]\n").unwrap();
+    assert!(!guard_for(dir.path(), Some("erin")).visible(&node("src/lib.rs", "x", "fn x()")));
+}
+
 /// IDP-02: a configured bearer token rejects any request lacking it (or
 /// carrying the wrong one), and admits one carrying the right one.
 #[test]

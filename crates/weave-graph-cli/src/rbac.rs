@@ -95,7 +95,9 @@ pub(crate) fn guard_for(root: &Path, as_subject: Option<&str>) -> RbacGuard {
             .collect::<Vec<_>>()
         {
             if let Some(role) = group_mappings.get(&group) {
-                user_config.roles.push(role.clone());
+                if !user_config.roles.iter().any(|existing| existing == role) {
+                    user_config.roles.push(role.clone());
+                }
             }
         }
         users.insert(subject, user_config);
