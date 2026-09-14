@@ -62,13 +62,18 @@ fn github_identity_from_endpoint(endpoint: &str, token: &str) -> Option<Identity
         .timeout_connect(Some(Duration::from_secs(3)))
         .build()
         .new_agent();
-    let response = agent
-        .get(endpoint)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "weave-graph")
-        .call()
-        .ok()?;
+    let response = (0..2).find_map(|attempt| {
+        let result = agent
+            .get(endpoint)
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "weave-graph")
+            .call();
+        if result.is_err() && attempt == 0 {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        result.ok()
+    })?;
     let body = response.into_body().read_to_string().ok()?;
     github_identity_from_json(&body)
 }
