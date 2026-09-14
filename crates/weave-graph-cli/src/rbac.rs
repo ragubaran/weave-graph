@@ -28,7 +28,8 @@ use weave_graph_parse::Language;
 use weave_graph_parse::contract::{short_name, visibility_rule};
 
 use crate::config::{
-    UserConfig, read_github_org_roles, read_github_roles, read_rbac_group_mappings, read_rbac_users,
+    UserConfig, read_github_org_roles, read_github_roles, read_github_team_roles,
+    read_rbac_group_mappings, read_rbac_users,
 };
 
 #[cfg(feature = "github-auth")]
@@ -45,11 +46,30 @@ struct GithubOrg {
 }
 
 #[cfg(feature = "github-auth")]
+#[derive(serde::Deserialize)]
+struct GithubTeam {
+    slug: String,
+    organization: GithubOrg,
+}
+
+#[cfg(feature = "github-auth")]
 fn github_org_markers(body: &str) -> Vec<String> {
     serde_json::from_str::<Vec<GithubOrg>>(body)
         .map(|orgs| {
             orgs.into_iter()
                 .map(|org| format!("github-org:{}", org.login))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "github-auth")]
+fn github_team_markers(body: &str) -> Vec<String> {
+    serde_json::from_str::<Vec<GithubTeam>>(body)
+        .map(|teams| {
+            teams
+                .into_iter()
+                .map(|team| format!("github-team:{}/{}", team.organization.login, team.slug))
                 .collect()
         })
         .unwrap_or_default()
@@ -103,6 +123,12 @@ fn github_identity_from_endpoint(endpoint: &str, token: &str) -> Option<Identity
         .map(|json| github_org_markers(&json))
     {
         identity.roles.extend(orgs);
+    }
+    if let Some(teams) = request(&format!("{base}/user/teams"))
+        .and_then(|response| response.into_body().read_to_string().ok())
+        .map(|json| github_team_markers(&json))
+    {
+        identity.roles.extend(teams);
     }
     Some(identity)
 }
@@ -174,9 +200,16 @@ pub(crate) fn guard_for(root: &Path, as_subject: Option<&str>) -> RbacGuard {
                 }
             }
             let org_roles = read_github_org_roles(&config_path);
+            let team_roles = read_github_team_roles(&config_path);
             for marker in identity.roles.clone() {
                 if let Some(org) = marker.strip_prefix("github-org:")
                     && let Some(role) = org_roles.get(org)
+                    && !identity.roles.contains(role)
+                {
+                    identity.roles.push(role.clone());
+                }
+                if let Some(team) = marker.strip_prefix("github-team:")
+                    && let Some(role) = team_roles.get(team)
                     && !identity.roles.contains(role)
                 {
                     identity.roles.push(role.clone());

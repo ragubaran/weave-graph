@@ -466,6 +466,15 @@ fn github_org_response_maps_logins_to_role_markers() {
 
 #[cfg(feature = "github-auth")]
 #[test]
+fn github_team_response_maps_org_and_slug_to_marker() {
+    assert_eq!(
+        super::github_team_markers(r#"[{"slug":"security","organization":{"login":"platform"}}]"#),
+        vec!["github-team:platform/security"]
+    );
+}
+
+#[cfg(feature = "github-auth")]
+#[test]
 fn github_identity_lookup_sends_bearer_and_parses_api_response() {
     use std::io::{Read, Write};
     use std::net::TcpListener;

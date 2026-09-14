@@ -58,6 +58,8 @@ token = ""                          # Optional: require `Authorization: Bearer <
 # octocat = ["internal"]             # roles for a GitHub login resolved from WEAVE_GITHUB_TOKEN
 [rbac.github_org_roles]              # optional organization-to-role mapping
 # platform = "internal"              # role granted when GitHub reports membership
+[rbac.github_team_roles]             # optional team-to-role mapping (`org/slug`)
+# platform/security = "internal"
                                      # (loopback-only trust), unchanged from before this key existed.
 
 [hub]
