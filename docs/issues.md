@@ -25,6 +25,8 @@ Do not turn proposed performance targets into measured results.
 | PERF-G11 | Open | Lexical and vector results have no evaluated deterministic fusion; quantization lacks float-baseline recall evidence. Treat both as optional experiments until measured. |
 | PERF-G12 | Partial | Feature-isolation smoke coverage exists, but release-build, long-lived MCP idle RSS/query latency, and optional worker process-tree measurements remain open. |
 | PERF-G13 | Open | Per-crate >=90% coverage and the full feature/release matrix are not established by the focused test results. The all-feature workspace test was inconclusive in the recorded environment. |
+| AUTH-GH-01 | Partial | Optional `github-auth` resolves `WEAVE_GITHUB_TOKEN` through GitHub `/user`, but it has no mocked HTTP integration test, retry/timeout policy, or organization/team-to-role mapping. It currently identifies the caller but does not grant internal roles; add fail-closed tests and an explicit role-mapping design before presenting it as pipeline authorization. |
+| PERF-G14 | Partial | Optional MCP HTTP gzip compression is implemented, but Hub compression, unsupported-encoding fallback, small-payload crossover, and release package/RSS/CPU measurements remain unverified. |
 | RELEASE-01 | Conditional | The `v1.0.0` tag had no published GitHub Release in the 2026-09-11 record: two Intel macOS build legs remained queued and the run was cancelled. Decide whether Intel artifacts block release, then re-check current remote state before acting. |
 
 The dated RELEASE-01 record says 10 of 12 binary legs completed, while two
