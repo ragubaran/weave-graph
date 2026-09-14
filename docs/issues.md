@@ -135,6 +135,30 @@ Do not implement a proposed flag or backend enum solely from this appendix.
 
 ---
 
+## Claims removed from user-facing product documentation
+
+The following claims were removed or narrowed in `docs/product/*.md` during
+the documentation audit. They remain listed here so their absence is not
+mistaken for implementation or release approval.
+
+| Removed claim | Reason it was removed | Tracking |
+| --- | --- | --- |
+| The default build is below 15 MB and the full indexing process stays below 80 MB RAM at 500k symbols. | The small target applies only to the explicit `--no-default-features` artifact; whole-pipeline RSS has no repeatable CI gate. | PERF-G01, PERF-G03, PERF-G12 |
+| Vector search is production semantic search, binary ANN, or a measured hybrid BM25/vector system. | The current provider is mock groundwork; ANN, BGE quality, quantization loss, and fusion have no accepted measurements. | PERF-G10, PERF-G11 |
+| BGE or another learned embedding model is bundled, portable, or quality-certified. | A real provider, installer, complete fingerprint, and Intel/macOS portability evidence are still open. | PERF-G10 |
+| SLMs provide measured accuracy/TTFT, ADR extraction, autonomous refactoring, or zero-RSS guarantees. | Model artifacts and end-to-end evaluation are not part of the verified release surface. | PERF-G10; Phase 4 P4-E |
+| Weave provides built-in SSO/OIDC/SAML integrations or vendor-specific IdP adapters. | The implemented surface is generic SCIM plus static role mapping; OAuth/OIDC and group mapping are not shipped. | IDP-01, RBAC-02 |
+| Provenance is Merkle/PKI/non-repudiation protection. | The current opt-in registry path uses an operator-supplied shared secret and provides integrity checking only. | PROV-01 |
+| Turso can be selected from the normal `weave` CLI or safely coexists with SQLite in one process. | The current CLI always opens SQLite; native library symbol/threading conflicts require a separate build/process decision. | CORE-01 |
+| Hub provides authenticated, per-identity RBAC diagrams or a centralized mesh policy endpoint. | Authentication is opt-in, canvas exclusion is not per-identity RBAC, and cross-repository policy linting is not implemented. | HUB-01, HUB-02, HUB-03, FED-01 |
+| Universal sub-millisecond latency, 92% token reduction, or cross-platform certification. | These were projections or environment-specific observations without reproducible release gates for every supported profile/platform. | PERF-G02, PERF-G03, PERF-G12, PERF-G13 |
+
+The canonical user-facing rule is: document only interfaces verified in the
+current tree, and describe optional semantic, SLM, Turso, Hub, and enterprise
+features with their explicit opt-in and deployment limitations. Detailed
+acceptance work remains in [impl.md](impl.md); the deferred-claim inventory is
+in [unverified_claims.md](unverified_claims.md).
+
 #### CORE-02: Search & Vector Methods Bypassing `Storage` Trait Interface
 - **✅ Fixed (2026-09-13)**: `search_symbols`/`search_vector` moved from inherent `SqliteStorage` methods to `impl Storage for SqliteStorage` overrides; the trait itself now declares both with a default "unsupported" body (mirroring `upsert_trace_span`'s existing shape), so `TursoStorage` and any future backend compile with zero stub work. See §9 Phase 3 row 6 for the full change list and tests. (Note: this does *not* mean `TursoStorage` can safely coexist with `SqliteStorage` in one process — see CORE-01's own section for that separate, unresolved finding. This trait declaration is real and useful independent of that: it also gives `weave-graph-mcp`'s new `weave_search_semantic` tool — §9 Phase 3 row 7 — a way to call `search_vector` through `&dyn Storage` without ever needing a concrete `SqliteStorage` type.)
 - **✅ Verified (2026-09-13)**: confirmed — `search_symbols` (`backend.rs:217`) and `search_vector` (`backend.rs:240`) are `pub fn` inherent methods on `SqliteStorage`, not declared anywhere on the `Storage` trait (`weave-graph-core/src/storage.rs:10`). Real gap.
