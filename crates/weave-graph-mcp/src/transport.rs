@@ -230,6 +230,8 @@ fn write_http_response<S: Write>(
     body: &str,
     accept_encoding: Option<&str>,
 ) -> io::Result<()> {
+    #[cfg(not(feature = "http-compression"))]
+    let _ = accept_encoding;
     #[cfg(feature = "http-compression")]
     let compressed = accept_encoding
         .is_some_and(|value| value.split(',').any(|part| part.trim().starts_with("gzip")))

@@ -96,6 +96,37 @@ fn stdio_transport_round_trip() {
     assert_eq!(val2["id"], 2);
 }
 
+#[cfg(feature = "rbac")]
+#[test]
+fn stdio_request_metadata_resolves_a_per_request_identity() {
+    use std::rc::Rc;
+    use weave_graph_core::rbac::{Identity, RbacGuard};
+
+    let handler = McpHandler::new(setup_storage())
+        .unwrap()
+        .with_token_auth(Rc::new(|token| {
+            (token == "stdio-secret").then(|| {
+                RbacGuard::new(
+                    Identity {
+                        subject: "alice".into(),
+                        roles: vec!["internal".into()],
+                    },
+                    |_| false,
+                )
+            })
+        }))
+        .with_require_auth(true);
+    let request = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "weave_repo_map", "arguments": {"_meta": {"token": "stdio-secret"}}}
+    });
+    let mut transport = StdioTransport::new(Cursor::new(format!("{}\n", request)), Vec::new());
+    transport.run(&handler).unwrap();
+    let output = String::from_utf8(transport.writer).unwrap();
+    assert!(output.contains("src/main.rs"));
+    assert!(!output.contains("stdio-secret"));
+}
+
 #[test]
 fn stdio_transport_new_default_compiles() {
     let _ = StdioTransport::new_default();

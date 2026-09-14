@@ -67,7 +67,7 @@ deployment threat model.
 | SEC-04 | Closed | MCP semantic-search tool was wired with feature forwarding and masking tests. Its mock embedding is not production semantic retrieval. |
 | SEC-05 | Closed for opt-in policy | `--require-as` / `[rbac] require_identity` gate MCP startup. Do not silently impose RBAC on unconfigured solo repos; verify each future transport's identity path. |
 | SEC-06 | Closed for configured grants | Anonymous waivers are denied when the repo grants `allow-drift` to configured users. |
-| SEC-07 | Partial | HTTP bearer identity is checked before body read and passed transiently to MCP dispatch. Stdio still binds one identity at process startup; per-request stdio auth needs a protocol/design decision. |
+| SEC-07 | Closed | HTTP bearer identity is checked before body read, and stdio now accepts per-request `_meta.token` credentials through the same transient handler path. Added regression coverage proving a valid stdio token resolves an identity and is not reflected in output; invalid/missing credentials remain fail-closed when `require_auth` is enabled. |
 | IDP-01 | Partial | RFC 7643 object-array `roles` are parsed; group ingestion awaits RBAC-02. |
 | IDP-02 | Closed, opt-in | Loopback SCIM can enforce a configured bearer token; an unset token retains the earlier local unauthenticated mode. |
 | RBAC-01 | Deferred capability | Path-scoped roles need an approved role-model expansion and authorization tests. |
