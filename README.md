@@ -2,7 +2,7 @@
 
 Ultra-lightweight, memory-safe code intelligence and knowledge-federation engine, built in pure Rust. Deterministic core — no LLM, no network, no cloud — with an embedded SQL store, CSR graph model, Tree-sitter AST extraction, and a local MCP server for AI agents.
 
-Target envelope for the default build: <15MB binary, <80MB RAM at 500k+ symbols. RAM is **met** (~40.7MB measured at 500k symbols, real margin under the 80MB ceiling — the Core Invariant); binary size is **not yet met** (~43MB stripped release, root-caused to 29 languages' tree-sitter grammar tables — a documented target rather than a Core Invariant; see [Release Notes](docs/product/release-notes.md#known-limitations)).
+Target envelope for the core-only build: <15MB binary and <80MB RAM at 500k+ symbols. The core artifact target has a prior local measurement below 15MB; complete whole-pipeline RSS and release reproducibility remain verification work (see [Release Notes](docs/product/release-notes.md#known-limitations)).
 
 All workspace tests pass, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check` clean, line coverage ≥90% across the workspace.
 
@@ -27,11 +27,11 @@ Everything beyond the deterministic core is an off-by-default Cargo feature. Ena
 
 | Feature       | Mode              | Required Flag            | Enables                                                                                                                                                                                         | Status      |
 | :------------ | :---------------- | :----------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------- |
-| _(none)_      | Any               | Not Required             | Local AST & config indexing (29 languages), CSR graph, incremental reindexing with dangling-edge purge, storage safety, query engine, MCP server (stdio & loopback HTTP, live reload, token-budgeted responses), and CLI configuration | **Done**    |
+| _(none)_      | Any               | Not Required             | Local AST indexing for compiled languages, CSR graph, incremental reindexing with dangling-edge purge, storage safety, query engine, MCP server, and CLI configuration | **Done**    |
 | `storage`     | Any               | Not Required             | Custom data directory (`[storage] home` / `WEAVE_HOME`), central multi-repo knowledge store with isolated updates, network filesystem detection                                                 | **Done**    |
 | `docs`        | Any               | `--features docs`        | Markdown/Obsidian ingestion (`pulldown-cmark`), wikilinks, `EXPLAINS_RATIONALE` code-reference links, `.canvas` export                                                                          | **Done**    |
 | `federation`  | Any               | `--features federation`  | Multi-repo subgraph composition, composite keys, boundary contract hashing, Tarjan's-SCC cycle handling, `weave check-contracts` — **local-only, no network**                                   | **Done**    |
-| `provenance`  | Multiple          | `--features provenance`  | `ProvenanceProvider` trait + Merkle-signed note linking                                                                                                                                         | **Done**    |
+| `provenance`  | Multiple          | `--features provenance`  | `ProvenanceProvider` trait and note/link provenance primitives                                                                                                                                  | **Done**    |
 | `notes`       | Any               | `--features notes`       | Pinned agent/human notes on graph symbols (`weave note pin/list`, MCP `weave_pin_note`/`weave_recall_notes`), content-hash staleness tracking, moniker-based reattachment on reindex             | **Done**    |
 | `watch`       | Any               | `--features watch`       | Debounced auto-reindex on file change (`weave index --watch`, background thread in `weave serve --mcp`) with a blast-radius safety gate                                                         | **Done**    |
 | `viz`         | Any               | `--features viz`         | Offline HTML report viewer (`weave report --html`, `weave viz`), zero new dependencies                                                                                                          | **Done**    |
@@ -97,7 +97,7 @@ cd weave-graph
 cargo build --release -p weave-graph-cli --features team
 ```
 
-The binary lands at `target/release/weave`; put it on your `$PATH` (e.g. `cp target/release/weave ~/.local/bin/`) or run it in place as `./target/release/weave`. A bare `cargo build --release` (no `--features`) yields a minimal, Single-mode-only binary (<15MB, zero network).
+The binary lands at `target/release/weave`; put it on your `$PATH` (e.g. `cp target/release/weave ~/.local/bin/`) or run it in place as `./target/release/weave`. The core-size target applies to an explicit `cargo build --release -p weave-graph-cli --no-default-features` build; Cargo-default extended-language builds are larger.
 
 ---
 
@@ -109,11 +109,11 @@ Weave Graph separates **packaging & binary size** (Compile-Time Tiers) from **re
 | :--- | :--- | :--- | :--- |
 | **Primary Scope** | Monorepo or standalone service. | Distributed local repositories via `[federation] linked_repos`. | Centralized organization-wide mesh & private VPC infrastructure. |
 | **Standard Tier (`weave`)** | **Full Support (Default)**<br/>• Local AST index & contract hashing<br/>• Fast blast radius & reachability<br/>• SQLite backend | **Full Support (with `federation`)**<br/>• Cross-repo moniker resolution<br/>• Tarjan SCC cycle checks<br/>• Public contract hashes | **Not Supported**<br/>(Requires enterprise Hub registry, SCIM server, and RBAC guard). |
-| **Self-Hosted Tier (`weave-custom`)** | **Supported + Enterprise Add-ons**<br/>• RBAC query masking (`--as`)<br/>• Local boundary `policy-lint`<br/>• OpenTelemetry runtime overlays | **Supported + Enterprise Add-ons**<br/>• RBAC masking across local repos<br/>• Local + linked contract drift gates<br/>• Local SLM journal generation | **Full Native Support**<br/>• Centralized Hub registry & spool queues<br/>• SCIM 2.0 Okta/Azure AD sync<br/>• LOD 1 Mermaid architecture diagrams<br/>• Merkle snapshot provenance verification |
+| **Self-Hosted Tier (`weave-custom`)** | **Supported + Enterprise Add-ons**<br/>• RBAC query masking (`--as`)<br/>• Local boundary `policy-lint`<br/>• OpenTelemetry runtime overlays | **Supported + Enterprise Add-ons**<br/>• RBAC masking across local repos<br/>• Local + linked contract drift gates | **Optional components**<br/>• Hub registry and generic SCIM<br/>• Provenance primitives<br/>• Vector storage groundwork; deployment verification required |
 
 #### Internal Subdivisions in Standard Tier (`weave`)
 1. **Storage Backend**: SQLite (bundled `rusqlite` WAL mode) is the only backend selected by the `weave` CLI. `weave-graph-store-turso` is library-only and has no CLI selector.
-2. **Search Engine**: Non-vector BM25 symbol search (`fts`, default) vs Semantic Vector Search (`--features vector`, 1-bit `sqlite-vec` ANN + int8 rescore).
+2. **Search Engine**: BM25 symbol search (`fts`) plus an optional vector similarity path (`--features vector`). ANN and learned semantic quality are not claimed.
 
 ---
 
@@ -158,7 +158,7 @@ cd repo-a && weave check-contracts   # CI gate on divergent public-API boundarie
 
 ### Custom mode — enterprise add-ons
 
-Layers enterprise capabilities on top of Multiple mode for self-hosted VPCs and regulated orgs: query-layer RBAC masking (`--features rbac`), SCIM 2.0 directory sync (`weave rbac serve-scim`), an architectural-boundary policy linter (`--features policy-lint`), centralized snapshot hub (`--features hub`), Merkle provenance verification (`--features hub-provenance`), and OpenTelemetry trace overlays (`--features otel`).
+Layers optional enterprise capabilities on top of Multiple mode for self-hosted deployments: query-layer RBAC masking, generic SCIM provisioning, architectural-boundary policy linting, optional snapshot hub, optional shared-secret provenance checks, and OpenTelemetry trace overlays. Verify each component's deployment requirements before use.
 
 ## Configuration
 

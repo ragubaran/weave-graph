@@ -303,11 +303,11 @@ sequenceDiagram
 
 | Metric | Traditional Whole-File Context Dump | Weave Progressive MCP Tool Calling | Savings |
 | :--- | :--- | :--- | :--- |
-| **Initial Discovery** | 20,000 – 60,000 tokens | ~200 tokens (`weave_repo_map`) | **99%** |
-| **File API Inspection** | 4,000 – 10,000 tokens / file | ~60 tokens / file (`weave_file_api`) | **98%** |
-| **Call Graph Discovery** | Multi-file regex grep (~15k tokens) | ~100 tokens (`weave_trace_calls`) | **93%** |
+| **Initial Discovery** | Full source dumps | Targeted response (`weave_repo_map`) | Measure for your repository |
+| **File API Inspection** | Full source files | Wiring-card response (`weave_file_api`) | Measure for your repository |
+| **Call Graph Discovery** | Multi-file search | Graph traversal (`weave_trace_calls`) | Measure for your repository |
 | **Total Task Context** | Full source dumps | Targeted graph/file responses | Measure for your repository; no universal reduction is claimed |
-| **Accuracy / Hallucination** | Frequent *"lost in the middle"* errors | Exact AST-grounded spans & symbol names | **100% Grounded** |
+| **Accuracy / Hallucination** | Depends on client workflow | Source spans and symbol names from the index | Deterministic retrieval; answer quality depends on the client |
 
 ---
 
