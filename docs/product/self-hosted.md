@@ -278,7 +278,7 @@ url = "https://weave-registry.internal.corp"
 token = "same bearer token the registry was started with"
 ```
 
-`--provenance-key` binds `MockSnapshotProvenanceVerifier::with_key(<secret>)` — a shared secret both sides must know, **never** the verifier's default key (that key is a public constant in the OSS binary; using it would look like verification while accepting anything). A deployment computes its own signature client-side and attaches it via `weave sync push --signature <hex>`; the registry only ever checks what it's configured to check — omitting `--provenance-key` keeps every push unverified, exactly as before this existed. Because the key is symmetric, this proves *integrity and shared-secret possession*, not non-repudiation — it's tamper detection, not a cryptographic signature scheme in the PKI sense.
+`--provenance-key` binds `MockSnapshotProvenanceVerifier::with_key(<secret>)` — a shared secret both sides must know, **never** the verifier's default key (that key is a public constant in the OSS binary; using it would look like verification while accepting anything). A deployment computes its own signature client-side — for example, an external Lodestone Nexus provenance service — and attaches it via `weave sync push --signature <hex>`; the registry only ever checks what it's configured to check. Omitting `--provenance-key` keeps every push unverified. Because the bundled verifier uses a symmetric key, this proves *integrity and shared-secret possession*, not non-repudiation or PKI; a deployment requiring Merkle/PKI trust must supply that external provider and verification service.
 
 ### 6.1 Ready-to-Use Deployment Manifests (`deploy/`)
 
