@@ -375,6 +375,20 @@ fn cmd_serve_scim_runs_a_real_server_on_a_real_port() {
     drop(handle);
 }
 
+#[cfg(feature = "github-auth")]
+#[test]
+fn github_identity_json_uses_login_and_stable_id() {
+    let identity = super::github_identity_from_json(r#"{"login":"octocat","id":1}"#).unwrap();
+    assert_eq!(identity.subject, "github:octocat:1");
+    assert_eq!(identity.roles, vec!["github"]);
+}
+
+#[cfg(feature = "github-auth")]
+#[test]
+fn github_identity_json_rejects_missing_identity_fields() {
+    assert!(super::github_identity_from_json(r#"{"login":"octocat"}"#).is_none());
+}
+
 /// IDP-02: `[rbac.scim] token` in `.weave/config.toml` reaches
 /// `cmd_serve_scim` and is enforced on the real socket.
 #[test]

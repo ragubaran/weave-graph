@@ -34,6 +34,15 @@ struct GithubUser {
     id: u64,
 }
 
+#[cfg(feature = "github-auth")]
+fn github_identity_from_json(body: &str) -> Option<Identity> {
+    let user: GithubUser = serde_json::from_str(body).ok()?;
+    Some(Identity {
+        subject: format!("github:{}:{}", user.login, user.id),
+        roles: vec!["github".to_string()],
+    })
+}
+
 /// Resolve a GitHub bearer token through the authenticated-user API.
 /// Tokens are never persisted or included in errors; failures deny access.
 #[cfg(feature = "github-auth")]
@@ -47,11 +56,8 @@ fn github_identity(token: &str) -> Option<Identity> {
         .header("User-Agent", "weave-graph")
         .call()
         .ok()?;
-    let user: GithubUser = response.into_body().read_json().ok()?;
-    Some(Identity {
-        subject: format!("github:{}:{}", user.login, user.id),
-        roles: vec!["github".to_string()],
-    })
+    let body = response.into_body().read_to_string().ok()?;
+    github_identity_from_json(&body)
 }
 
 /// "Is this node part of the public API surface" — reuses the same
