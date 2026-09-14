@@ -53,6 +53,9 @@ service_account = ["allow-drift"]   # The other special role: permission to waiv
 [rbac.scim]                         # feature: rbac
 token = ""                          # Optional: require `Authorization: Bearer <token>` on every
                                      # `weave rbac serve-scim` request. Empty/absent: unauthenticated
+
+[rbac.github_roles]                  # feature: github-auth (optional)
+# octocat = ["internal"]             # roles for a GitHub login resolved from WEAVE_GITHUB_TOKEN
                                      # (loopback-only trust), unchanged from before this key existed.
 
 [hub]

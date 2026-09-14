@@ -18,6 +18,8 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+#[cfg(feature = "github-auth")]
+use std::time::Duration;
 
 use weave_graph_core::Node;
 use weave_graph_core::auth::bearer_token_matches;
@@ -25,7 +27,7 @@ use weave_graph_core::rbac::{AuthProvider, Identity, RbacGuard, StaticAuthProvid
 use weave_graph_parse::Language;
 use weave_graph_parse::contract::{short_name, visibility_rule};
 
-use crate::config::{UserConfig, read_rbac_group_mappings, read_rbac_users};
+use crate::config::{UserConfig, read_github_roles, read_rbac_group_mappings, read_rbac_users};
 
 #[cfg(feature = "github-auth")]
 #[derive(serde::Deserialize)]
@@ -50,7 +52,13 @@ fn github_identity(token: &str) -> Option<Identity> {
     if token.trim().is_empty() {
         return None;
     }
-    let response = ureq::get("https://api.github.com/user")
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(5)))
+        .timeout_connect(Some(Duration::from_secs(3)))
+        .build()
+        .new_agent();
+    let response = agent
+        .get("https://api.github.com/user")
         .header("Authorization", format!("Bearer {token}"))
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", "weave-graph")
@@ -113,6 +121,21 @@ pub(crate) fn guard_for(root: &Path, as_subject: Option<&str>) -> RbacGuard {
     let identity = std::env::var("WEAVE_GITHUB_TOKEN")
         .ok()
         .and_then(|token| github_identity(&token))
+        .map(|mut identity| {
+            let login = identity
+                .subject
+                .strip_prefix("github:")
+                .and_then(|value| value.split(':').next())
+                .unwrap_or_default();
+            if let Some(roles) = read_github_roles(&config_path).get(login) {
+                for role in roles {
+                    if !identity.roles.contains(role) {
+                        identity.roles.push(role.clone());
+                    }
+                }
+            }
+            identity
+        })
         .unwrap_or_else(|| StaticAuthProvider::new(role_users.clone()).resolve(as_subject));
     #[cfg(not(feature = "github-auth"))]
     let identity: Identity = StaticAuthProvider::new(role_users).resolve(as_subject);

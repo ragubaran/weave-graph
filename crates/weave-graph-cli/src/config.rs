@@ -171,6 +171,39 @@ pub(crate) fn read_rbac_group_mappings(
         .unwrap_or_default()
 }
 
+#[cfg(feature = "rbac")]
+pub(crate) fn read_github_roles(
+    config_path: &Path,
+) -> std::collections::HashMap<String, Vec<String>> {
+    let Ok(content) = fs::read_to_string(config_path) else {
+        return std::collections::HashMap::new();
+    };
+    let Ok(table) = content.parse::<toml::Table>() else {
+        return std::collections::HashMap::new();
+    };
+    table
+        .get("rbac")
+        .and_then(|v| v.get("github_roles"))
+        .and_then(|v| v.as_table())
+        .map(|users| {
+            users
+                .iter()
+                .filter_map(|(login, roles)| {
+                    roles.as_array().map(|values| {
+                        (
+                            login.clone(),
+                            values
+                                .iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect(),
+                        )
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(feature = "vector")]
 pub(crate) fn read_vector_exclude(config_path: &Path) -> Vec<String> {
     let content = match fs::read_to_string(config_path) {
