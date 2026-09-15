@@ -41,6 +41,22 @@ jobs:
       - name: Run Clippy Linter
         run: cargo clippy --workspace --all-targets --all-features --exclude weave-graph-python -- -D warnings
 
+  msrv:
+    name: MSRV (Rust 1.93 Core)
+    runs-on: ubuntu-latest
+    needs: [lint]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Declared MSRV
+        uses: dtolnay/rust-toolchain@1.93
+
+      # The declared MSRV covers the core CLI artifact. Optional profiles have
+      # separate compatibility and release-artifact gates on stable.
+      - name: Check core CLI artifact
+        run: cargo check --locked -p weave-graph-cli --no-default-features --bin weave
+
   artifact-budget:
     name: Core Artifact Budget
     runs-on: ubuntu-latest

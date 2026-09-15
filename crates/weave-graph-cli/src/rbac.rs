@@ -27,10 +27,9 @@ use weave_graph_core::rbac::{AuthProvider, Identity, RbacGuard, StaticAuthProvid
 use weave_graph_parse::Language;
 use weave_graph_parse::contract::{short_name, visibility_rule};
 
-use crate::config::{
-    UserConfig, read_github_org_roles, read_github_roles, read_github_team_roles,
-    read_rbac_group_mappings, read_rbac_users,
-};
+use crate::config::{UserConfig, read_rbac_group_mappings, read_rbac_users};
+#[cfg(feature = "github-auth")]
+use crate::config::{read_github_org_roles, read_github_roles, read_github_team_roles};
 
 #[cfg(feature = "github-auth")]
 #[derive(serde::Deserialize)]

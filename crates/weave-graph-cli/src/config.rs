@@ -181,7 +181,8 @@ pub(crate) fn read_rbac_group_mappings(
         .unwrap_or_default()
 }
 
-#[cfg(feature = "rbac")]
+// Only consumed by the github-auth identity overlay in rbac.rs.
+#[cfg(all(feature = "rbac", feature = "github-auth"))]
 pub(crate) fn read_github_roles(
     config_path: &Path,
 ) -> std::collections::HashMap<String, Vec<String>> {
@@ -214,7 +215,7 @@ pub(crate) fn read_github_roles(
         .unwrap_or_default()
 }
 
-#[cfg(feature = "rbac")]
+#[cfg(all(feature = "rbac", feature = "github-auth"))]
 pub(crate) fn read_github_org_roles(
     config_path: &Path,
 ) -> std::collections::HashMap<String, String> {
@@ -236,7 +237,7 @@ pub(crate) fn read_github_org_roles(
         .unwrap_or_default()
 }
 
-#[cfg(feature = "rbac")]
+#[cfg(all(feature = "rbac", feature = "github-auth"))]
 pub(crate) fn read_github_team_roles(
     config_path: &Path,
 ) -> std::collections::HashMap<String, String> {

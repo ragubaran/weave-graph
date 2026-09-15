@@ -1009,14 +1009,14 @@ treated as complete. The mapping is the verification cross-check for this list.
 
 | Gap | Phase 4 owner | Closure evidence |
 | --- | --- | --- |
-| MSRV and feature/release matrix | P4-A | CI runs the pinned MSRV and promised feature artifacts. |
+| MSRV and feature/release matrix | P4-A | CI checks the declared MSRV core artifact and records promised feature artifacts. |
 | Python wheel support | P4-A | A real maturin build-and-test job, or removal of the supported-artifact claim. |
 | Per-crate coverage | P4-A | Individual crate reports meet the repository threshold. |
 | Benchmark regression gate | P4-A | Fixed corpus/baseline makes the comparison job fail on unexplained regressions. |
 | Full indexing/MCP RSS and latency | P4-A → P4-B | Fixed 500k-symbol corpus measures the complete process, not only SQLite/CSR. |
 | Learned vector quality and portability | P4-D → P4-F | Real provider, model fingerprint, held-out quality suite, and platform evidence. |
 
-- [ ] Add a CI job for the pinned `1.93` MSRV; beta compatibility alone does not test it.
+- [x] CI checks the no-default-features core CLI artifact with pinned Rust `1.93`; beta compatibility alone does not test the MSRV.
 - [ ] Add a real maturin/Python wheel build-and-test job if the Python artifact is supported in CI.
 - [ ] Enforce per-crate line coverage; the current `cargo llvm-cov --workspace --fail-under-lines 90` gate is aggregate.
 - [ ] Make benchmark comparisons a real failure gate after defining a reproducible baseline; the current PR command ends in `|| true`.
@@ -1042,7 +1042,7 @@ _Status: Phase 4 release gates remain open; P4-A has preliminary CI/benchmark gr
 
 #### P4-A — Profile truth, measurement baselines & CI gates
 
-**Depends on:** nothing. **Status:** `[~] CI now records a reproducible five-profile release-artifact matrix and rejects forbidden network/model/inference dependencies in the core closure. RSS, index-size, latency, model-artifact, and worker-lifecycle baselines remain open. P4-D and P4-V are explicitly held.`
+**Depends on:** nothing. **Status:** `[~] CI now records a reproducible five-profile release-artifact matrix, checks the no-default-features core CLI artifact with Rust `1.93`, and rejects forbidden network/model/inference dependencies in the core closure. RSS, index-size, latency, model-artifact, and worker-lifecycle baselines remain open. P4-D and P4-V are explicitly held.`
 
 - [~] Record reproducible release builds for core, Basic developer, extended-language, vector, and `slm` profiles. `scripts/profile_matrix.sh` reports platform, Rust version, executable bytes/hash, dependency-entry count, and the explicit absence of installed model artifacts. Index size and parent/process-tree RSS remain open.
 - [~] CI rejects core dependency-closure entries for known network clients, model downloaders, and inference runtimes via `scripts/verify_core_closure.sh`; the existing 15 MiB core-byte gate remains in force until the MB/MiB policy is explicitly resolved.
@@ -1061,7 +1061,7 @@ _Status: Phase 4 release gates remain open; P4-A has preliminary CI/benchmark gr
 - [x] Replace the channel-only bound with fixed ordered parse batches that limit both file count and retained result bytes. Parsed results are folded serially in input order and released before the next batch; a 65-file cross-batch test covers deterministic ordering.
 - [x] The fixed-batch design bounds later-result retention independently of individual parse completion time; the cross-batch regression test exercises the bound without a timing-sensitive sleep.
 - [~] Resolver ingestion now uses `ProjectIndex::resolve_ids` and interned `u32` endpoints, eliminating per-edge source/target moniker clones while preserving stable identity and deterministic resolution. The `ProjectIndex` lifetime and full 500k-symbol allocation profile remain open for a measured follow-up.
-- [~] Added `scripts/pipeline_rss.sh`, a deterministic 500k-symbol full-CLI indexing harness with an 80 MiB peak-RSS failure threshold. The current macOS host cannot expose the `time` RSS field; Linux CI measurement remains the closure evidence.
+- [~] Added `scripts/pipeline_rss.sh`, a deterministic 500k-symbol full-CLI indexing harness that meters `weave index` with an 80 MiB peak-RSS failure threshold. The current macOS host cannot expose the `time` RSS field; Linux CI measurement remains the closure evidence.
 - [~] The pinned CLI benchmark now records a cold full-reindex baseline (`500 files × 10 symbols`: 255.34 ms median in the current environment). Changed-file, rename/delete, query, and p50/p95 profile baselines remain to be added.
 - [x] Vector metadata now stores a stable provider fingerprint combining `model_id` and dimensions; mixed-model or mixed-width indexes are rejected before search/update.
 - [x] Keep batched SQLite writes, incremental affected-file resolution, staged `.weave/graph.db.rebuild` construction, and atomic promotion. Do not optimize rebuild copying by exposing a partially built active database.

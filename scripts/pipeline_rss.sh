@@ -21,14 +21,21 @@ for file in $(seq 0 $((files - 1))); do
         printf 'pub fn symbol_%d() {}\n' "$id" >> "$out"
     done
 done
-(cd "$WORK" && "$BIN" init >/dev/null && "$BIN" index >/dev/null)
+(cd "$WORK" && "$BIN" init >/dev/null)
+time_output="$WORK/index.time"
 
 if [ "$(uname)" = Darwin ]; then
-    rss=$(/usr/bin/time -l "$BIN" status 2>&1 >/dev/null |
-        awk '/maximum resident set size/ {print int($1 / 1024 / 1024)}')
+    if ! (cd "$WORK" && /usr/bin/time -l "$BIN" index >/dev/null) 2>"$time_output"; then
+        cat "$time_output" >&2
+        exit 1
+    fi
+    rss=$(awk '/maximum resident set size/ {print int($1 / 1024 / 1024)}' "$time_output")
 else
-    rss=$(/usr/bin/time -v "$BIN" status 2>&1 >/dev/null |
-        awk -F: '/Maximum resident set size/ {gsub(/ /, "", $2); print int($2 / 1024)}')
+    if ! (cd "$WORK" && /usr/bin/time -v "$BIN" index >/dev/null) 2>"$time_output"; then
+        cat "$time_output" >&2
+        exit 1
+    fi
+    rss=$(awk -F: '/Maximum resident set size/ {gsub(/ /, "", $2); print int($2 / 1024)}' "$time_output")
 fi
 [ -n "$rss" ] || { echo "peak RSS unavailable" >&2; exit 2; }
 echo "pipeline symbols=$SYMBOLS files=$files peak_rss_mib=$rss budget_mib=80"
