@@ -112,8 +112,8 @@ fn push_symbol(
 }
 
 /// `use std::a::b::{c, d as e, f::*}` style leaves: only the final
-/// segment of each path matters for our by-short-name resolver (§
-/// `moniker.rs` docs on what this crate's resolution deliberately is not).
+/// segment of each path matters for our by-short-name resolver, which
+/// resolves within a repo and does not follow full crate paths.
 fn use_leaves(node: Node, source: &[u8]) -> Vec<String> {
     match node.kind() {
         "identifier" | "type_identifier" => vec![text(node, source).to_string()],

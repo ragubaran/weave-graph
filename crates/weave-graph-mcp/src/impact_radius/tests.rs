@@ -247,7 +247,7 @@ fn large_radius_truncates_display_to_20() {
     assert!(result.text.contains("... and 1 more"));
 }
 
-// ─── impl.md M2.16: token-budgeted shedding ─────────────────────────────────
+// ─── token-budgeted shedding ─────────────────────────────────
 
 /// A synthetic hub: `root` fans out to 100 downstream symbols.
 fn hub_storage() -> (SqliteStorage, CsrGraph) {

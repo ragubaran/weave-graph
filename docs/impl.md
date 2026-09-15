@@ -700,7 +700,7 @@ _This is the milestone the whole phase depends on getting right — every other 
 
 - Directory synchronization through a generic SCIM endpoint (Okta/Azure AD/Google Workspace act as SCIM clients). This does not implement SSO, OAuth, OIDC, SAML, or vendor SDK adapters.
 - **Depends on**: M3.0. **Verifies**: a provisioned-then-deprovisioned test user loses query access on the next `AuthProvider` sync cycle, not immediately and not never.
-- **Status**: Done for SCIM provisioning and the optional GitHub token adapter. `github-auth` uses `ureq` + Rustls to call GitHub's authenticated-user API from `WEAVE_GITHUB_TOKEN`, mapping login and stable user ID to an `Identity`; invalid or unavailable tokens fail closed. There is still no generic OIDC authorization-code flow, SAML handler, token exchange, discovery/JWKS validation, or vendor adapter beyond GitHub token lookup.
+- **Status**: Done for SCIM provisioning and the optional GitHub token adapter. `github-auth` uses `ureq` + Rustls to call GitHub's authenticated-user, organization, and team APIs from `WEAVE_GITHUB_TOKEN`, mapping login, stable user ID, and membership markers to an `Identity`; configured login/org/team role mappings are applied, while invalid or unavailable tokens fail closed. There is still no generic OIDC authorization-code flow, SAML handler, token exchange, discovery/JWKS validation, or vendor adapter beyond GitHub token lookup.
   - ✅ **Required verify test**: `provisioned_then_deprovisioned_user_loses_query_access_on_the_next_sync_cycle` (`crates/weave-graph-cli/src/rbac/tests.rs`) — provision via SCIM → stale snapshot does **not** yet grant access; `sync()` → resolves with roles; deprovision → **still** resolves (access does not drop immediately); next `sync()` → anonymous, and the merged `guard_for` (config `[rbac.users]` overlaid with the SCIM directory, IdP wins) does not resurrect the deprovisioned user. "Not immediately and not never," both halves pinned.
   - ✅ **Sync-cycle semantics are the design**: the directory file (`.weave/rbac-directory.toml`, IdP-owned; hand edits are overwritten on the next provision) is mutated immediately, but `ScimDirectory`'s snapshot — what every query resolves against — refreshes only on `sync()`. SCIM surface is the real 2.0 subset an IdP needs: `GET/POST/DELETE /Users`, plus `POST /sync` as the operator's explicit refresh handle (deliberately non-SCIM, so an IdP can never trigger a snapshot refresh by accident).
   - ✅ **Loopback-only by construction** (Core Invariant 6's spirit): the server binds `127.0.0.1` unconditionally — a directory endpoint beyond the host would leak role assignments the moment it starts — and is verified end-to-end over real TCP (`scim_server_binds_loopback_and_serves_real_tcp`).
@@ -784,7 +784,7 @@ _Adopts `docs/vector-proposal.md` (`feature: vector`): Tier 1 deterministic AST-
 
 _Formalizes build profile configurations, WebAssembly compilation, Binaryen optimization, and per-language tree-sitter feature-gating across all deployment tiers. The originally-scoped "dynamic library loading" sub-effort is retired below — it never matched how `sqlite-vec` actually links (§ Reality Check)._
 
-- **Historical artifact measurements (2026-09-12):** an unflagged release build, which enables `lang-extended`, measured 43,112,948 bytes; `--no-default-features`, with eight core grammars, measured 10,083,852 bytes; `--features vector` measured 43,201,244 bytes; `--features turso` measured 43,104,740 bytes; and `--features custom` measured 43,624,460 bytes. The CSR-only WASM artifact measured 159,339 bytes. These figures were recorded for that build environment, not re-measured for the current tree. `custom` is a specific feature bundle, not `--all-features`; `vector` uses a mock provider; the CLI has no Turso backend selector.
+- **Historical artifact measurements (2026-09-12):** an unflagged release build, which enables `lang-extended`, measured 43,112,948 bytes; `--no-default-features`, with eight core grammars, measured 10,083,852 bytes; `--features vector` measured 43,201,244 bytes; `--features turso` measured 43,104,740 bytes; and `--features custom` measured 43,624,460 bytes. The CSR-only WASM artifact measured 159,339 bytes. Fresh macOS release builds measured 10,128,832 bytes core-only, 10,241,872 bytes with vector, and 43,153,600 bytes default extended. These figures are environment-specific. `custom` is a specific feature bundle, not `--all-features`; `vector` uses a mock provider; the CLI has no Turso backend selector.
 
 #### Build configurations verified against manifests
 
@@ -984,7 +984,7 @@ _Audit date: 2026-09-14. “Implemented” means the named source path and its r
 | M3.4 SCIM | Loopback SCIM subset and synchronization cycle exist. The current tests include configured-token enforcement; the older “no token-authenticated SCIM endpoints” scope note in M3.4 is stale. |
 | M3.5 migration | Federated dependency plan and cycle reporting exist; no automatic code modification is implemented. |
 | M3.6 hub extensions | Hub provenance transport, canvas endpoints and webhooks exist. The included verifier is a shared-secret mock; production Merkle/PKI provenance remains external (for example Lodestone Nexus). The mesh canvas is a side-by-side view without actual cross-repo edges; webhook dispatch is best-effort without a durable retry queue. |
-| M3.7 FTS/vector | FTS and sqlite-vec quantized storage paths exist. CLI and MCP still instantiate `MockEmbeddingProvider`; no real BGE inference, learned semantic-quality gate, hybrid rank fusion or dedicated ANN structure is established. |
+| M3.7 FTS/vector | FTS and sqlite-vec quantized storage paths exist. CLI and MCP still instantiate `MockEmbeddingProvider`; deterministic lexical/vector rank fusion is now shared and tested, but no real BGE inference, learned semantic-quality gate, or dedicated ANN structure is established. |
 | M3.8 packaging/WASM | Language feature split and CSR-only WASM crate exist. The historical artifact figures belong to older builds. The unflagged CLI is extended; profile-specific release tags, installer, and published channels previously shown here were not verified in the current tree and have been removed from M3.8's distribution section. |
 | M3.9 blast/contracts | Caller-direction/depth blast traversal and symbol-level contract diff/scoped gating exist. The current reverse CSR is temporary; old descriptions of a retained `OnceLock` reverse view are historical. |
 | M3.10 waivers | CLI/env bypass surfaces and `allow-drift` role gating exist. Waiver reasons remain visible in output. |
@@ -1042,43 +1042,48 @@ _Status: Phase 4 release gates remain open; P4-A has preliminary CI/benchmark gr
 
 #### P4-A — Profile truth, measurement baselines & CI gates
 
-**Depends on:** nothing. **Status:** `[~] Preliminary artifact/RAM jobs and benchmark targets present; full baselines and gates open`.
+**Depends on:** nothing. **Status:** `[~] CI now records a reproducible five-profile release-artifact matrix and rejects forbidden network/model/inference dependencies in the core closure. RSS, index-size, latency, model-artifact, and worker-lifecycle baselines remain open. P4-D and P4-V are explicitly held.`
 
-- [ ] Record reproducible release builds for core, Basic developer, extended-language, vector, and `slm` profiles. Report executable bytes, dependency closure, download/unpacked model artifacts, index size, and parent/process-tree RSS separately.
-- [ ] Change CI to enforce the agreed core-byte definition and to fail if the core dependency closure introduces an inference runtime, model downloader, or network client.
-- [ ] Extend feature-isolation testing to release builds and long-lived MCP processes. Cover inactive `vector` and `slm` features, active worker lifecycle, query latency, and sustained parent RSS rather than a short-lived status command alone.
+- [~] Record reproducible release builds for core, Basic developer, extended-language, vector, and `slm` profiles. `scripts/profile_matrix.sh` reports platform, Rust version, executable bytes/hash, dependency-entry count, and the explicit absence of installed model artifacts. Index size and parent/process-tree RSS remain open.
+- [~] CI rejects core dependency-closure entries for known network clients, model downloaders, and inference runtimes via `scripts/verify_core_closure.sh`; the existing 15 MiB core-byte gate remains in force until the MB/MiB policy is explicitly resolved.
+- [~] Feature-isolation CI now runs release binaries through a long-lived MCP session and includes inactive `vector` and `slm` builds. Active worker lifecycle and sustained parent-RSS measurement remain open.
 - [ ] Establish fixed corpora, hardware/runner settings, warmup, repetition, and p50/p95 reporting for full index, no-change index, one-file reindex, rename/delete, exact lookup, lexical search, semantic search, and assistant startup.
 - [ ] Make real-model validation jobs explicitly provision pinned offline artifacts; routine CI remains model-free and offline.
 
 **Exit criteria:** Core and Basic have separate, reproducible measurements; inactive optional features remain within established baseline noise; all performance claims name the profile and test conditions.
 
+**Local baseline (2026-09-15, Darwin 24.6.0 x86_64, Rust 1.98.1):** `scripts/profile_matrix.sh` completed successfully. Core was 10,128,832 bytes, Basic/FTS 10,141,144 bytes, extended-language 43,153,600 bytes, vector 10,241,872 bytes, and `slm` 10,219,296 bytes. The run had no installed model artifact; these executable-only measurements do not establish index, model, or RSS budgets.
+
 #### P4-B — Bounded indexing, reindexing & graph integrity
 
-**Depends on:** P4-A baseline. **Status:** `[ ] Not started`.
+**Depends on:** P4-A baseline. **Status:** `[~] Incremental correctness groundwork is implemented and regression coverage is expanding; full performance and failure-path evidence remains open`.
 
-- [ ] Replace the current channel-only bound with bounded ordered batches or a sliding admission window that limits both file count and retained result bytes. Preserve deterministic output order without an unbounded pending-result map.
-- [ ] Add a slow-first-file stress test proving later parsed files cannot accumulate without a bounded memory limit.
-- [ ] Profile and reduce global resolver/string-map allocations only where measurements identify material cost; preserve stable symbol identity, overload distinction, and deterministic output.
-- [ ] Keep batched SQLite writes, incremental affected-file resolution, staged `.weave/graph.db.rebuild` construction, and atomic promotion. Do not optimize rebuild copying by exposing a partially built active database.
-- [ ] Extend regression coverage for mutually referencing files, deletion, rename, span-only edits, unresolved references, and reindexing after a failed write. Every endpoint must still resolve to an existing node.
+- [x] Replace the channel-only bound with fixed ordered parse batches that limit both file count and retained result bytes. Parsed results are folded serially in input order and released before the next batch; a 65-file cross-batch test covers deterministic ordering.
+- [x] The fixed-batch design bounds later-result retention independently of individual parse completion time; the cross-batch regression test exercises the bound without a timing-sensitive sleep.
+- [~] Resolver ingestion now uses `ProjectIndex::resolve_ids` and interned `u32` endpoints, eliminating per-edge source/target moniker clones while preserving stable identity and deterministic resolution. The `ProjectIndex` lifetime and full 500k-symbol allocation profile remain open for a measured follow-up.
+- [~] Added `scripts/pipeline_rss.sh`, a deterministic 500k-symbol full-CLI indexing harness with an 80 MiB peak-RSS failure threshold. The current macOS host cannot expose the `time` RSS field; Linux CI measurement remains the closure evidence.
+- [~] The pinned CLI benchmark now records a cold full-reindex baseline (`500 files × 10 symbols`: 255.34 ms median in the current environment). Changed-file, rename/delete, query, and p50/p95 profile baselines remain to be added.
+- [x] Vector metadata now stores a stable provider fingerprint combining `model_id` and dimensions; mixed-model or mixed-width indexes are rejected before search/update.
+- [x] Keep batched SQLite writes, incremental affected-file resolution, staged `.weave/graph.db.rebuild` construction, and atomic promotion. Do not optimize rebuild copying by exposing a partially built active database.
+- [x] Regression coverage covers mutually referencing files, deletion, rename, span-only edits, resolution after a target is added, and an injected promotion failure after staging. The active graph remains unchanged on the tested failed-write path, and every tested edge endpoint resolves to an existing node.
 
 **Exit criteria:** Peak RSS is bounded under adversarial ordering; full/incremental correctness and crash-recovery tests pass; measured index/reindex regressions stay within the P4-A threshold.
 
 #### P4-C — Deterministic retrieval context & review evidence
 
-**Depends on:** P4-A; coordinate with P4-B. **Status:** `[ ] Not started`.
+**Depends on:** P4-A; coordinate with P4-B. **Status:** `[~] `weave blast` supplies bounded deterministic changed-file impact evidence; a general query/review evidence bundle remains open`.
 
-- [ ] Build a bounded evidence bundle from changed paths, symbols, callers/callees, contracts, lexical matches, relevant test references, and the indexed revision.
-- [ ] Use exact identifiers, qualified names, paths, lexical matches, and graph relationships as primary retrieval sources. Preserve ambiguity and unresolved/dynamic relationships instead of inferring certainty.
-- [ ] Replace all-node / first-N-symbol context construction with relevance-ranked, byte- and token-bounded context selection.
-- [ ] Provide deterministic review output that labels affected symbols, source provenance, uncertainty, and candidate tests. Candidate tests are evidence, not proof that behavior is covered.
-- [ ] Apply RBAC before candidate budgeting, source extraction, review output, model context, and caches. Refill authorized candidates safely so filtering does not underfill results or expose hidden source.
+- [~] `weave blast` builds a bounded evidence bundle from changed paths, symbols, callers/callees, exported contract surface, and graph revision range. Lexical matches, candidate tests, and an explicit indexed-revision identity remain open.
+- [~] Blast uses exact symbols, paths, source lines, and graph relationships; its output explicitly labels file-level touched-symbol precision as uncertain. Dynamic/unresolved relationship treatment remains open.
+- [~] Blast folds output by module above a fixed 200-symbol budget. Relevance-ranked, byte- and token-bounded context for arbitrary review queries remains open.
+- [~] Markdown and JSON blast output labels affected symbols, paths, contract surface, and uncertainty. Deterministic candidate-test evidence remains open.
+- [~] SQLite FTS candidate selection applies RBAC before result limits, with masked-heavy regression coverage. RBAC enforcement for a general review/model-context bundle remains open.
 
 **Exit criteria:** Fixtures show relevant, revision-resolvable context for exact, ambiguous, cross-file, and unanswerable requests; authorization tests prove no masked content reaches output or an optional model; no SLM is required.
 
 #### P4-D — Optional BGE semantic retrieval
 
-**Depends on:** P4-A and P4-C; P4-B controls incremental source correctness. **Status:** `[ ] Not started`; M3.7 vector storage/quantization and mock-provider boundary are existing groundwork.
+**Depends on:** P4-A and P4-C; P4-B controls incremental source correctness. **Status:** `[ ] Held by product decision`; M3.7 vector storage/quantization and mock-provider boundary are existing groundwork. Do not begin P4-D until the hold is removed.
 
 - [ ] Run a portability spike for the selected BGE runtime on every promised platform. The recorded Intel macOS FastEmbed/ONNX failure applies to the tested dependency combination only; do not generalize it to all ONNX integrations without evidence.
 - [ ] Select and document a supported provider deployment: compatible pinned runtime, explicitly packaged native/dynamic runtime, separate worker, or another evaluated backend. Validate licensing, tokenizer, pooling, query instruction, normalization, and output parity before calling a platform supported.
@@ -1107,9 +1112,9 @@ _Status: Phase 4 release gates remain open; P4-A has preliminary CI/benchmark gr
 
 #### P4-F — Measured scale options
 
-**Depends on:** real P4-D or P4-E measurements. **Status:** `[ ] Deferred pending evidence`.
+**Depends on:** real P4-D or P4-E measurements. **Status:** `[~] Deterministic fusion groundwork landed; scale decisions and quality evidence remain open`.
 
-- [ ] Add deterministic lexical/vector rank fusion only after comparison against each individual retriever; use stable tie-breaking and retain result provenance.
+- [x] Add deterministic lexical/vector rank fusion with stable node-id tie-breaking. CLI and MCP semantic retrieval combine bounded lexical/vector candidate lists; comparison against each individual retriever and result-provenance fields remain part of the held-out evaluation.
 - [ ] Benchmark quantized scan at representative chunk counts. Add ANN only if measured latency requires it and its recall, disk, memory, update, and rebuild costs pass a separate gate.
 - [ ] Consider reranking only when it has demonstrated value on the held-out quality suite within the optional-profile budget.
 - [ ] Consider FFI/GPU acceleration only after the worker/CPU baseline demonstrates a material bottleneck and a portability/security/package review approves it.
@@ -1122,6 +1127,8 @@ _Status: Phase 4 release gates remain open; P4-A has preliminary CI/benchmark gr
 
 - [ ] Measure representative MCP (`tools/list`, repo map, file cards, trace, and impact) and Hub responses before adding a codec. Report raw bytes, compressed bytes, CPU time, and end-to-end latency at small, medium, and large payload sizes.
 - [x] Add optional MCP HTTP `Accept-Encoding: gzip` negotiation and `Content-Encoding: gzip` responses behind `http-compression` (`flate2`). Unsupported or absent encodings remain uncompressed; responses are compressed only when the gzip payload is smaller.
+- [x] Add the same opt-in negotiation to Hub snapshot downloads behind `hub-compression`; unsupported or absent encodings and payloads where gzip is larger remain byte-for-byte uncompressed.
+- [x] Verify Hub gzip negotiation and decompression over a real loopback TCP test with a repetitive snapshot payload.
 - [ ] Extend negotiation to Hub HTTP responses after measuring the separate registry/client payload paths. Evaluate zstd as an opt-in alternative rather than adding both by default.
 - [ ] Keep compression disabled for small responses below a measured crossover threshold, where codec overhead costs more than the saved transfer bytes. Preserve `Content-Length` correctness and return uncompressed JSON when the client sends no supported encoding.
 - [ ] Apply the same bounded-response and RBAC rules before serialization/compression. Compression must never be used to hide an unbounded response or move authorization after filtering.
@@ -1132,7 +1139,7 @@ _Status: Phase 4 release gates remain open; P4-A has preliminary CI/benchmark gr
 
 #### P4-V — Vision ingestion (future, independent)
 
-**Depends on:** a separate approved user need and security/resource design. **Status:** `[ ] Deferred; not a Phase 4 normal-developer exit requirement`.
+**Depends on:** a separate approved user need and security/resource design. **Status:** `[ ] Held and deferred; not a Phase 4 normal-developer exit requirement`. Do not begin P4-V until the hold is removed.
 
 - [ ] If approved later, keep image scanning an explicit, separate operation and never fold it into ordinary `weave index`.
 - [ ] Design model installation, confidence/provenance, storage retention, RBAC, resource budgets, and evaluation before adding a vision table or model runtime.
@@ -1215,14 +1222,14 @@ Phase 4 (developer performance, deterministic review & optional local assistance
   P4-A profile truth / baselines / CI gates — preliminary jobs/benches present, gates open
        ↓
   P4-B bounded indexing / integrity  →  P4-C deterministic retrieval & review evidence
-                                         ├→ P4-D optional BGE semantic retrieval
+                                         ├→ P4-D optional BGE semantic retrieval (held)
                                          └→ P4-E explicit-only local Q&A / feature design
                                                ↓
                                              P4-F measured scale options (fusion, ANN, reranking, FFI/GPU)
-  P4-V vision ingestion: deferred, independent, never part of normal indexing
+  P4-V vision ingestion: held, deferred, independent, never part of normal indexing
 ```
 
-**Historical gates and current limits:** M1.4's bidirectional-purge regression and the scoped M1.9 storage/CSR measurement were completed. Current code changes and a fuller resource definition require fresh validation: `mem_500k` excludes discovery, AST parsing and resolver work; `csr_memory`'s analytical layout predates `CompactCsr`; the unflagged release binary includes extended languages and historically exceeded 15 MB, while the no-default-features core artifact was historically below it. Parser throughput's historical ~4 MiB/s extraction figure missed the >25 MB/s target; no current rerun is claimed here. The benchmark comparison job remains advisory (`|| true`). See §4 and P4-A/P4-B for the open measurements and implementation gates.
+**Historical gates and current limits:** M1.4's bidirectional-purge regression and the scoped M1.9 storage/CSR measurement were completed. The release `mem_500k` gate currently passes at 18 MiB peak RSS for 500,000 nodes and 499,999 edges, but still excludes discovery, AST parsing and resolver work; `csr_memory`'s analytical layout predates `CompactCsr`; the unflagged release binary includes extended languages and historically exceeded 15 MB, while the no-default-features core artifact was historically below it. Parser throughput's historical ~4 MiB/s extraction figure missed the >25 MB/s target; no current rerun is claimed here. The benchmark comparison job remains advisory (`|| true`). See §4 and P4-A/P4-B for the open measurements and implementation gates.
 
 ---
 

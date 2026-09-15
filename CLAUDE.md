@@ -77,7 +77,7 @@ Every comment in this codebase must adhere to the **Best Comment Guide**:
 
 1. **Strict 4-Line Maximum**: No comment block or docstring may exceed **4 lines**.
 2. **Explain "Why", Never "What"**: Code explains *what* is happening; comments explain *invariants, architectural decisions, and hardware constraints*.
-3. **No Doc-File Citations or Dates in Code**: Never cite planning/tracking documents (e.g. `impl.md`, `plan.md`), milestone codes (`M1.x`, `M2.x`), gap numbers, section marks (`§`), or calendar dates in source code comments or docstrings. Plain functional comments only. Citations and dates are allowed exclusively inside documentation files (`docs/` and markdown docs).
+3. **No Doc-File Citations or Dates in Code**: No comment block or docstring may cite planning/tracking documents (e.g. `impl.md`, `plan.md`), milestone codes (`M1.x`, `M2.x`, `M3.x`), gap numbers, section marks (`§`), or external spec files (`docs/*.md`) — nor calendar dates. Plain functional comments only. Citations and dates are allowed exclusively inside documentation files (`docs/` and markdown docs).
 4. **Self-Documenting Code**: If a function requires more than 4 lines of explanation, refactor the function into smaller, well-named units.
 5. **Example of Compliant Comment**:
    ```rust
@@ -110,7 +110,12 @@ All code must follow the [Google Rust Style Guide](https://google.github.io/styl
 * If `unsafe` is mathematically required for SIMD/CSR memory layouts:
   * Must be isolated inside a minimal function with a mandatory `// Safety: ...` invariant comment explaining why undefined behavior is impossible.
 
-### 5.5 Imports Organization
+### 5.5 Error Handling: No `unwrap()`/`expect()` in Libraries
+* **Library crates** (`weave-graph-core`, `weave-graph-parse`, `weave-graph-store-sqlite`, `weave-graph-store-turso`, `weave-graph-mcp`, `weave-graph-hub`, `weave-graph-python`): zero `unwrap()`/`expect()`. Every fallible call returns a typed `Result<T, thiserror::Error>` up to the caller.
+* **`weave-graph-cli`** has softer rules — `anyhow` and top-level `main`/setup code may use `unwrap()`/`expect()` where a failure is truly unrecoverable at startup. But a panic reachable from a normal user-invoked code path (parsing user input, handling a file that exists, a subcommand's core logic) is still a quality bug, not an accepted shortcut — use `anyhow::Context` and propagate `Result` instead.
+* A panic is acceptable only for states that indicate a programming error (an invariant already checked upstream), never for external input, I/O, or user-triggered conditions.
+
+### 5.6 Imports Organization
 Organize `use` statements into 3 distinct, sorted blocks separated by empty lines:
 ```rust
 // 1. Standard library

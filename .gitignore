@@ -25,4 +25,9 @@ opencode.json
 
 # published product documentation for end users (docs/product/).
 docs/*
+!docs/impl.md
+!docs/issues.md
+!docs/plan.md
 !docs/product/
+!docs/product/**
+.github/copilot-instructions.md

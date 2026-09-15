@@ -373,3 +373,66 @@ fn restore_keys_order_prefers_newest_branch_cache_over_main() {
         Some("branch-graph")
     );
 }
+
+#[test]
+fn update_ignore_file_leaves_a_complete_file_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".ignore");
+    fs::write(&path, "!.weave/\n.weave/*\n!.weave/config.toml\n").unwrap();
+    update_ignore_file(&path).unwrap();
+    let content = fs::read_to_string(&path).unwrap();
+    // Early return: byte-identical, no duplicate entries appended.
+    assert_eq!(content, "!.weave/\n.weave/*\n!.weave/config.toml\n");
+}
+
+#[test]
+fn update_ignore_file_replaces_a_bare_weave_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".ignore");
+    fs::write(&path, "target/\n.weave\n").unwrap();
+    update_ignore_file(&path).unwrap();
+    let content = fs::read_to_string(&path).unwrap();
+    assert!(content.lines().any(|l| l == "!.weave/"));
+    assert!(content.lines().any(|l| l == ".weave/*"));
+    assert!(content.lines().any(|l| l == "!.weave/config.toml"));
+    assert!(!content.lines().any(|l| l == ".weave"));
+}
+
+#[test]
+fn update_ignore_file_adds_a_trailing_newline_before_appending() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".ignore");
+    fs::write(&path, "custom/").unwrap();
+    update_ignore_file(&path).unwrap();
+    let content = fs::read_to_string(&path).unwrap();
+    assert!(content.starts_with("custom/\n"), "got: {content}");
+    assert!(content.contains("!.weave/"));
+}
+
+#[test]
+fn ensure_mcp_configured_replaces_a_non_object_root_document() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(".mcp.json"), "\"just a string\"").unwrap();
+    ensure_mcp_configured(dir.path()).unwrap();
+    let content = fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert!(json["mcpServers"]["weave"].is_object());
+}
+
+#[test]
+fn ensure_mcp_configured_replaces_non_object_mcp_servers() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(".mcp.json"), r#"{"mcpServers": "oops"}"#).unwrap();
+    ensure_mcp_configured(dir.path()).unwrap();
+    let content = fs::read_to_string(dir.path().join(".mcp.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert!(json["mcpServers"]["weave"].is_object());
+}
+
+#[test]
+fn is_indexable_rejects_dotfiles_and_depends_on_docs_feature() {
+    assert!(!is_indexable(Path::new(".hidden.rs")));
+    // Compiled without `docs`: a Markdown file is not indexable at all.
+    #[cfg(not(feature = "docs"))]
+    assert!(!is_indexable(Path::new("README.md")));
+}

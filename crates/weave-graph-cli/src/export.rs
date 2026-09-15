@@ -11,10 +11,10 @@ pub(crate) struct Neighborhood {
     depth: u32,
     nodes: Vec<NodeView>,
     edges: Vec<EdgeView>,
-    /// `plan.md` §1.3a: every export carries a provenance badge. Filled in
+    /// Every export carries a provenance badge. Filled in
     /// by the caller (`cmd_export`), which is the layer that knows `root`.
     pub(crate) provenance: Option<Provenance>,
-    /// Signed doc links touching this neighborhood (`impl.md` M2.3) —
+    /// Signed doc links touching this neighborhood —
     /// empty (and omitted from the JSON) when none carry provenance, so
     /// default-build output stays byte-identical.
     #[cfg(feature = "provenance")]
@@ -64,13 +64,12 @@ impl From<&Edge> for EdgeView {
     }
 }
 
-/// `weave export --symbol <name> --depth <n>` (`plan.md` §1.3a's LOD 3,
-/// materialized on demand): the symbol's `depth`-hop neighborhood in both
-/// directions — callers (via `Storage::get_callers`, since the CSR only
-/// walks outbound) and callees (via `CsrGraph::reachable_within`). This is
-/// the raw subgraph data, not the `.canvas` visual format with LOD 0-2
-/// clustering — that's M1.8's job; this milestone only wires the command.
-/// `mask` is M3.0's query-layer RBAC hook (`weave_graph_core::rbac`) —
+/// `weave export --symbol <name> --depth <n>`: the symbol's `depth`-hop
+/// neighborhood in both directions — callers (via `Storage::get_callers`,
+/// since the CSR only walks outbound) and callees (via
+/// `CsrGraph::reachable_within`). This is the raw subgraph data, not the
+/// `.canvas` visual format with LOD 0-2 clustering, which is out of scope here.
+/// `mask` is the query-layer RBAC hook (`weave_graph_core::rbac`) —
 /// see `query::run`'s doc comment for why it's applied once here, to the
 /// whole node list, rather than threaded through every helper below.
 pub(crate) fn neighborhood(

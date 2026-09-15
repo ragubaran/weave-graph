@@ -106,6 +106,74 @@ fn rejected_or_oversized_uploads_leave_no_temporary_spool() {
 }
 
 #[test]
+fn upload_paths_reject_unsafe_identifiers_before_touching_the_filesystem() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(dir.path(), generous_config()).unwrap();
+
+    assert_eq!(registry.get_spool_offset("../repo", "sha").unwrap(), 0);
+    registry.abandon_upload("../repo", "sha");
+    assert!(registry.spool_chunk("../repo", "sha", 0, b"bytes").is_err());
+    assert!(
+        registry
+            .push_complete("../repo", "sha", None, 1, None)
+            .is_err()
+    );
+}
+
+#[test]
+fn duplicate_reservations_and_offset_mismatches_are_handled_without_corruption() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(dir.path(), generous_config()).unwrap();
+
+    assert_eq!(
+        registry.begin_upload("repo", "target", None).unwrap(),
+        PushDecision::Accepted
+    );
+    assert_eq!(
+        registry.begin_upload("repo", "target", None).unwrap(),
+        PushDecision::Accepted
+    );
+    registry.spool_chunk("repo", "target", 0, b"abc").unwrap();
+    assert!(registry.spool_chunk("repo", "target", 1, b"x").is_err());
+}
+
+#[test]
+fn finish_upload_rechecks_rate_queue_and_head_state() {
+    let rate_dir = tempfile::tempdir().unwrap();
+    let rate_limited = Registry::open(rate_dir.path(), config(1, 0)).unwrap();
+    assert_eq!(
+        rate_limited
+            .finish_upload("repo", "target", None, 1, None, false)
+            .unwrap(),
+        PushDecision::RateLimited {
+            retry_after_secs: 60
+        }
+    );
+
+    let queue_dir = tempfile::tempdir().unwrap();
+    let queue_limited = Registry::open(queue_dir.path(), config(0, 1)).unwrap();
+    assert_eq!(
+        queue_limited
+            .finish_upload("repo", "target", None, 1, None, true)
+            .unwrap(),
+        PushDecision::RateLimited {
+            retry_after_secs: 5
+        }
+    );
+
+    let conflict_dir = tempfile::tempdir().unwrap();
+    let conflicting = Registry::open(conflict_dir.path(), generous_config()).unwrap();
+    let state = conflicting.repo_state("repo");
+    state.head.lock().unwrap().sha = Some("current".to_string());
+    assert_eq!(
+        conflicting
+            .finish_upload("repo", "target", Some("stale"), 1, None, true)
+            .unwrap(),
+        PushDecision::Conflict
+    );
+}
+
+#[test]
 fn unfinished_uploads_consume_queue_capacity_before_spooling() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Registry::open(dir.path(), config(1, 100)).unwrap();
@@ -457,9 +525,9 @@ fn restart_recovers_a_leftover_spool_job_from_a_prior_crash() {
 
 #[test]
 fn twenty_repos_pushing_concurrently_each_land_their_own_final_head() {
-    // The milestone's own required load test (`impl.md` M3.1): concurrent
-    // pushes across >= 20 simulated repos, no cross-repo contention,
-    // correct backpressure at the configured watermark.
+    // Load test: concurrent pushes across >= 20 simulated repos,
+    // no cross-repo contention, correct backpressure at the
+    // configured watermark.
     let dir = tempfile::tempdir().unwrap();
     let registry = Arc::new(Registry::open(dir.path(), config(50, 1_000)).unwrap());
     let repo_count = 24;

@@ -1,8 +1,8 @@
 use std::path::Path;
 
-/// Language set: the four from M1.2 (Rust, Python, JS, TS) plus M1.2b's
-/// additions (`impl.md` M1.2b) — Go, Java, C, C++, C#, Kotlin, Swift,
-/// Scala, Zig, Ruby, PHP, Shell/Bash, PowerShell, Lua.
+/// Language set: the original four (Rust, Python, JS, TS) plus the
+/// widened set added later — Go, Java, C, C++, C#, Kotlin, Swift, Scala,
+/// Zig, Ruby, PHP, Shell/Bash, PowerShell, Lua.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Language {
     Rust,
@@ -29,7 +29,7 @@ pub enum Language {
     Properties,
     /// Any language with a grammar but no hand-written `extract/<lang>.rs`
     /// — routed through `query_vm`'s generic, kind-name-heuristic
-    /// extractor (`impl.md` M1.2c) instead of bespoke Rust per language.
+    /// extractor instead of bespoke Rust per language.
     Elixir,
     Haskell,
     Dart,

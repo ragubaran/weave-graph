@@ -62,7 +62,7 @@ fn provisioned_root() -> (tempfile::TempDir, ScimDirectory) {
     (dir, directory)
 }
 
-/// impl.md M3.4's verify criterion: a provisioned-then-deprovisioned user
+/// Verify criterion: a provisioned-then-deprovisioned user
 /// loses query access on the next `AuthProvider` sync cycle — not
 /// immediately (the stale snapshot still resolves them), and not never
 /// (the sync actually applies the deprovision).
@@ -321,7 +321,7 @@ fn scim_server_with_a_token_rejects_unauthenticated_requests() {
     let _ = dir;
 }
 
-/// The M3.0 seam: the SCIM-managed directory overrides `[rbac.users]`
+/// The SCIM-managed directory overrides `[rbac.users]`
 /// config for the same subject — the IdP is the source of truth.
 #[test]
 fn guard_for_prefers_scim_directory_roles_over_config() {
@@ -482,23 +482,37 @@ fn github_identity_lookup_sends_bearer_and_parses_api_response() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut request = [0u8; 2048];
-        let size = stream.read(&mut request).unwrap();
-        let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
-        assert!(request.contains("authorization: bearer test-token"));
-        let body = r#"{"login":"octocat","id":1}"#;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        stream.write_all(response.as_bytes()).unwrap();
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 2048];
+            let size = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
+            assert!(request.contains("authorization: bearer test-token"));
+            let body = if request.contains("/user/teams") {
+                r#"[{"slug":"security","organization":{"login":"platform"}}]"#
+            } else if request.contains("/user/orgs") {
+                r#"[{"login":"platform"}]"#
+            } else {
+                r#"{"login":"octocat","id":1}"#
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
     });
     let endpoint = format!("http://{address}/user");
     let identity = super::github_identity_from_endpoint(&endpoint, "test-token").unwrap();
     server.join().unwrap();
     assert_eq!(identity.subject, "github:octocat:1");
+    assert!(identity.roles.contains(&"github-org:platform".to_string()));
+    assert!(
+        identity
+            .roles
+            .contains(&"github-team:platform/security".to_string())
+    );
 }
 
 /// IDP-02: `[rbac.scim] token` in `.weave/config.toml` reaches

@@ -1,6 +1,5 @@
-//! `impl.md` M2.7's bench: the libSQL side of the `rusqlite`-vs-`libSQL`
-//! batch-insert comparison M1.9 deferred (`performance_compare.md`
-//! §5.2.3), mirroring `benches/sqlite_latency.rs`'s methodology exactly.
+//! The libSQL side of the `rusqlite`-vs-`libSQL` batch-insert comparison,
+//! mirroring `benches/sqlite_latency.rs`'s methodology exactly.
 //!
 //! It cannot live in the sqlite crate's `sqlite_latency.rs`: rusqlite's
 //! bundled `libsqlite3-sys` and libSQL's `libsql-ffi` both statically
@@ -38,7 +37,7 @@ fn batch_insert(c: &mut Criterion) {
                         let mut storage = TursoStorage::open(&dir.path().join("bench.db")).unwrap();
                         // One transaction for the whole batch, matching
                         // the sqlite bench's write path — per-statement
-                        // autocommit was M1.9's measured bottleneck.
+                        // autocommit is the measured bottleneck.
                         storage.begin_bulk_write().unwrap();
                         for i in 0..size {
                             storage.upsert_node(&node(i)).unwrap();

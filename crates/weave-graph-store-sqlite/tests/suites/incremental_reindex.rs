@@ -1,8 +1,8 @@
-//! Parameterized M1.4 incremental-reindex suite (see `suites/mod.rs`).
+//! Parameterized incremental-reindex suite (see `suites/mod.rs`).
 //!
 //! The test `reindex_one_of_two_mutually_referencing_files_leaves_zero_dangling_edges`
-//! is the **blocking regression test** named in `plan.md` §1.2a.
-//! It must pass before any indexing change merges — on every backend.
+//! is a blocking regression test: it must pass before any indexing
+//! change merges, on every backend.
 
 use std::path::PathBuf;
 
@@ -56,7 +56,7 @@ fn assert_no_dangling_edges(s: &dyn Storage) {
     }
 }
 
-// ─── Required regression test (plan.md §1.2a) ────────────────────────────────
+// ─── Required regression test ─────────────────────────────────────────────
 
 /// The one test that blocks merging any indexing change: two
 /// mutually-referencing files, one reindexed, zero dangling edges

@@ -5,6 +5,7 @@ only part of `docs/` that ships in the repository (everything else is
 internal planning/audit material, gitignored on purpose).
 
 - **[Getting Started](getting-started.md)** — install, initialize a repo, multi-repo federation, run queries.
+- **[Test-install 1.0.1](install-1.0.1-testing.md)** — verify Homebrew or release-archive installation before trying it on a repository.
 - **[CLI Reference](cli-reference.md)** — every command and flag, divided by profile and tier.
 - **[Configuration Reference](configuration.md)** — `.weave/config.toml`, section by section across all tiers.
 - **[Features](features.md)** — optional Cargo features, profiles, and capabilities.

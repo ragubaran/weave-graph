@@ -1,5 +1,4 @@
-//! `weave slm review-rules` (`impl.md` M2.4.4, `slm-spec.md` §2.3):
-//! deterministic ADR rule candidate extraction from Markdown prose.
+//! `weave slm review-rules`: deterministic ADR rule candidate extraction from Markdown prose.
 //! Surfaces obligation statements as candidates requiring confirmation
 //! rather than authoritative facts, persisting approved rules to `.weave/rules.toml`.
 

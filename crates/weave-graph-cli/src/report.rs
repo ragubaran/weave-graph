@@ -10,7 +10,7 @@ use weave_graph_core::{CommunityId, NodeId, Storage};
 
 use crate::provenance::{self, Provenance};
 
-/// `plan.md` §1.3a's hard budget: no canvas emits more than this many
+/// Hard budget: no canvas emits more than this many
 /// top-level nodes. Over-budget regions collapse into one node linking to
 /// a sub-canvas holding the rest.
 const NODE_BUDGET: usize = 200;
@@ -58,12 +58,12 @@ pub(crate) struct ReportPaths {
     pub(crate) canvas_files: Vec<PathBuf>,
 }
 
-/// `weave report` (`plan.md` §1.3a): LOD 0 (repos), LOD 1 (architectural
+/// `weave report`: LOD 0 (repos), LOD 1 (architectural
 /// modules via Louvain over the file-dependency graph, the default view),
 /// and LOD 2 (one sub-canvas per module, file-level) — LOD 3 is
-/// `weave export`, already wired in M1.6. Every artifact carries the same
+/// `weave export`. Every artifact carries the same
 /// provenance badge.
-/// `visible` is M3.0's query-layer RBAC hook (`weave_graph_core::rbac`).
+/// `visible` is the query-layer RBAC hook (`weave_graph_core::rbac`).
 /// Unlike `query`/`export`'s content-masking `mask` closure, `report`
 /// never resolves a `CsrGraph`'s compact indices back through this list
 /// (it has no `CsrGraph` at all), so dropping hidden nodes/edges outright
@@ -134,7 +134,7 @@ pub(crate) fn generate(
 }
 
 /// Thin CLI-side delegates to `weave-graph-core::modules` — the shared
-/// Louvain implementation (M2.9). Kept as one-line wrappers so the
+/// Louvain implementation. Kept as one-line wrappers so the
 /// canvas renderer's call sites stay stable.
 fn aggregate_file_edges(
     edges: &[weave_graph_core::Edge],
@@ -196,8 +196,8 @@ fn repo_canvas(nodes: &[weave_graph_core::Node]) -> Canvas {
 
 /// LOD 1: one node per module, budget-capped — modules beyond the top
 /// `NODE_BUDGET - 1` collapse into one `file`-type node linking to an
-/// overflow sub-canvas (Obsidian follows `file` nodes; that's the
-/// "drill-down link" `plan.md` §1.3a calls for).
+/// overflow sub-canvas (Obsidian follows `file` nodes, giving a
+/// drill-down link into the overflow).
 fn modules_canvas(
     modules: &[Module],
     file_edges: &HashMap<(String, String), f64>,
@@ -386,7 +386,7 @@ fn render_report_md(
         "\n## On-Demand Symbol View\n\nRun `weave export --symbol <name> --depth 2` for LOD 3.\n",
     );
     // `None` leaves the report byte-identical to a default build's —
-    // M2.3 renders doc-link provenance only when present.
+    // doc-link provenance renders only when present.
     if let Some(section) = doc_provenance_section {
         out.push_str(&format!("\n{section}"));
     }

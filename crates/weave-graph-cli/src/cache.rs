@@ -38,11 +38,11 @@ pub(crate) fn restore_snapshot(
     Ok(true)
 }
 
-/// Saves the just-built `active_db` as the snapshot for `sha`, so a later
-/// `weave index` back on this exact commit can restore instead of reparsing
-/// (`plan.md` §1.2a's commit-hash snapshot cache, for fast branch switching).
-/// Callers only invoke this on a clean working tree — a dirty tree's on-disk
-/// content doesn't match `sha`, so caching it under `sha` would be wrong.
+/// Saves the just-built `active_db` as the commit-hash snapshot for `sha`, so a
+/// later `weave index` back on this exact commit can restore instead of
+/// reparsing (fast branch switching). Callers only invoke this on a clean
+/// working tree — a dirty tree's on-disk content doesn't match `sha`, so
+/// caching it under `sha` would be wrong.
 pub(crate) fn save_snapshot(weave_dir: &Path, active_db: &Path, sha: &str) -> std::io::Result<()> {
     let cache_dir = weave_dir.join("cache");
     fs::create_dir_all(&cache_dir)?;

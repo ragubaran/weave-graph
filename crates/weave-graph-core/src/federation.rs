@@ -1,14 +1,14 @@
-//! `federation` feature (`plan.md` §2.3, `impl.md` M2.1): composite keys
-//! for isolated per-repo subgraph composition, and Tarjan's SCC to isolate
-//! circular cross-repo dependencies. Complements — does not replace — the
-//! visited-set requirement on every traversal (`plan.md` §1.2a). No
-//! network dependency enters this module; composition is purely local.
+//! `federation` feature: composite keys for isolated per-repo subgraph
+//! composition, and Tarjan's SCC to isolate circular cross-repo
+//! dependencies. Complements — does not replace — the visited-set
+//! requirement on every traversal. No network dependency enters this
+//! module; composition is purely local.
 
 use std::collections::HashMap;
 
-/// `[repo_id]::[path]::[symbol]` (`plan.md` §2.3) — the composite natural
-/// key that keeps two repos' identically-named files/symbols from
-/// colliding once composed into one addressable graph.
+/// `[repo_id]::[path]::[symbol]` — the composite natural key that keeps
+/// two repos' identically-named files/symbols from colliding once
+/// composed into one addressable graph.
 pub fn composite_key(repo_id: &str, path: &str, symbol: &str) -> String {
     format!("{repo_id}::{path}::{symbol}")
 }

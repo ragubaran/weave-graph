@@ -1,6 +1,6 @@
 //! Architectural-module folding over the file-dependency graph — the
-//! single Louvain implementation both `weave report` (M1.8) and
-//! `weave_repo_map`'s module mode (M2.9) call. Lives in core because
+//! single Louvain implementation both `weave report` and
+//! `weave_repo_map`'s module mode call. Lives in core because
 //! CLI and MCP crates share it and must never fork the algorithm.
 
 use std::collections::HashMap;

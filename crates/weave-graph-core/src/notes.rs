@@ -1,4 +1,4 @@
-//! Cross-agent memory graph (`impl.md` M2.10): notes pinned onto graph
+//! Cross-agent memory graph: notes pinned onto graph
 //! nodes, persisted in plain SQL — never an LLM/embedding retrieval layer.
 //! The data model is unconditional (the `Storage` trait and both backends
 //! speak it); only hashing (below) needs the `notes` feature's `blake3`.
@@ -57,8 +57,8 @@ pub struct Note {
     pub created_at: i64,
 }
 
-/// Fixed 24h TTL for ephemeral notes (`impl.md` M2.10: a stated v1
-/// simplicity choice — not user-configurable).
+/// Fixed 24h TTL for ephemeral notes — a deliberate simplicity choice,
+/// not user-configurable.
 pub const EPHEMERAL_TTL_SECS: i64 = 24 * 60 * 60;
 
 /// Blake3 hex digest of the target symbol's exact source span

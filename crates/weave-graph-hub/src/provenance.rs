@@ -1,9 +1,9 @@
-//! Snapshot provenance boundary (`impl.md` M3.6, feature `hub-provenance`):
+//! Snapshot provenance boundary (feature `hub-provenance`):
 //! Merkle-signed trust for a whole snapshot push/pull — separate from
-//! `weave_graph_core::provenance::ProvenanceProvider` (M2.3), which signs
+//! `weave_graph_core::provenance::ProvenanceProvider`, which signs
 //! one doc link, never a multi-megabyte blob. Real signers (Lodestone
 //! Nexus or any host) are wired by the deployment, never a dependency
-//! here — same boundary shape M2.3 already established.
+//! here — same boundary shape the doc-link provider already established.
 
 use thiserror::Error;
 
@@ -30,7 +30,7 @@ pub trait SnapshotProvenanceVerifier: Send + Sync {
 }
 
 /// Reference implementation proving the boundary decouples, same role
-/// `MockProvenanceProvider` plays for M2.3: FNV-1a stands in for a real
+/// `MockProvenanceProvider` plays for the doc-link provider: FNV-1a stands in for a real
 /// Merkle/signature primitive so the contract is exercised with zero new
 /// dependencies. A real deployment supplies its own `AuthProvider`-style
 /// implementation; this one is never wired against a live hub by default.

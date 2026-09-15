@@ -4,6 +4,8 @@
 
 `weave` is available via package managers or can be built directly from source:
 
+For a version-pinned Homebrew or release-archive smoke test, use [Test-install 1.0.1](install-1.0.1-testing.md).
+
 ### Package Managers
 ```bash
 # Homebrew (macOS & Linux)
@@ -36,9 +38,9 @@ cp target/release/weave ~/.local/bin/
 - `--features team` (`docs` + `federation`) is an optional developer/team
   profile, not required for a single repository.
 - The core-size target applies to `cargo build --release -p
-  weave-graph-cli --no-default-features`; a prior local build measured about
-  9.6 MiB. Cargo-default extended-language artifacts are larger and must be
-  measured separately.
+  weave-graph-cli --no-default-features`; the current macOS build is
+  10,128,832 bytes (9.66 MiB). Cargo-default extended-language artifacts are
+  larger and must be measured separately.
 - `--features custom` builds the full self-hosted enterprise suite. See [Self-Hosted](self-hosted.md) and [Features](features.md).
 
 ---

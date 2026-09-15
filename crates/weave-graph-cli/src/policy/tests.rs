@@ -146,7 +146,7 @@ fn cmd_drift_reports_without_blocking() {
     cmd_policy_drift(root.path(), None).unwrap();
 }
 
-/// The M2.4.4 composition seam: confirmed ADR obligations print as
+/// Confirmed ADR obligations print as
 /// advisory context and never block.
 #[cfg(feature = "slm")]
 #[test]
@@ -161,7 +161,7 @@ fn cmd_lint_surfaces_confirmed_adr_obligations_advisory() {
     cmd_policy_lint(root.path(), None, false).unwrap();
 }
 
-/// M3.0 dependency: a linted view under an rbac-masked identity skips
+/// A linted view under an rbac-masked identity skips
 /// edges whose endpoints it cannot classify — counted and reported,
 /// never guessed into violations.
 #[cfg(feature = "rbac")]

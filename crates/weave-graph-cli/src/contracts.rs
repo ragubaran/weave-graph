@@ -261,12 +261,12 @@ fn print_diff(diff: &ContractDiff<ContractEntry>, label: &str) {
     }
 }
 
-/// `impl.md` M3.10: `weave check-contracts`'s waiver inputs, bundled
+/// `weave check-contracts`'s waiver inputs, bundled
 /// rather than passed as eight loose parameters — `main.rs` reads the
 /// `WEAVE_*` env vars once (own lifetime, own `Option<&str>`) and hands
 /// them in alongside the CLI flags, so this function never touches
 /// `std::env` itself and stays trivially testable. `Default` is the
-/// no-waiver case every call site that isn't exercising M3.10 wants.
+/// no-waiver case every non-waiver call site wants.
 #[derive(Default)]
 pub(crate) struct CheckContractsWaiver<'a> {
     pub(crate) allow_drift: bool,
@@ -284,7 +284,7 @@ pub(crate) struct CheckContractsWaiver<'a> {
 /// `show_diff` prints the symbol-level breakdown on divergence; `scoped`
 /// gates CI failure on only the symbols this repo actually imports from
 /// the provider — everything else is reported but never blocks,
-/// regardless of `staleness_policy`. `waiver` is M3.10's bypass surface —
+/// regardless of `staleness_policy`. `waiver` is the bypass surface —
 /// stated up front, exercised only when the caller actually asks for it.
 pub(crate) fn cmd_check_contracts(
     root: &Path,
@@ -398,7 +398,7 @@ pub(crate) fn cmd_check_contracts(
             continue;
         }
 
-        // `impl.md` M3.10: a waived provider's drift is reported (the
+        // A waived provider's drift is reported (the
         // audit trail) but never counted against the exit code — checked
         // after the `--scoped` early-continue above so a waiver never
         // masks the fact that `--scoped` alone would already have passed.

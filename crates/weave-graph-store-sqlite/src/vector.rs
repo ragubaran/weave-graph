@@ -1,6 +1,5 @@
-//! `sqlite-vec` Tier 2 semantic search (`impl.md` M3.7 Tier 2, feature
-//! `vector`): binary-quantized ANN candidates reranked by int8 distance,
-//! per `docs/vector-proposal.md` §10.4's revised three-stage funnel.
+//! `sqlite-vec` semantic search (feature `vector`): binary-quantized ANN
+//! candidates reranked by int8 distance in a three-stage funnel.
 //! Float32 embeddings are never persisted — only ever a transient bound
 //! parameter, immediately quantized by `sqlite-vec`'s own SQL functions.
 
@@ -90,7 +89,7 @@ fn write_model_id(conn: &Connection, embedder: &dyn EmbeddingProvider) -> Result
     conn.execute(
         "INSERT INTO vector_metadata(singleton, model_id) VALUES (1, ?1) \
          ON CONFLICT(singleton) DO UPDATE SET model_id = excluded.model_id",
-        [embedder.model_id()],
+        [embedder.fingerprint()],
     )
     .map_err(backend_err)?;
     Ok(())
@@ -109,10 +108,10 @@ fn validate_model_id(
         .optional()
         .map_err(backend_err)?;
     match stored {
-        Some(model_id) if model_id == embedder.model_id() => Ok(()),
+        Some(model_id) if model_id == embedder.fingerprint() => Ok(()),
         Some(model_id) => Err(StorageError::Backend(format!(
             "vector index was built with {model_id}; rebuild it with {}",
-            embedder.model_id()
+            embedder.fingerprint()
         ))),
         None => Err(StorageError::Backend(
             "vector index has no model identity; run a full reindex".to_string(),
@@ -219,8 +218,7 @@ pub(crate) fn purge_excluded_paths(
 
 /// Three-stage funnel: binary ANN oversampled by `oversample`, reranked
 /// against the int8 column, capped at `limit` — never queries the binary
-/// index standalone (recall drops ~7-18% without this rerank per
-/// `vector-proposal.md` §10.3's cited research).
+/// index standalone, since recall drops sharply without this rerank.
 ///
 /// Stage 2 reranks in Rust rather than a second `vec0` KNN query: `WHERE
 /// int8_vec MATCH ... AND rowid IN (...)` reliably fails live with "A

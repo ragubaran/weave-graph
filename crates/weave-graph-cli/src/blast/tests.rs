@@ -620,7 +620,7 @@ fn blast_flags_a_directly_edited_pub_fn_as_exported_contract_surface_touched() {
     assert!(md.contains("public_api"), "{md}");
 }
 
-// ─── impl.md M3.10: waiver mechanisms ───────────────────────────────────────
+// ─── waiver mechanisms ───────────────────────────────────────────────────────
 
 #[test]
 fn skip_flag_without_a_reason_is_a_clear_error() {

@@ -62,6 +62,24 @@ fn full_reindex_indexes_symbols_and_cross_file_edges() {
 }
 
 #[test]
+fn bounded_parser_folds_files_in_order_across_parse_batches() {
+    let fx = Fixture::new();
+    let files: Vec<_> = (0..65)
+        .map(|i| fx.write(&format!("f{i:03}.rs"), &format!("fn f{i}() {{}}\n")))
+        .collect();
+    let mut folded = Vec::new();
+    parse_files_bounded(fx.root(), &files, |rel, _parsed| {
+        folded.push(rel.to_string());
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(folded.len(), files.len());
+    assert_eq!(folded.first().map(String::as_str), Some("f000.rs"));
+    assert_eq!(folded.last().map(String::as_str), Some("f064.rs"));
+}
+
+#[test]
 fn incremental_reindex_updates_only_the_changed_file() {
     let fx = Fixture::new();
     fx.write("a.rs", "pub fn helper() {}\n");
@@ -226,6 +244,73 @@ fn incremental_reindex_purges_a_deleted_file_without_reinserting_it() {
         assert!(nodes.iter().any(|n| n.id == e.source_id));
         assert!(nodes.iter().any(|n| n.id == e.target_id));
     }
+}
+
+#[test]
+fn incremental_reindex_moves_a_file_without_leaving_old_nodes_or_edges() {
+    let fx = Fixture::new();
+    fx.write("a.rs", "pub fn helper() {}\n");
+    fx.write("b.rs", "fn caller() { helper(); }\n");
+    let initial_files = fx.discovered_files(&["a.rs", "b.rs"]);
+    full_reindex(fx.root(), &fx.weave_dir, &fx.active_db, &initial_files).unwrap();
+
+    fs::rename(fx.root().join("a.rs"), fx.root().join("renamed.rs")).unwrap();
+    let files = fx.discovered_files(&["renamed.rs", "b.rs"]);
+    incremental_reindex(
+        fx.root(),
+        &fx.weave_dir,
+        &fx.active_db,
+        &files,
+        &["a.rs".to_string(), "renamed.rs".to_string()],
+    )
+    .unwrap();
+
+    let storage = fx.storage();
+    let nodes = storage.all_nodes().unwrap();
+    assert!(!nodes.iter().any(|node| node.path == "a.rs"));
+    let helper = nodes
+        .iter()
+        .find(|node| node.path == "renamed.rs" && node.symbol == "helper")
+        .unwrap();
+    let caller = nodes.iter().find(|node| node.symbol == "caller").unwrap();
+    assert!(
+        storage
+            .get_edges(caller.id)
+            .unwrap()
+            .iter()
+            .any(|edge| edge.target_id == helper.id)
+    );
+}
+
+#[test]
+fn failed_incremental_promotion_preserves_the_active_graph() {
+    let fx = Fixture::new();
+    fx.write("a.rs", "pub fn helper() {}\n");
+    let files = fx.discovered_files(&["a.rs"]);
+    full_reindex(fx.root(), &fx.weave_dir, &fx.active_db, &files).unwrap();
+
+    fx.write("a.rs", "pub fn replacement() {}\n");
+    fail_next_promotion(&fx.active_db);
+    let result = incremental_reindex(
+        fx.root(),
+        &fx.weave_dir,
+        &fx.active_db,
+        &files,
+        &["a.rs".to_string()],
+    );
+
+    assert!(matches!(
+        result,
+        Err(ref error) if error.to_string().contains("injected rebuild promotion failure")
+    ));
+    let symbols: Vec<_> = fx
+        .storage()
+        .all_nodes()
+        .unwrap()
+        .into_iter()
+        .map(|node| node.symbol)
+        .collect();
+    assert_eq!(symbols, ["helper"]);
 }
 
 #[test]

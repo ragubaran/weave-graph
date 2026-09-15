@@ -45,9 +45,9 @@ fn trace_span_from_row(row: &libsql::Row) -> libsql::Result<TraceSpan> {
     })
 }
 
-/// libSQL-backed `Storage` implementation (`impl.md` M2.7), embedded
-/// (`Builder::new_local` — no network, no server). Same schema and
-/// migrations as `weave-graph-store-sqlite`, replayed verbatim.
+/// libSQL-backed `Storage` implementation, embedded (`Builder::new_local`
+/// — no network, no server). Same schema and migrations as
+/// `weave-graph-store-sqlite`, replayed verbatim.
 pub struct TursoStorage {
     conn: libsql::Connection,
 }
@@ -108,8 +108,8 @@ impl TursoStorage {
 
     /// Opens an explicit transaction around a bulk sequence of
     /// `upsert_node`/`upsert_edge` calls — same autocommit-per-statement
-    /// hazard as the rusqlite backend (M1.9's measured bottleneck).
-    /// Caller must pair with `commit_bulk_write`.
+    /// hazard as the rusqlite backend, which measurably bottlenecks
+    /// unbatched writes. Caller must pair with `commit_bulk_write`.
     pub fn begin_bulk_write(&self) -> Result<(), StorageError> {
         block_on(self.conn.execute_batch("BEGIN"))?;
         Ok(())
@@ -334,8 +334,8 @@ impl Storage for TursoStorage {
     }
 
     fn purge_file_edges(&mut self, repo_id: &str, path: &str) -> Result<u64, StorageError> {
-        // Bidirectional purge required by plan.md §1.2a and Core Invariant 3.
-        // Outbound-only delete leaves orphaned inbound edges from other files.
+        // Bidirectional purge required by Core Invariant 3: outbound-only
+        // delete leaves orphaned inbound edges from other files.
         block_on(async {
             let rows = self
                 .conn
@@ -411,7 +411,7 @@ impl Storage for TursoStorage {
     }
 
     fn recall_notes(&self, now: i64) -> Result<Vec<Note>, StorageError> {
-        // Read-time TTL filter, not a background sweep (impl.md M2.10).
+        // Read-time TTL filter, not a background sweep.
         block_on(async {
             let mut rows = self
                 .conn

@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Just enough of `.weave/config.toml` for the opt-in relocation config
-/// (`plan.md` §1.4) — read at every `weave index`/`weave status` call.
+/// Just enough of `.weave/config.toml` for the opt-in relocation config,
+/// read at every `weave index`/`weave status` call.
 pub(crate) fn read_storage_home(config_path: &Path) -> Option<PathBuf> {
     let content = fs::read_to_string(config_path).ok()?;
     let value: toml::Table = content.parse().ok()?;
@@ -13,7 +13,7 @@ pub(crate) fn read_storage_home(config_path: &Path) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// `weave config set <key> <value>` (`plan.md` §1.3): sets a possibly
+/// `weave config set <key> <value>`: sets a possibly
 /// dotted key (`mode`, `storage.home`) in `.weave/config.toml`, creating
 /// the file and any intermediate tables as needed, and leaving every other
 /// key untouched. `value` is parsed as TOML first (so `true`/`123`/`"x"`
@@ -42,7 +42,7 @@ pub(crate) fn get_key(config_path: &Path, key: &str) -> Option<String> {
     })
 }
 
-/// `[federation] linked_repos` (`plan.md` §0.3) is a TOML array of paths,
+/// `[federation] linked_repos` is a TOML array of paths,
 /// which the scalar-only [`get_key`] cannot represent. Missing file, missing
 /// section, or a non-array value all read as "no linked repos" — an empty
 /// list is a fully supported permanent state, never a setup error.
@@ -79,12 +79,22 @@ pub(crate) fn add_linked_repo(
     let fed = table
         .entry("federation")
         .or_insert_with(|| toml::Value::Table(toml::Table::new()));
-    let fed_table = fed.as_table_mut().unwrap();
+    if !fed.is_table() {
+        *fed = toml::Value::Table(toml::Table::new());
+    }
+    let fed_table = fed
+        .as_table_mut()
+        .ok_or("federation entry is not a table")?;
 
     let linked = fed_table
         .entry("linked_repos")
         .or_insert_with(|| toml::Value::Array(Vec::new()));
-    let linked_arr = linked.as_array_mut().unwrap();
+    if !linked.is_array() {
+        *linked = toml::Value::Array(Vec::new());
+    }
+    let linked_arr = linked
+        .as_array_mut()
+        .ok_or("linked_repos entry is not an array")?;
 
     let repo_str = repo.to_string_lossy().to_string();
     if !linked_arr.iter().any(|v| v.as_str() == Some(&repo_str)) {
@@ -103,7 +113,7 @@ pub(crate) struct UserConfig {
     pub token: Option<String>,
 }
 
-/// `[rbac.users]` (`impl.md` M3.0): a static subject -> roles map, e.g.
+/// `[rbac.users]`: a static subject -> roles map, e.g.
 /// `alice = ["internal"]` or `alice = { roles = ["internal"], token = "sec-123" }`.
 /// Missing file, missing section, or a malformed entry all read as "no configured users" —
 /// every subject then resolves to the anonymous (no-roles) identity, the safe default.

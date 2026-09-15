@@ -46,7 +46,7 @@ impl Fixture {
     }
 }
 
-/// Matches `impl.md` M2.0's own Verifies line: a fixture Obsidian-style
+/// A fixture Obsidian-style
 /// vault round-trips wikilinks to `LINKS_TO` edges, a backtick reference to
 /// an indexed symbol produces `EXPLAINS_RATIONALE`, and a reference to an
 /// unindexed name produces no edge at all.
@@ -226,7 +226,7 @@ fn notes_link_tagged_to_their_topics() {
     );
 }
 
-/// `pending_p2.md` §2.2 gap 2: removing a note's last tag on an
+/// Removing a note's last tag on an
 /// incremental edit sweeps the now-unreferenced `doc_topic` node.
 #[test]
 fn removing_a_tag_gcs_the_orphaned_topic_node() {
@@ -252,7 +252,7 @@ fn removing_a_tag_gcs_the_orphaned_topic_node() {
     assert!(topics.contains(&"go".to_string()), "{topics:?}");
 }
 
-/// `pending_p2.md` §2.2 gap 3: an ambiguous short-name backtick reference
+/// An ambiguous short-name backtick reference
 /// resolves to the same-directory candidate when exactly one exists;
 /// otherwise the documented fan-out stands.
 #[test]

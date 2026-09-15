@@ -1,5 +1,5 @@
-/// Reindex configuration knobs (`plan.md` §1.2a, §0.3). Both values are
-/// configurable so a tiny repo never bails out on a 3-file change.
+/// Reindex configuration knobs. Both values are configurable so a tiny
+/// repo never bails out on a 3-file change.
 #[derive(Debug, Clone)]
 pub struct ReindexConfig {
     /// Minimum changed-file count before bailout is considered.

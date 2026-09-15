@@ -101,6 +101,27 @@ fn unknown_symbol_is_an_error() {
 }
 
 #[test]
+fn mask_is_applied_before_the_exported_neighborhood_is_built() {
+    let (storage, _) = chain_storage();
+    let mask = |node: &Node| {
+        let mut masked = node.clone();
+        if masked.symbol == "b" {
+            masked.symbol = "<hidden>".to_string();
+        }
+        masked
+    };
+
+    let neighborhood = neighborhood(&storage, "a", 1, Some(&mask)).unwrap();
+    assert!(
+        neighborhood
+            .nodes
+            .iter()
+            .any(|node| node.symbol == "<hidden>")
+    );
+    assert!(!neighborhood.nodes.iter().any(|node| node.symbol == "b"));
+}
+
+#[test]
 fn serializes_to_valid_json_with_expected_shape() {
     let (storage, _) = chain_storage();
     let n = neighborhood(&storage, "a", 1, None).unwrap();

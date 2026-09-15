@@ -1,11 +1,11 @@
-//! Minimal deployment entry point for [`weave_graph_hub::RegistryServer`]
-//! (`impl.md` M3.1). Deliberately no `clap` here — that dependency belongs
+//! Minimal deployment entry point for [`weave_graph_hub::RegistryServer`].
+//! Deliberately no `clap` here — that dependency belongs
 //! to `weave-graph-cli`'s user-facing surface, not this crate, which
 //! otherwise has zero dependencies beyond `thiserror` and
 //! `weave-graph-core` (`hub`'s feature-isolation guarantee).
 //!
 //! `--max-queue-depth-per-repo` and `--max-pushes-per-minute-per-repo`
-//! are required, not defaulted: `plan.md` §3.1 requires these calibrated
+//! are required, not defaulted: they must be calibrated
 //! against a deployment's own observed merge rate, not an arbitrary
 //! constant shipped by this crate.
 //!
@@ -131,16 +131,23 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
     })
 }
 
-fn build_server(args: &Args) -> Result<RegistryServer, String> {
-    let canvas_exclude = if args.canvas_exclude.is_empty() {
+/// Flag first, config file second, empty when neither is set — extracted
+/// as a pure function so the precedence is testable without binding a
+/// real socket.
+fn resolve_canvas_exclude(args: &Args) -> Result<Vec<String>, String> {
+    if args.canvas_exclude.is_empty() {
         args.config_path
             .as_deref()
             .map(read_canvas_exclude)
-            .transpose()?
-            .unwrap_or_default()
+            .transpose()
+            .map(|resolved| resolved.unwrap_or_default())
     } else {
-        args.canvas_exclude.clone()
-    };
+        Ok(args.canvas_exclude.clone())
+    }
+}
+
+fn build_server(args: &Args) -> Result<RegistryServer, String> {
+    let canvas_exclude = resolve_canvas_exclude(args)?;
     let config = RegistryConfig {
         max_queue_depth_per_repo: args.max_queue_depth_per_repo,
         max_pushes_per_minute_per_repo: args.max_pushes_per_minute_per_repo,

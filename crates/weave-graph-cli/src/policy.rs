@@ -1,4 +1,4 @@
-//! `weave policy` (`impl.md` M3.2, `plan.md` §3.2): YAML-declared
+//! `weave policy`: YAML-declared
 //! architectural boundaries evaluated against the indexed graph — the CI
 //! gate is simply this command's exit code — plus drift analytics
 //! (dependency cycles, orphaned files). YAML parsing lives here; the
@@ -271,7 +271,7 @@ fn filter_view(
     }
 }
 
-/// The M2.4.4 composition (`impl.md` M3.2): confirmed ADR obligations are
+/// Confirmed ADR obligations are
 /// advisory context next to the machine-checked rules. Prose like
 /// "services must not call the database directly" has no mechanical
 /// `from`/`to` mapping a linter could enforce without guessing — surfacing

@@ -39,10 +39,10 @@ pub(crate) struct BlastReport {
     pub(crate) exported_touched: Vec<(String, String, u32)>,
 }
 
-/// `impl.md` M3.10: `weave blast`'s waiver inputs, bundled the same way
+/// `weave blast`'s waiver inputs, bundled the same way
 /// `contracts::CheckContractsWaiver` is — `main.rs` reads
 /// `WEAVE_SKIP_BLAST` once and hands the value in. `Default` is the
-/// no-waiver case every call site that isn't exercising M3.10 wants.
+/// no-waiver case every non-waiver call site wants.
 #[derive(Default)]
 pub(crate) struct BlastWaiver<'a> {
     pub(crate) skip: bool,

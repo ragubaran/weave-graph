@@ -25,23 +25,23 @@ The SQL store is authoritative; the CSR graph is a derived read structure rebuil
 
 Everything beyond the deterministic core is an off-by-default Cargo feature. Enabling one never changes the meaning of core behavior, and compiling a feature you don't use costs nothing — no code linked in, no idle RSS, no latency change on the default paths.
 
-| Feature       | Mode              | Required Flag            | Enables                                                                                                                                                                                         | Status      |
-| :------------ | :---------------- | :----------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------- |
-| _(none)_      | Any               | Not Required             | Local AST indexing for compiled languages, CSR graph, incremental reindexing with dangling-edge purge, storage safety, query engine, MCP server, and CLI configuration | **Done**    |
-| `storage`     | Any               | Not Required             | Custom data directory (`[storage] home` / `WEAVE_HOME`), central multi-repo knowledge store with isolated updates, network filesystem detection                                                 | **Done**    |
-| `docs`        | Any               | `--features docs`        | Markdown/Obsidian ingestion (`pulldown-cmark`), wikilinks, `EXPLAINS_RATIONALE` code-reference links, `.canvas` export                                                                          | **Done**    |
-| `federation`  | Any               | `--features federation`  | Multi-repo subgraph composition, composite keys, boundary contract hashing, Tarjan's-SCC cycle handling, `weave check-contracts` — **local-only, no network**                                   | **Done**    |
-| `provenance`  | Multiple          | `--features provenance`  | `ProvenanceProvider` trait and note/link provenance primitives                                                                                                                                  | **Done**    |
-| `notes`       | Any               | `--features notes`       | Pinned agent/human notes on graph symbols (`weave note pin/list`, MCP `weave_pin_note`/`weave_recall_notes`), content-hash staleness tracking, moniker-based reattachment on reindex             | **Done**    |
-| `watch`       | Any               | `--features watch`       | Debounced auto-reindex on file change (`weave index --watch`, background thread in `weave serve --mcp`) with a blast-radius safety gate                                                         | **Done**    |
-| `viz`         | Any               | `--features viz`         | Offline HTML report viewer (`weave report --html`, `weave viz`), zero new dependencies                                                                                                          | **Done**    |
-| `hub`         | Multiple / Custom | `--features hub`         | Snapshot hydration + delta publish over the network (`weave sync pull/push`) — **client only**, no bundled hub server                                                                          | **Done**    |
-| `slm`         | Any               | `--features slm`         | Local NL→query intent router for a human at a terminal (`weave ask`, `weave journal`) — never on the MCP/agent path                                                                             | **Done**    |
-| `python`      | Any               | `--features python`      | PyO3 bindings for the `pip install weave-graph` wheel — a genuinely separate build artifact, zero cost to the native binary                                                                    | **Done**    |
-| `turso`       | Library only      | `--features turso`       | Tested embedded libSQL `Storage` implementation; no `weave` CLI selector or supported Turso distribution                                                                    | **Library complete; CLI open**    |
-| `rbac`        | Custom            | `--features rbac`        | `AuthProvider` trait + **query-layer** node masking (never export-only)                                                                                                                         | Not started |
-| `otel`        | Custom            | `--features otel`        | OpenTelemetry/APM trace overlay on graph nodes                                                                                                                                                  | Not started |
-| `policy-lint` | Custom            | `--features policy-lint` | YAML architectural boundary rules + CI gate                                                                                                                                                     | Not started |
+| Feature       | Mode              | Required Flag            | Enables                                                                                                                                                                              | Status                         |
+| :------------ | :---------------- | :----------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------------- |
+| _(none)_      | Any               | Not Required             | Local AST indexing for compiled languages, CSR graph, incremental reindexing with dangling-edge purge, storage safety, query engine, MCP server, and CLI configuration               | **Done**                       |
+| `storage`     | Any               | Not Required             | Custom data directory (`[storage] home` / `WEAVE_HOME`), central multi-repo knowledge store with isolated updates, network filesystem detection                                      | **Done**                       |
+| `docs`        | Any               | `--features docs`        | Markdown/Obsidian ingestion (`pulldown-cmark`), wikilinks, `EXPLAINS_RATIONALE` code-reference links, `.canvas` export                                                               | **Done**                       |
+| `federation`  | Any               | `--features federation`  | Multi-repo subgraph composition, composite keys, boundary contract hashing, Tarjan's-SCC cycle handling, `weave check-contracts` — **local-only, no network**                        | **Done**                       |
+| `provenance`  | Multiple          | `--features provenance`  | `ProvenanceProvider` trait and note/link provenance primitives                                                                                                                       | **Done**                       |
+| `notes`       | Any               | `--features notes`       | Pinned agent/human notes on graph symbols (`weave note pin/list`, MCP `weave_pin_note`/`weave_recall_notes`), content-hash staleness tracking, moniker-based reattachment on reindex | **Done**                       |
+| `watch`       | Any               | `--features watch`       | Debounced auto-reindex on file change (`weave index --watch`, background thread in `weave serve --mcp`) with a blast-radius safety gate                                              | **Done**                       |
+| `viz`         | Any               | `--features viz`         | Offline HTML report viewer (`weave report --html`, `weave viz`), zero new dependencies                                                                                               | **Done**                       |
+| `hub`         | Multiple / Custom | `--features hub`         | Snapshot hydration + delta publish over the network (`weave sync pull/push`) — **client only**, no bundled hub server                                                                | **Done**                       |
+| `slm`         | Any               | `--features slm`         | Local NL→query intent router for a human at a terminal (`weave ask`, `weave journal`) — never on the MCP/agent path                                                                  | **Done**                       |
+| `python`      | Any               | `--features python`      | PyO3 bindings for the `pip install weave-graph` wheel — a genuinely separate build artifact, zero cost to the native binary                                                          | **Done**                       |
+| `turso`       | Library only      | `--features turso`       | Tested embedded libSQL `Storage` implementation; no `weave` CLI selector or supported Turso distribution                                                                             | **Library complete; CLI open** |
+| `rbac`        | Custom            | `--features rbac`        | `AuthProvider` trait + **query-layer** node masking (never export-only)                                                                                                              | Not started                    |
+| `otel`        | Custom            | `--features otel`        | OpenTelemetry/APM trace overlay on graph nodes                                                                                                                                       | Not started                    |
+| `policy-lint` | Custom            | `--features policy-lint` | YAML architectural boundary rules + CI gate                                                                                                                                          | Not started                    |
 
 `weave blast --base <ref>` (PR blast-radius comments) needs no feature flag — it's part of the base CLI.
 
@@ -54,12 +54,14 @@ Convenience bundles (wired in `weave-graph-cli/Cargo.toml`): `team = [docs, fede
 `weave` can be installed across multiple package channels depending on your environment:
 
 #### 1. Homebrew (macOS & Linux)
+
 ```bash
 brew tap weave-graph/tap
 brew install weave
 ```
 
 #### 2. Cargo (crates.io / Rust Toolchain)
+
 ```bash
 # Recommended default variant (Single + Multiple mode federation)
 cargo install weave-graph-cli --features team
@@ -69,6 +71,7 @@ cargo install --git https://github.com/ragubaran/weave-graph.git weave-graph-cli
 ```
 
 #### 3. npm / npx (Zero-Install for AI Agents & Node.js)
+
 ```bash
 # Run immediately via npx without pre-installing (e.g. for MCP server configuration)
 npx @weave-graph/cli serve --mcp
@@ -78,18 +81,20 @@ npm install -g @weave-graph/cli
 ```
 
 #### 4. Python / pip (`pip`)
+
 ```bash
 # Installs CLI executable on virtualenv PATH + exposes in-memory query bindings
 pip install weave-graph
 ```
 
 #### 5. Build from Source
+
 Two release distribution tiers cover every operational mode:
 
-| Tier | Binary | Build Command | Key Capabilities & Target |
-| :--- | :--- | :--- | :--- |
-| **Standard Tier** | `weave` (default) | `cargo build --release -p weave-graph-cli --features team` | Small orgs, startups & devs: Single + Multiple mode (AST parsing, SQLite, contract diffing, blast radius) |
-| **Self-Hosted Tier** | `weave-custom` | `cargo build --release -p weave-graph-cli --features custom` | Self-hosted & enterprise teams: Full suite (Custom mode + RBAC, SCIM, Hub, Policy-Lint, Provenance, Vector, SLM, OTel) |
+| Tier                 | Binary            | Build Command                                                | Key Capabilities & Target                                                                                              |
+| :------------------- | :---------------- | :----------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------- |
+| **Standard Tier**    | `weave` (default) | `cargo build --release -p weave-graph-cli --features team`   | Small orgs, startups & devs: Single + Multiple mode (AST parsing, SQLite, contract diffing, blast radius)              |
+| **Self-Hosted Tier** | `weave-custom`    | `cargo build --release -p weave-graph-cli --features custom` | Self-hosted & enterprise teams: Full suite (Custom mode + RBAC, SCIM, Hub, Policy-Lint, Provenance, Vector, SLM, OTel) |
 
 ```bash
 git clone https://github.com/ragubaran/weave-graph.git
@@ -105,13 +110,14 @@ The binary lands at `target/release/weave`; put it on your `$PATH` (e.g. `cp tar
 
 Weave Graph separates **packaging & binary size** (Compile-Time Tiers) from **repository topology** (Runtime Modes in `.weave/config.toml`):
 
-| Dimension | Mode 1: Single (`mode = "single"`) | Mode 2: Multiple (`mode = "multiple"`) | Mode 3: Custom (`mode = "custom"`) |
-| :--- | :--- | :--- | :--- |
-| **Primary Scope** | Monorepo or standalone service. | Distributed local repositories via `[federation] linked_repos`. | Centralized organization-wide mesh & private VPC infrastructure. |
-| **Standard Tier (`weave`)** | **Full Support (Default)**<br/>• Local AST index & contract hashing<br/>• Fast blast radius & reachability<br/>• SQLite backend | **Full Support (with `federation`)**<br/>• Cross-repo moniker resolution<br/>• Tarjan SCC cycle checks<br/>• Public contract hashes | **Not Supported**<br/>(Requires enterprise Hub registry, SCIM server, and RBAC guard). |
-| **Self-Hosted Tier (`weave-custom`)** | **Supported + Enterprise Add-ons**<br/>• RBAC query masking (`--as`)<br/>• Local boundary `policy-lint`<br/>• OpenTelemetry runtime overlays | **Supported + Enterprise Add-ons**<br/>• RBAC masking across local repos<br/>• Local + linked contract drift gates | **Optional components**<br/>• Hub registry and generic SCIM<br/>• Provenance primitives<br/>• Vector storage groundwork; deployment verification required |
+| Dimension                             | Mode 1: Single (`mode = "single"`)                                                                                                           | Mode 2: Multiple (`mode = "multiple"`)                                                                                              | Mode 3: Custom (`mode = "custom"`)                                                                                                                        |
+| :------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Primary Scope**                     | Monorepo or standalone service.                                                                                                              | Distributed local repositories via `[federation] linked_repos`.                                                                     | Centralized organization-wide mesh & private VPC infrastructure.                                                                                          |
+| **Standard Tier (`weave`)**           | **Full Support (Default)**<br/>• Local AST index & contract hashing<br/>• Fast blast radius & reachability<br/>• SQLite backend              | **Full Support (with `federation`)**<br/>• Cross-repo moniker resolution<br/>• Tarjan SCC cycle checks<br/>• Public contract hashes | **Not Supported**<br/>(Requires enterprise Hub registry, SCIM server, and RBAC guard).                                                                    |
+| **Self-Hosted Tier (`weave-custom`)** | **Supported + Enterprise Add-ons**<br/>• RBAC query masking (`--as`)<br/>• Local boundary `policy-lint`<br/>• OpenTelemetry runtime overlays | **Supported + Enterprise Add-ons**<br/>• RBAC masking across local repos<br/>• Local + linked contract drift gates                  | **Optional components**<br/>• Hub registry and generic SCIM<br/>• Provenance primitives<br/>• Vector storage groundwork; deployment verification required |
 
 #### Internal Subdivisions in Standard Tier (`weave`)
+
 1. **Storage Backend**: SQLite (bundled `rusqlite` WAL mode) is the only backend selected by the `weave` CLI. `weave-graph-store-turso` is library-only and has no CLI selector.
 2. **Search Engine**: BM25 symbol search (`fts`) plus an optional vector similarity path (`--features vector`). ANN and learned semantic quality are not claimed.
 

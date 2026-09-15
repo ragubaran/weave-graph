@@ -1,4 +1,4 @@
-//! `weave journal` (`impl.md` M2.4.5, `slm-spec.md` §2.4): structural changelogs.
+//! `weave journal`: structural changelogs.
 //! Combines git diff with graph delta to output symbols affected, blast radius,
 //! and linked docs. Every figure is derived deterministically from the index
 //! with zero model inference in this path.

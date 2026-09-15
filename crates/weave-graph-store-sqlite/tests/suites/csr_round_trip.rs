@@ -1,4 +1,4 @@
-//! Parameterized M1.3 CSR round-trip suite (see `suites/mod.rs`).
+//! Parameterized CSR round-trip suite (see `suites/mod.rs`).
 
 use std::path::Path;
 
@@ -21,10 +21,9 @@ fn node(path: &str, symbol: &str) -> Node {
     }
 }
 
-/// `impl.md` M1.3's required check: a `CsrGraph` loaded from SQL must
-/// answer path queries identically to the SQL-backed BFS it was built
-/// from — the CSR is a derived read structure, not an independent source
-/// of truth.
+/// A `CsrGraph` loaded from SQL must answer path queries identically to
+/// the SQL-backed BFS it was built from — the CSR is a derived read
+/// structure, not an independent source of truth.
 pub fn csr_query_path_matches_sql_query_path_on_the_same_graph(open: OpenFn) {
     let dir = tempfile::tempdir().unwrap();
     let mut storage = open(&dir.path().join("graph.db"));

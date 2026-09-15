@@ -1,4 +1,4 @@
-//! M3.3 acceptance: the sqlite crate's trace-span suite runs against
+//! Acceptance: the sqlite crate's trace-span suite runs against
 //! `TursoStorage` through the shared, factory-parameterized suite.
 
 #[path = "../../weave-graph-store-sqlite/tests/suites/trace_spans.rs"]

@@ -157,7 +157,7 @@ fn generate_writes_a_report_and_canvases_that_are_all_valid_json() {
 fn generate_applies_a_visible_filter_to_nodes_and_their_edges() {
     // Only "caller" passes the filter — "helper" (and the edge touching
     // it) must be excluded from both the node count and the module graph.
-    // This is M3.0's rbac hook, but `generate` itself takes the filter
+    // This is the rbac hook, but `generate` itself takes the filter
     // unconditionally (not feature-gated), so this is a plain unit test.
     let (dir, storage) = seeded_storage();
     let out_dir = dir.path().join("out");

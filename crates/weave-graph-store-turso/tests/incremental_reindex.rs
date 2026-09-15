@@ -1,4 +1,4 @@
-//! M2.7 acceptance: the sqlite crate's incremental-reindex suite —
+//! Acceptance: the sqlite crate's incremental-reindex suite —
 //! including the Core-Invariant-3 blocking regression test — runs
 //! against `TursoStorage` through the shared, factory-parameterized
 //! suite.

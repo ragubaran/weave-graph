@@ -1,11 +1,10 @@
-//! M1.4 integration tests — incremental reindex correctness.
+//! Integration tests — incremental reindex correctness.
 //!
 //! The test `reindex_one_of_two_mutually_referencing_files_leaves_zero_dangling_edges`
-//! is the **blocking regression test** named in `plan.md` §1.2a.
-//! It must pass before any M1.4 change merges.
+//! is a blocking regression test: it must pass before any reindex change merges.
 //!
 //! Bodies live in `suites/incremental_reindex.rs`, shared with the
-//! `turso` backend's test target (`impl.md` M2.7).
+//! `turso` backend's test target.
 
 #[path = "suites/incremental_reindex.rs"]
 mod incremental_reindex_suite;

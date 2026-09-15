@@ -75,7 +75,7 @@ struct Cli {
     /// `.weave/config.toml`'s `[rbac.users]` (feature: rbac); omitted =
     /// anonymous (no roles). Global rather than per-subcommand so `query`,
     /// `report`, `export`, and `serve --mcp` share one flag instead of
-    /// four independently cfg-gated struct fields (`impl.md` M3.0).
+    /// four independently cfg-gated struct fields.
     #[cfg(feature = "rbac")]
     #[arg(long = "as", global = true)]
     r#as: Option<String>,
@@ -200,7 +200,7 @@ enum Commands {
         /// Traversal direction: `callers` (who's affected, default), `callees` (what the change touches), or `both`
         #[arg(long, default_value = "callers")]
         direction: String,
-        /// Skip the blast-radius computation entirely (waiver, impl.md M3.10) — requires --reason
+        /// Skip the blast-radius computation entirely (waiver) — requires --reason
         #[arg(long)]
         skip: bool,
         /// Audit reason for --skip (mandatory when --skip is passed)
@@ -250,10 +250,10 @@ enum Commands {
         /// from the provider — everything else is reported, never blocking
         #[arg(long)]
         scoped: bool,
-        /// Waive drift across every linked repo (impl.md M3.10) — requires --reason
+        /// Waive drift across every linked repo — requires --reason
         #[arg(long)]
         allow_drift: bool,
-        /// Waive drift for one specific peer repo (impl.md M3.10) — requires --reason
+        /// Waive drift for one specific peer repo — requires --reason
         #[arg(long)]
         allow_drift_for: Option<String>,
         /// Report drift but never fail the exit code, regardless of staleness_policy
@@ -756,7 +756,7 @@ fn slm_cmd_doctor() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Phase-2-only command on a Phase-1-only binary (`plan.md` §0.2a): fail
+/// A command gated behind a feature not compiled into this binary: fail
 /// clearly and immediately, never a silent no-op and never a bare clap
 /// "unrecognized subcommand" — the command is real, just not compiled in.
 /// Every call site is `#[cfg(not(feature = "..."))]`-gated, so `--all-features`
@@ -809,7 +809,7 @@ staleness_policy = "warn"
         println!("Initialized weave graph in .weave/ (mode: {mode})");
         if mode == "multiple" {
             // CI cold-indexes on every run without a cache primitive; emit
-            // the L1 snippet (plan.md §1.3) alongside the config so the
+            // the L1 snippet alongside the config so the
             // setup step is self-contained.
             fs::write(weave_dir.join("ci-cache.yml"), ci_cache_snippet())?;
             println!(
@@ -825,7 +825,7 @@ staleness_policy = "warn"
     Ok(())
 }
 
-/// L1 CI-cache snippet (`plan.md` §1.3). An exact-sha key alone never hits —
+/// L1 CI-cache snippet. An exact-sha key alone never hits —
 /// prefix-fallback restore-keys land a recent-but-stale graph that
 /// `weave index --incremental` then pays only the delta on.
 fn ci_cache_snippet() -> &'static str {
@@ -1046,7 +1046,7 @@ pub(crate) fn discover_files(root: &Path) -> Vec<PathBuf> {
 }
 
 /// Restores `active_db` from the snapshot cache when `weave index` is run
-/// back on a commit it has already indexed (`plan.md` §1.2a) — fast branch
+/// back on a commit it has already indexed — fast branch
 /// switching without touching the parser at all. Returns `true` if it did.
 fn try_fast_path(
     weave_dir: &Path,
@@ -1169,8 +1169,8 @@ fn cmd_index(root: &Path, incremental: bool) -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-/// `weave index --watch` (impl.md M2.11's secondary integration path, for a
-/// human with no agent session open). Requires an existing index — the
+/// `weave index --watch`: a secondary integration path, for a
+/// human with no agent session open. Requires an existing index — the
 /// watcher only ever incrementally updates one, never does the first build.
 #[cfg(feature = "watch")]
 fn cmd_index_watch(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -1445,9 +1445,9 @@ fn cmd_query(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (storage, _db_path) = open_storage_for_read(root)?;
     // Masking only engages when `--as <subject>` is actually given —
-    // compiling `rbac` in must not change `weave query`'s default output
-    // (Feature Isolation, `AGENTS.md` §1.8): an omitted `--as` runs exactly
-    // like a `not(feature = "rbac")` build, not as an unmasked "anonymous".
+    // compiling `rbac` in must not change `weave query`'s default output:
+    // an omitted `--as` runs exactly like a `not(feature = "rbac")` build,
+    // not as an unmasked "anonymous".
     #[cfg(feature = "rbac")]
     let guard = as_subject.map(|s| rbac::guard_for(root, Some(s)));
     #[cfg(feature = "rbac")]
@@ -1465,12 +1465,12 @@ fn cmd_query(
     }
 }
 
-/// LOD visualization/export (`plan.md` §1.3a) is M1.8's job — this
-/// milestone only wires the command, per its own scope note, rather than
+/// LOD visualization/export is out of scope here — this
+/// function only wires the command rather than
 /// fabricating a report ahead of the clustering logic that produces one.
-/// `weave report` (`plan.md` §1.3a): LOD 0/1/2 `.canvas` files plus
+/// `weave report`: LOD 0/1/2 `.canvas` files plus
 /// `WEAVE_REPORT.md`, written under `<root>/.weave/report/`. LOD 3 stays
-/// `weave export`'s job (M1.6), on demand only.
+/// `weave export`'s job, on demand only.
 fn cmd_report(
     root: &Path,
     html: bool,
@@ -1623,14 +1623,14 @@ fn cmd_serve(
 
     // A network-mounted DB never has WAL's shared memory available — read
     // it in the non-WAL shared-snapshot mode instead of the normal path.
-    // The handler owns its storage and reopens it on external reindexes
-    // (impl.md M2.15), remembering this mode for the reopen.
+    // The handler owns its storage and reopens it on external reindexes,
+    // remembering this mode for the reopen.
     #[cfg(feature = "watch")]
     let handler = McpHandler::open_with_mode(&db_path, data_dir.on_network_fs)?
         .with_weave_dir(data_dir.path.clone());
     #[cfg(not(feature = "watch"))]
     let handler = McpHandler::open_with_mode(&db_path, data_dir.on_network_fs)?;
-    // M3.0: one identity per server session, matching this handler's
+    // One identity per server session, matching this handler's
     // existing "one long-lived process, one config" model — the same
     // guard `weave query`/`report`/`export` build from `--as <subject>`.
     // Only bound when `--as` is actually given — see `cmd_query`'s
@@ -1678,12 +1678,12 @@ fn cmd_serve(
     #[cfg(not(feature = "rbac"))]
     let _ = as_subject;
 
-    // Primary integration point (impl.md M2.11): auto-sync `graph.db` while
+    // Primary integration point: auto-sync `graph.db` while
     // the one long-running MCP process is up, gated by `[watch] enabled` so
     // compiling the feature in never changes behavior by itself. Runs on its
     // own thread against its own `SqliteStorage` handle — `McpHandler`'s
-    // already-resident `CsrGraph` doesn't hot-reload from this (that needs
-    // M2.15's external-reindex-detection work, not yet built); what this
+    // already-resident `CsrGraph` doesn't hot-reload from this (external-
+    // reindex-detection for that isn't built yet); what this
     // does guarantee is that `graph.db` itself never goes stale on disk, and
     // `weave status`/the next `weave serve --mcp` restart see the update.
     #[cfg(feature = "watch")]

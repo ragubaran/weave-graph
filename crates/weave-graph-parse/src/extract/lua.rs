@@ -1,7 +1,7 @@
 //! Lua has no class/struct/interface in the AST (table-based OOP is a
 //! runtime convention, not syntax) — every symbol here is a `Function`.
 //! `require(...)` is an ordinary call, so it flows through unresolved
-//! like Bash/PowerShell's scope (`impl.md` M1.2b).
+//! like Bash/PowerShell's scope.
 
 use tree_sitter::Node;
 

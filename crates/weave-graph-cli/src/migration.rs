@@ -1,4 +1,4 @@
-//! `weave plan-migration` (`impl.md` M3.5, `plan.md` §3.3): walks the
+//! `weave plan-migration` walks the
 //! federated call graph for every cross-repo caller of a deprecated
 //! symbol, orders the per-repo changes by dependency (callers migrate
 //! before the repo providing the symbol can remove it), and emits the

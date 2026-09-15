@@ -4,7 +4,7 @@
 //! callers instead of the CLI.
 
 use weave_graph_core::embedding::MockEmbeddingProvider;
-use weave_graph_core::{MAX_SEARCH_LIMIT, Node, Storage};
+use weave_graph_core::{MAX_SEARCH_LIMIT, Node, Storage, ranking::reciprocal_rank_fusion};
 
 use crate::tools::SemanticSearchArgs;
 
@@ -17,9 +17,14 @@ pub fn weave_search_semantic(
 ) -> Result<Vec<Node>, String> {
     let embedder = MockEmbeddingProvider::new();
     let limit = args.limit.min(MAX_SEARCH_LIMIT);
-    let ids = storage
-        .search_vector(&embedder, args.query, limit, OVERSAMPLE, visible)
+    let candidate_limit = limit.saturating_mul(OVERSAMPLE).max(limit);
+    let vector_ids = storage
+        .search_vector(&embedder, args.query, candidate_limit, OVERSAMPLE, visible)
         .map_err(|e| e.to_string())?;
+    let lexical_ids = storage
+        .search_symbols(args.query, candidate_limit, visible)
+        .map_err(|e| e.to_string())?;
+    let ids = reciprocal_rank_fusion(&[&vector_ids, &lexical_ids], limit);
     let mut nodes = Vec::new();
     for id in ids {
         let Some(node) = storage.get_node(id).map_err(|e| e.to_string())? else {

@@ -266,7 +266,7 @@ fn scoped_check_does_not_block_when_the_changed_symbol_is_not_imported() {
     );
 }
 
-// ─── impl.md M3.10: waiver mechanisms ───────────────────────────────────────
+// ─── waiver mechanisms ───────────────────────────────────────────────────────
 
 #[test]
 fn weave_skip_contracts_env_var_bypasses_everything() {

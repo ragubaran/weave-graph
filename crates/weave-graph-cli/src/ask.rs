@@ -1,4 +1,4 @@
-//! `weave ask` (`impl.md` M2.4.2, `slm-spec.md` §2.1): NL terminal routing.
+//! `weave ask`: NL terminal routing.
 //! Grounding invariant: router selects tools and parameters, but every symbol
 //! is validated against the index pre-dispatch; hallucinated names are
 //! reported as not found and never passed through as graph facts.
@@ -13,9 +13,9 @@ use crate::{config, query};
 
 const DEFAULT_MODEL: &str = "qwen2.5-coder-0.5b";
 
-/// `slm.model` comes from the repo's own `.weave/config.toml` — the one
-/// location M1.5 keeps fixed even under `[storage] home`/`WEAVE_HOME`
-/// relocation, so no data-dir resolution is needed to read it.
+/// `slm.model` comes from the repo's own `.weave/config.toml` — a fixed
+/// location even under `[storage] home`/`WEAVE_HOME` relocation, so no
+/// data-dir resolution is needed to read it.
 pub(crate) fn configured_model(root: &Path) -> String {
     config::get_key(&root.join(".weave").join("config.toml"), "slm.model")
         .unwrap_or_else(|| DEFAULT_MODEL.to_string())
@@ -23,7 +23,7 @@ pub(crate) fn configured_model(root: &Path) -> String {
 
 /// Grounds a routed symbol against the index: exact match first, then
 /// case-insensitive, then a unique substring hit as the near-miss
-/// correction (§5.4). Ambiguous or missing names return the closest
+/// correction. Ambiguous or missing names return the closest
 /// candidates for the not-found message — never a silent pass-through.
 fn ground_symbol(nodes: &[Node], name: &str) -> Result<NodeId, (String, Vec<String>)> {
     if let Some(node) = nodes.iter().find(|n| n.symbol == name) {
@@ -114,7 +114,7 @@ pub(crate) fn cmd_ask(
     let model = configured_model(root);
     let router = slm::select_router(&model);
     let started = Instant::now();
-    // Graceful degradation (§4.2): an unavailable *or* malformed model
+    // Graceful degradation: an unavailable *or* malformed model
     // answer falls back to the deterministic router, and the output
     // says so. Grounding failures (invented symbols) are not routing
     // failures — they surface after this point as not-found reports.

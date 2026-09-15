@@ -1,4 +1,4 @@
-//! Minimal blocking HTTP/1.1 client for the hub protocol (`impl.md` M2.5).
+//! Minimal blocking HTTP/1.1 client for the hub protocol.
 //! `std::net::TcpStream` only — no async runtime, no TLS stack, no new
 //! dependencies. `http://` base URLs only; `https://` is explicit follow-on
 //! scope (see crate docs).
@@ -31,14 +31,14 @@ pub enum HubError {
 
 /// What a publish attempt resolved to. `Conflict` means the hub's head
 /// didn't match the envelope's `base_commit_sha` — the caller republishes a
-/// full snapshot rather than retrying the delta (`plan.md` §2.3: graphs are
+/// full snapshot rather than retrying the delta (graphs are
 /// derived data, so recompute-and-overwrite is the correct resolution).
 ///
-/// `Accepted` (`202`) is M3.1's Centralized Graph Registry: the base
+/// `Accepted` (`202`) means the base
 /// matched (or this is the repo's first push) and the hub's head has
 /// already advanced, but the actual write is queued — decoupled from the
-/// request per `plan.md` §3.1's "HTTP handlers never write directly to
-/// the graph." From the caller's perspective it means the same thing
+/// request because HTTP handlers never write directly to
+/// the graph. From the caller's perspective it means the same thing
 /// `Published` always has: the push succeeded, don't retry it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PushOutcome {

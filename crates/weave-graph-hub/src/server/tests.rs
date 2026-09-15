@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::thread;
 use std::time::Duration;
 
@@ -30,6 +30,55 @@ fn generous_config() -> RegistryConfig {
         max_snapshot_bytes: 10 * 1024 * 1024,
         canvas_exclude: vec![],
     }
+}
+
+fn connected_streams() -> (TcpStream, TcpStream) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let writer = thread::spawn(move || TcpStream::connect(address));
+    let (reader, _) = listener.accept().unwrap();
+    (reader, writer.join().unwrap().unwrap())
+}
+
+#[test]
+fn read_request_head_rejects_invalid_lengths_and_oversized_headers() {
+    let (mut reader, mut writer) = connected_streams();
+    writer
+        .write_all(b"PUT / HTTP/1.1\r\nContent-Length: nope\r\n\r\n")
+        .unwrap();
+    writer.shutdown(Shutdown::Write).unwrap();
+    assert!(read_request_head(&mut reader).is_err());
+
+    let (mut reader, mut writer) = connected_streams();
+    writer
+        .write_all(&vec![b'x'; MAX_HUB_HEADER_BYTES + 1])
+        .unwrap();
+    assert!(read_request_head(&mut reader).is_err());
+}
+
+#[test]
+fn read_request_body_enforces_the_declared_length() {
+    let (mut reader, _writer) = connected_streams();
+    let mut oversized = Request {
+        method: "PUT".to_string(),
+        path: "/".to_string(),
+        headers: vec![],
+        content_length: 2,
+        body: b"extra".to_vec(),
+    };
+    read_request_body(&mut reader, &mut oversized).unwrap();
+    assert_eq!(oversized.body, b"ex");
+
+    let (mut reader, writer) = connected_streams();
+    writer.shutdown(Shutdown::Write).unwrap();
+    let mut incomplete = Request {
+        method: "PUT".to_string(),
+        path: "/".to_string(),
+        headers: vec![],
+        content_length: 1,
+        body: vec![],
+    };
+    assert!(read_request_body(&mut reader, &mut incomplete).is_err());
 }
 
 /// Raw client using the same one-shot-connection protocol the real
@@ -184,6 +233,72 @@ fn push_then_pull_round_trips_over_real_tcp() {
     }
 }
 
+#[cfg(feature = "hub-compression")]
+#[test]
+fn snapshot_pull_compresses_only_when_requested() {
+    use std::io::Read;
+
+    let (base, _guard) = spawn_server(generous_config());
+    let payload = b"repeated snapshot content ".repeat(512);
+    assert_eq!(
+        raw_request(
+            &base,
+            "PUT",
+            "/snapshots/compress/sha1.tar.zst",
+            &[],
+            &payload,
+        )
+        .0,
+        202
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let (status, headers, body) = raw_request(
+            &base,
+            "GET",
+            "/snapshots/compress/sha1.tar.zst",
+            &[("Accept-Encoding", "gzip".to_string())],
+            b"",
+        );
+        if status == 200 {
+            assert!(headers.iter().any(|(name, value)| {
+                name.eq_ignore_ascii_case("Content-Encoding") && value == "gzip"
+            }));
+            let mut decoded = Vec::new();
+            flate2::read::GzDecoder::new(body.as_slice())
+                .read_to_end(&mut decoded)
+                .unwrap();
+            assert_eq!(decoded, payload);
+            let (plain_status, plain_headers, plain_body) =
+                raw_request(&base, "GET", "/snapshots/compress/sha1.tar.zst", &[], b"");
+            assert_eq!(plain_status, 200);
+            assert!(
+                !plain_headers
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case("Content-Encoding"))
+            );
+            assert_eq!(plain_body, payload);
+            let (unsupported_status, unsupported_headers, unsupported_body) = raw_request(
+                &base,
+                "GET",
+                "/snapshots/compress/sha1.tar.zst",
+                &[("Accept-Encoding", "br".to_string())],
+                b"",
+            );
+            assert_eq!(unsupported_status, 200);
+            assert!(
+                !unsupported_headers
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case("Content-Encoding"))
+            );
+            assert_eq!(unsupported_body, payload);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn push_with_stale_base_sha_returns_409() {
     let (base, _guard) = spawn_server(generous_config());
@@ -287,6 +402,21 @@ fn unsupported_method_is_405() {
     let (status, _headers, _body) =
         raw_request(&base, "DELETE", "/snapshots/my-repo/sha1.tar.zst", &[], b"");
     assert_eq!(status, 405);
+}
+
+#[test]
+fn resumed_upload_with_an_unexpected_offset_returns_500() {
+    let (base, _guard) = spawn_server(generous_config());
+    let (status, _headers, body) = raw_request(
+        &base,
+        "PUT",
+        "/snapshots/my-repo/sha1.tar.zst",
+        &[("Content-Range", "bytes 1-1/2".to_string())],
+        b"x",
+    );
+
+    assert_eq!(status, 500);
+    assert!(String::from_utf8_lossy(&body).contains("offset mismatch"));
 }
 
 #[test]
@@ -510,6 +640,98 @@ fn mesh_canvas_endpoint_stitches_multiple_repos_in_one_call() {
     }
 }
 
+#[cfg(feature = "hub-canvas")]
+#[test]
+fn mesh_canvas_endpoint_applies_repository_and_module_authorization() {
+    use std::sync::Arc;
+    use weave_graph_core::{Node, Storage};
+    use weave_graph_store_sqlite::SqliteStorage;
+
+    struct AllowRepoAVisible;
+    impl CanvasAuthorizer for AllowRepoAVisible {
+        fn can_view(&self, _credential: Option<&str>, module_label: &str) -> bool {
+            module_label == "visible"
+        }
+
+        fn can_view_repo(&self, credential: Option<&str>, repo_id: &str) -> bool {
+            credential == Some("Bearer good") && repo_id == "repo-a"
+        }
+    }
+
+    let snapshot_bytes = |files: &[&str]| -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("graph.db");
+        {
+            let mut storage = SqliteStorage::open(&db_path).unwrap();
+            for (id, file) in files.iter().enumerate() {
+                storage
+                    .upsert_node(&Node {
+                        id: id as u32 + 1,
+                        repo_id: "r".into(),
+                        path: (*file).into(),
+                        symbol: format!("s{id}"),
+                        kind: "function".into(),
+                        line_start: 1,
+                        line_end: 2,
+                        signature: String::new(),
+                    })
+                    .unwrap();
+            }
+        }
+        std::fs::read(&db_path).unwrap()
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(dir.path(), generous_config()).unwrap();
+    let server = RegistryServer::bind("127.0.0.1:0", registry)
+        .unwrap()
+        .with_canvas_authorizer(Arc::new(AllowRepoAVisible));
+    let addr = server.local_addr().unwrap();
+    thread::spawn(move || {
+        let _ = server.run(None);
+    });
+    let base = format!("http://{addr}");
+
+    raw_request(
+        &base,
+        "PUT",
+        "/snapshots/repo-a/sha1.tar.zst",
+        &[],
+        &snapshot_bytes(&["visible/a.rs", "secret/b.rs"]),
+    );
+    raw_request(
+        &base,
+        "PUT",
+        "/snapshots/repo-b/sha1.tar.zst",
+        &[],
+        &snapshot_bytes(&["visible/c.rs"]),
+    );
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let (status, _headers, body) = raw_request(
+            &base,
+            "GET",
+            "/mesh/canvas/repo-a,repo-b",
+            &[("Authorization", "Bearer good".into())],
+            b"",
+        );
+        if status == 200 {
+            let text = String::from_utf8(body).unwrap();
+            assert!(text.contains("# repo-a"), "{text}");
+            assert!(!text.contains("# repo-b"), "{text}");
+            assert!(text.contains("# visible"), "{text}");
+            assert!(!text.contains("# secret"), "{text}");
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker never committed"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// SSRF guard, exercised through the real HTTP route: a loopback or
 /// RFC1918 target must never be accepted for registration — the registry
 /// itself is what would dial it on the next commit, not the caller.
@@ -606,4 +828,195 @@ fn a_put_whose_body_is_shorter_than_content_length_does_not_hang_the_server() {
 
     let (status, _headers, _body) = raw_request(&base, "GET", "/snapshots/x/y.tar.zst", &[], b"");
     assert_eq!(status, 404, "server must still answer normally afterward");
+}
+
+#[test]
+fn head_reports_the_spool_offset_for_a_partial_upload() {
+    let (base, _guard) = spawn_server(generous_config());
+    let (status, _, _) = raw_request(
+        &base,
+        "PUT",
+        "/snapshots/part/sha1.tar.zst",
+        &[
+            ("X-Weave-Retention", "20".to_string()),
+            ("Content-Range", "bytes 0-5/14".to_string()),
+        ],
+        b"first6",
+    );
+    assert_eq!(status, 202, "an interior chunk is spooled, not committed");
+
+    let (status, headers, body) =
+        raw_request(&base, "HEAD", "/snapshots/part/sha1.tar.zst", &[], b"");
+    assert_eq!(status, 200);
+    assert!(
+        headers
+            .iter()
+            .any(|(n, v)| n.eq_ignore_ascii_case("Upload-Offset") && v == "6"),
+        "offset must equal the spooled byte count: {headers:?}"
+    );
+    assert!(body.is_empty());
+
+    let (status, _, _) = raw_request(&base, "HEAD", "/snapshots/part/absent.tar.zst", &[], b"");
+    assert_eq!(status, 404);
+}
+
+#[test]
+fn a_multi_chunk_upload_commits_only_when_the_final_chunk_arrives() {
+    let (base, _guard) = spawn_server(generous_config());
+    let (status, _, _) = raw_request(
+        &base,
+        "PUT",
+        "/snapshots/multi/sha1.tar.zst",
+        &[("Content-Range", "bytes 0-5/14".to_string())],
+        b"first6",
+    );
+    assert_eq!(status, 202);
+
+    let (status, _, _) = raw_request(&base, "GET", "/snapshots/multi/sha1.tar.zst", &[], b"");
+    assert_eq!(status, 404, "an interior chunk must not be pullable yet");
+
+    let (status, _, _) = raw_request(
+        &base,
+        "PUT",
+        "/snapshots/multi/sha1.tar.zst",
+        &[("Content-Range", "bytes 6-13/14".to_string())],
+        b"second88",
+    );
+    assert_eq!(status, 202, "the final chunk completes the upload");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let (status, _, body) =
+            raw_request(&base, "GET", "/snapshots/multi/sha1.tar.zst", &[], b"");
+        if status == 200 {
+            assert_eq!(body, b"first6second88");
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker never committed"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn an_invalid_content_range_is_a_400() {
+    let (base, _guard) = spawn_server(generous_config());
+    // end < start
+    let (status, _, body) = raw_request(
+        &base,
+        "PUT",
+        "/snapshots/bad/sha1.tar.zst",
+        &[("Content-Range", "bytes 6-0/14".to_string())],
+        b"x",
+    );
+    assert_eq!(status, 400);
+    assert!(!body.is_empty());
+
+    // body length disagrees with the declared range
+    let (status, _, _) = raw_request(
+        &base,
+        "PUT",
+        "/snapshots/bad/sha1.tar.zst",
+        &[("Content-Range", "bytes 0-1/2".to_string())],
+        b"abc",
+    );
+    assert_eq!(status, 400);
+}
+
+#[test]
+fn a_total_over_max_snapshot_bytes_is_a_400() {
+    let config = RegistryConfig {
+        max_queue_depth_per_repo: 1_000,
+        max_pushes_per_minute_per_repo: 1_000,
+        max_snapshot_bytes: 8,
+        canvas_exclude: vec![],
+    };
+    let (base, _guard) = spawn_server(config);
+    let (status, _, body) = raw_request(
+        &base,
+        "PUT",
+        "/snapshots/big/sha1.tar.zst",
+        &[("Content-Range", "bytes 0-13/14".to_string())],
+        b"0123456789abcd",
+    );
+    assert_eq!(status, 400);
+    assert!(!body.is_empty());
+}
+
+#[test]
+fn a_413_is_sent_when_content_length_exceeds_the_chunk_limit() {
+    let (base, _guard) = spawn_server(generous_config());
+    let authority = base.strip_prefix("http://").unwrap();
+    let mut stream = TcpStream::connect(authority).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    // Declared size crosses MAX_HUB_CHUNK_BYTES; the server must reject
+    // before reading any body bytes.
+    stream
+        .write_all(b"PUT /snapshots/big/sha1.tar.zst HTTP/1.1\r\nContent-Length: 9999999\r\n\r\nxx")
+        .unwrap();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).unwrap();
+    let head = String::from_utf8_lossy(&raw);
+    assert!(head.contains("413"), "got: {head}");
+}
+
+#[test]
+fn body_bytes_beyond_content_length_are_truncated() {
+    let (base, _guard) = spawn_server(generous_config());
+    let authority = base.strip_prefix("http://").unwrap();
+    let mut stream = TcpStream::connect(authority).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .write_all(
+            b"PUT /snapshots/trunc/sha1.tar.zst HTTP/1.1\r\nContent-Length: 5\r\n\r\n12345EXTRA",
+        )
+        .unwrap();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).unwrap();
+    assert!(
+        String::from_utf8_lossy(&raw).contains("202"),
+        "got: {}",
+        String::from_utf8_lossy(&raw)
+    );
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let (status, _, body) =
+            raw_request(&base, "GET", "/snapshots/trunc/sha1.tar.zst", &[], b"");
+        if status == 200 {
+            assert_eq!(body, b"12345", "extra bytes past Content-Length are cut");
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker never committed"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn garbage_headers_close_the_connection_without_a_response() {
+    let (base, _guard) = spawn_server(generous_config());
+    let authority = base.strip_prefix("http://").unwrap();
+    let mut stream = TcpStream::connect(authority).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    stream
+        .write_all(b"PUT /snapshots/x/sha1.tar.zst HTTP/1.1\r\nContent-Length: bogus\r\n\r\n")
+        .unwrap();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).unwrap();
+    assert!(
+        raw.is_empty(),
+        "an invalid Content-Length aborts the connection silently: {}",
+        String::from_utf8_lossy(&raw)
+    );
 }

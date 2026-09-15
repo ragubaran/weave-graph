@@ -1,4 +1,4 @@
-//! `provenance` feature render side (`impl.md` M2.3): turns provider-
+//! `provenance` feature render side: turns provider-
 //! signed `doc_links` rows into `weave report`/`weave export` output.
 //! The CLI never attaches provenance — a host application wires the
 //! real `ProvenanceProvider` and writes through the store API; weave

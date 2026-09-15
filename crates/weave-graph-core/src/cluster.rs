@@ -6,9 +6,9 @@ use crate::model::NodeId;
 /// not necessarily contiguous before renumbering (it is, after).
 pub type CommunityId = u32;
 
-/// Single-level Louvain modularity optimization (`plan.md` §1.3a's LOD 1:
-/// "architectural modules from Louvain clustering") over an undirected,
-/// weighted graph. Real Louvain adds a second phase that aggregates each
+/// Single-level Louvain modularity optimization — deriving architectural
+/// modules from clustering — over an undirected, weighted graph. Real
+/// Louvain adds a second phase that aggregates each
 /// community into a super-node and re-runs phase one on the coarsened
 /// graph; this stops once phase one converges, which already produces
 /// genuine community structure for a file-dependency graph. Upgrade path:

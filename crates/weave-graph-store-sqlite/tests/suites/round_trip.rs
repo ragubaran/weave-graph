@@ -1,4 +1,4 @@
-//! Parameterized M1.1 round-trip suite (see `suites/mod.rs`).
+//! Parameterized round-trip suite (see `suites/mod.rs`).
 
 use std::path::Path;
 
@@ -22,10 +22,9 @@ fn node(repo: &str, path: &str, symbol: &str) -> Node {
     }
 }
 
-/// `impl.md` M1.1's required round-trip: write a graph, close the
-/// database, reopen it from the same path, and read back an identical
-/// graph — proving persistence survives a real process-boundary close,
-/// not just an in-memory connection.
+/// Write a graph, close the database, reopen it from the same path,
+/// and read back an identical graph — proving persistence survives a
+/// real process-boundary close, not just an in-memory connection.
 pub fn graph_survives_close_and_reopen(open: OpenFn) {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("graph.db");

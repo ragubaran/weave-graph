@@ -1,9 +1,9 @@
-//! In-tree browser viewer (`impl.md` M2.13, feature: `viz`): a thin,
+//! In-tree browser viewer (feature: `viz`): a thin,
 //! single-file static HTML bundle (embedded via `include_str!`, 100%
 //! offline, zero server dependencies) that renders the `.canvas` files
-//! `weave report` already produces. Approach A from the milestone text —
-//! Approach B (a live loopback server) exists only as the secondary path
-//! behind `[viz] mode = "server"`, and binds loopback only.
+//! `weave report` already produces. This static-file path is the default —
+//! a live loopback server exists only as the secondary path behind
+//! `[viz] mode = "server"`, and binds loopback only.
 
 use std::fs;
 use std::io::{Read, Write};

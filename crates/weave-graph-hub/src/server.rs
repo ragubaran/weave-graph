@@ -1,7 +1,7 @@
-//! Hand-rolled HTTP/1.1 front end for [`Registry`] (`impl.md` M3.1) — the
+//! Hand-rolled HTTP/1.1 front end for [`Registry`] — the
 //! same zero-dependency `std::net::TcpStream` approach as `client.rs` and
-//! `weave-graph-mcp`'s `HttpTransport`, but one thread per connection: the
-//! spec's "parallel across repos" requirement means the accept loop itself
+//! `weave-graph-mcp`'s `HttpTransport`, but one thread per connection: pushes
+//! must run in parallel across repos, so the accept loop itself
 //! must not serialize unrelated repos' requests behind each other. The
 //! actual per-repo *write* ordering is `Registry`'s own job (one lock, one
 //! worker thread, per repo) — this layer only ever needs to not get in
@@ -21,6 +21,13 @@ use crate::registry::{PullResult, PushDecision, Registry, is_safe_path_component
 #[cfg(feature = "hub-canvas")]
 pub trait CanvasAuthorizer: Send + Sync {
     fn can_view(&self, credential: Option<&str>, module_label: &str) -> bool;
+
+    /// Optional repository-level gate used by the mesh endpoint.
+    /// Implementors that do not need repository filtering may keep the
+    /// default, which preserves the single-repository callback contract.
+    fn can_view_repo(&self, _credential: Option<&str>, _repo_id: &str) -> bool {
+        true
+    }
 }
 
 #[cfg(feature = "hub-canvas")]
@@ -324,10 +331,27 @@ fn handle_mesh_canvas(
     stream: &mut TcpStream,
     registry: &Registry,
     repo_ids: &[String],
-    _credential: Option<&str>,
-    _authorizer: Option<&dyn CanvasAuthorizer>,
+    credential: Option<&str>,
+    authorizer: Option<&dyn CanvasAuthorizer>,
 ) {
-    let canvas = registry.mesh_canvas(repo_ids);
+    let bands = repo_ids
+        .iter()
+        .filter_map(|repo_id| {
+            if authorizer.is_some_and(|a| !a.can_view_repo(credential, repo_id)) {
+                return None;
+            }
+            registry
+                .canvas(repo_id)
+                .and_then(|result| result.ok())
+                .map(|canvas| {
+                    (
+                        repo_id.clone(),
+                        filter_canvas(canvas, credential, authorizer),
+                    )
+                })
+        })
+        .collect();
+    let canvas = crate::canvas::build_mesh_canvas(bands);
     match serde_json::to_vec(&canvas) {
         Ok(body) => write_response(
             stream,
@@ -380,6 +404,38 @@ fn write_response(
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.write_all(body);
     let _ = stream.flush();
+}
+
+fn write_snapshot_response(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    extra_headers: &[(&str, String)],
+    body: &[u8],
+    accept_encoding: Option<&str>,
+) {
+    #[cfg(not(feature = "hub-compression"))]
+    let _ = accept_encoding;
+    #[cfg(feature = "hub-compression")]
+    let compressed = accept_encoding
+        .is_some_and(|value| value.split(',').any(|part| part.trim().starts_with("gzip")))
+        .then(|| {
+            use flate2::{Compression, write::GzEncoder};
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+            encoder.write_all(body).ok()?;
+            encoder.finish().ok()
+        })
+        .flatten()
+        .filter(|bytes| bytes.len() < body.len());
+    #[cfg(not(feature = "hub-compression"))]
+    let compressed: Option<Vec<u8>> = None;
+    let payload = compressed.as_deref().unwrap_or(body);
+    let mut headers = extra_headers.to_vec();
+    if compressed.is_some() {
+        headers.push(("Content-Encoding", "gzip".to_string()));
+        headers.push(("Vary", "Accept-Encoding".to_string()));
+    }
+    write_response(stream, status, reason, &headers, payload);
 }
 
 fn handle_connection(
@@ -476,7 +532,14 @@ fn handle_connection(
                 if let Some(s) = sig {
                     headers.push(("X-Weave-Signature", s));
                 }
-                write_response(&mut stream, 200, "OK", &headers, &bytes)
+                write_snapshot_response(
+                    &mut stream,
+                    200,
+                    "OK",
+                    &headers,
+                    &bytes,
+                    header(&req, "Accept-Encoding"),
+                )
             }
             PullResult::NotFound => {
                 write_response(&mut stream, 404, "Not Found", &[], b"no such snapshot")

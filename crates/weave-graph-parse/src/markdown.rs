@@ -1,7 +1,7 @@
-//! Deterministic Markdown extraction for the `docs` feature (`plan.md`
-//! §2.1): wikilinks, frontmatter tags/aliases, and backtick code
-//! references. `pulldown-cmark`'s pure CPU streaming parser only — no
-//! LLM, no network, and (per `AGENTS.md` §3) no regex parser.
+//! Deterministic Markdown extraction for the `docs` feature: wikilinks,
+//! frontmatter tags/aliases, and backtick code references.
+//! `pulldown-cmark`'s pure CPU streaming parser only — no LLM, no
+//! network, and no regex parser.
 
 use pulldown_cmark::{Event, Parser};
 
@@ -95,9 +95,8 @@ fn unquote(s: &str) -> String {
 
 /// A narrow, deliberate YAML subset — only the two list shapes Obsidian's
 /// own frontmatter convention uses for `tags`/`aliases`: `key: [a, b]` and
-/// `key:\n  - a\n  - b`. Not a general YAML parser (`AGENTS.md` §3: pure
-/// CPU streaming parsers, zero regex — this stays inside that spirit by
-/// staying this narrow instead of reaching for a full YAML crate).
+/// `key:\n  - a\n  - b`. Not a general YAML parser: staying this narrow
+/// avoids pulling in a full YAML crate and any regex dependency.
 fn extract_yaml_list(frontmatter: &str, key: &str) -> Vec<String> {
     let mut lines = frontmatter.lines();
     while let Some(line) = lines.next() {

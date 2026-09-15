@@ -58,18 +58,15 @@ jobs:
       # The 15 MiB ceiling is a *core-only* budget (AGENTS.md mission line):
       # optional-feature builds are measured for the trend report but never
       # gated — ML runtimes and network stacks legitimately exceed it.
+      - name: Verify core dependency closure
+        run: scripts/verify_core_closure.sh
+
       - name: Build and measure release artifacts
         shell: bash
         run: |
-          cargo build --release -p weave-graph-cli --no-default-features
-          core_bytes=$(wc -c < target/release/weave)
+          scripts/profile_matrix.sh artifact-sizes.txt
+          core_bytes=$(awk -F' ' '/profile=core / {for (i = 1; i <= NF; i++) if ($i ~ /^executable_bytes=/) {sub("executable_bytes=", "", $i); print $i}}' artifact-sizes.txt)
           test "$core_bytes" -le 15728640
-          cargo build --release -p weave-graph-cli
-          extended_bytes=$(wc -c < target/release/weave)
-          cargo build --release -p weave-graph-cli --no-default-features --features vector
-          vector_bytes=$(wc -c < target/release/weave)
-          printf 'core_no_features_bytes=%s\nextended_bytes=%s\ncore_vector_bytes=%s\n' \
-            "$core_bytes" "$extended_bytes" "$vector_bytes" > artifact-sizes.txt
 
       - name: Upload artifact-size report
         uses: actions/upload-artifact@v4
@@ -217,6 +214,9 @@ jobs:
       - name: Run 500k-symbol peak-RSS check
         run: cargo run --release -p weave-graph-store-sqlite --example mem_500k
 
+      - name: Run full CLI indexing peak-RSS check
+        run: scripts/pipeline_rss.sh
+
   feature-isolation:
     name: Feature Isolation Gate (L8)
     runs-on: ubuntu-latest
@@ -231,8 +231,8 @@ jobs:
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Run feature-isolation assertions
-        run: scripts/feature_isolation.sh
+      - name: Run release feature-isolation assertions
+        run: BUILD_PROFILE=release scripts/feature_isolation.sh
 
   # ---------------------------------------------------------------------------
   # 7. Benchmark Regression Gate (performance_compare.md §5.3)

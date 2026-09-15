@@ -25,7 +25,7 @@ and semantic-quality targets remain subject to the gates in the internal audit.
 | | [`python`](#python) | `--features python` | PyO3 Python bindings wheel (`weave-graph-python`) for offline graph analytics |
 
 ### Feature Profiles (Cargo Bundles)
-- **Core artifact**: A prior local `--no-default-features` build measured about 9.6 MiB. The <15 MB target applies only to that artifact; the complete 500k-symbol indexing RSS gate remains open.
+- **Core artifact**: The current macOS `--no-default-features` build is 10,128,832 bytes (9.66 MiB). The vector profile is 10,241,872 bytes (9.77 MiB); the <15 MB target applies to the explicitly built core artifact. The complete 500k-symbol indexing RSS gate remains open.
 - **Team Profile (`--features team`)**: `docs` + `federation`. Multi-repo linking, contract checking, and Markdown knowledge integration.
 - **Custom Mode / Self-Hosted Profile (`--features custom`)**: Enables the compiled enterprise feature set. Review each capability's authentication and verification status before deployment; this profile is not a certification of every enterprise control.
 
@@ -44,9 +44,9 @@ no edge, never a dangling one. `.canvas` export (`weave report`) picks
 these nodes up automatically — the exported JSON is schema-correct
 [JSON Canvas](https://jsoncanvas.org), which Obsidian's Graph View (and
 other zero-install canvas viewers) consumes natively. The repository's
-schema test passes, but desktop rendering is still unverified: Obsidian's
-bundle is present on the verification host, yet macOS cannot launch it
-(`kLSNoExecutableErr`, incomplete application bundle).
+schema test passes. Desktop rendering remains environment-dependent: the local
+Obsidian bundle contains its executable and resources, but this host did not
+provide an independent rendered-view confirmation.
 
 ## `federation`
 
@@ -74,11 +74,13 @@ trait; no signer or PKI implementation is a hard dependency of `weave`.
 
 When enabled with `--features github-auth`, commands resolve
 `WEAVE_GITHUB_TOKEN` through GitHub's authenticated-user API and use the
-returned login and stable user ID as the query identity. Invalid, missing,
-or unreachable tokens fail closed to the normal anonymous/public view. The
-token is never persisted or emitted in errors or MCP responses. This is a
-GitHub token identity lookup only; it is not generic OAuth/OIDC, SAML, or
-interactive SSO, and it requires outbound HTTPS access to GitHub.
+returned login and stable user ID as the query identity. Organization and
+team memberships are also resolved into role markers for configured
+`[rbac.github_org_roles]` and `[rbac.github_team_roles]` mappings. Invalid,
+missing, or unreachable tokens fail closed to the normal anonymous/public
+view. The token is never persisted or emitted in errors or MCP responses.
+This is a GitHub token identity lookup only; it is not generic OAuth/OIDC,
+SAML, or interactive SSO, and it requires outbound HTTPS access to GitHub.
 
 ## `notes`
 
@@ -205,7 +207,8 @@ Fast, offline lexical code search using SQLite FTS5:
 Semantic code retrieval over AST-bounded chunks:
 
 - **Syntactic Chunking**: Breaks code strictly along AST definitions (functions, classes, traits) rather than arbitrary byte boundaries.
-- **Vector Storage**: Integrated vector similarity search using `sqlite-vec` virtual tables.
+- **Vector Storage**: Integrated vector similarity search using `sqlite-vec` virtual tables. Index metadata records a model-plus-dimension fingerprint and rejects incompatible providers.
+- **Deterministic hybrid ranking**: Semantic CLI/MCP results fuse lexical and vector candidate ranks with stable tie-breaking; this does not certify learned-model quality.
 - **MCP tool (`weave_search_semantic`)**: exposes the same search to AI agents over MCP; a masked top hit is filtered out before the result is truncated to `limit`, never after, so it can't starve a visible runner-up out of a size-capped response — see [MCP Integration](mcp-integration.md).
 
 ## `turso` (library-only, not a CLI capability)

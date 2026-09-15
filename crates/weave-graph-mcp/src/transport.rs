@@ -9,7 +9,7 @@ const MAX_HTTP_HEADER_BYTES: usize = 16 * 1024;
 const MAX_HTTP_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Provider trait isolating the evolving MCP transport wire protocol (`plan.md` §0.4).
+/// Provider trait isolating the evolving MCP transport wire protocol.
 pub trait McpTransport {
     /// Executes the transport loop until client termination or I/O closure.
     fn run(&mut self, handler: &McpHandler) -> Result<(), McpError>;
@@ -246,10 +246,11 @@ fn write_http_response<S: Write>(
     #[cfg(not(feature = "http-compression"))]
     let compressed: Option<Vec<u8>> = None;
     let payload = compressed.as_deref().unwrap_or(body.as_bytes());
-    let encoding = compressed
-        .is_some()
-        .then_some("\r\nContent-Encoding: gzip")
-        .unwrap_or("");
+    let encoding = if compressed.is_some() {
+        "\r\nContent-Encoding: gzip"
+    } else {
+        ""
+    };
     let response = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json{encoding}\r\nVary: Accept-Encoding\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         payload.len()

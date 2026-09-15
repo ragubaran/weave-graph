@@ -255,7 +255,8 @@ weave sync push [--signature <sig>] [--path <dir>]
 
 ### `weave search` (feature: `fts` / `vector`)
 Performs lexical BM25 search, or optional vector similarity search when
-`--semantic` is selected. Hybrid ranking and learned semantic quality are not
+`--semantic` is selected. Semantic mode deterministically fuses bounded
+lexical and vector candidate ranks; learned semantic quality is not
 release-certified.
 ```bash
 weave search "<query>" [--limit <n>] [--semantic] [--path <dir>]

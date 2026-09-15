@@ -92,6 +92,40 @@ fn search_symbols_default_refuses_with_an_unsupported_error() {
     assert!(err.to_string().contains("does not support symbol search"));
 }
 
+/// The optional-surface defaults every minimal backend inherits: edge
+/// counting without materialization, streaming iteration, and no-op
+/// resolver-input persistence. Exercising them here pins the defaults a
+/// backend may rely on without overriding.
+#[test]
+fn trait_defaults_cover_the_optional_surface() {
+    let mut storage = MinimalStorage;
+
+    assert_eq!(storage.edge_count().unwrap(), 0);
+
+    let mut seen_nodes = Vec::new();
+    storage
+        .for_each_node(&mut |node| seen_nodes.push(node.id))
+        .unwrap();
+    assert!(seen_nodes.is_empty());
+
+    let mut seen_edges = Vec::new();
+    storage
+        .for_each_edge(&mut |edge| seen_edges.push(edge.id))
+        .unwrap();
+    assert!(seen_edges.is_empty());
+
+    storage
+        .upsert_unresolved_refs("r", "a.rs", &["sym".to_string()])
+        .unwrap();
+    assert_eq!(storage.purge_file_unresolved_refs("r", "a.rs").unwrap(), 0);
+    assert!(
+        storage
+            .get_files_with_unresolved_refs("r", "sym")
+            .unwrap()
+            .is_empty()
+    );
+}
+
 #[cfg(feature = "vector")]
 #[test]
 fn search_vector_default_refuses_with_an_unsupported_error() {

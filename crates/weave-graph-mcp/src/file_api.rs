@@ -4,9 +4,9 @@ use crate::tools::{FileApiArgs, FileApiResult, SymbolEntry, WiringCard};
 
 /// Per-file wiring cards — symbol signatures + exact line spans (~60 tokens/file).
 /// AI agents use these to perform slice-edits on specific lines without
-/// ingesting entire source files (`plan.md` Architecture Principle 3).
+/// ingesting entire source files.
 ///
-/// `mask` is M3.0's query-layer RBAC hook. Applied per-matching-node
+/// `mask` is the query-layer RBAC hook. Applied per-matching-node
 /// *after* filtering by the caller's requested (real) path — masking the
 /// whole node list first, as `weave_impact_radius` does, would break the
 /// `n.path == path` match entirely (a masked node's path becomes
@@ -46,9 +46,9 @@ pub fn weave_file_api(
     FileApiResult { cards }
 }
 
-/// Renders the cards as text under an optional token budget (M2.16).
+/// Renders the cards as text under an optional token budget.
 /// With no budget this is byte-identical to the handler's own rendering
-/// has always been. Shedding tiers on overflow (M1.8's LOD idea applied
+/// has always been. Shedding tiers on overflow (level-of-detail applied
 /// to the query surface): full wiring cards → per-file symbol names →
 /// per-file counts — each tier shrinks the response, never invents detail.
 pub fn render_cards(cards: &[WiringCard], max_tokens: Option<usize>) -> String {

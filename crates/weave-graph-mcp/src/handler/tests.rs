@@ -31,6 +31,60 @@ fn handle_parse_error() {
 }
 
 #[test]
+fn token_metadata_normalization_preserves_invalid_and_non_tool_messages() {
+    let handler = McpHandler::new(setup_storage()).unwrap();
+
+    let invalid = handler
+        .handle_message_with_token("{", Some("secret"))
+        .unwrap();
+    assert_eq!(invalid.error.unwrap().code, -32700);
+
+    let ping = json!({"jsonrpc":"2.0", "id":1, "method":"ping"}).to_string();
+    assert!(
+        handler
+            .handle_message_with_token(&ping, Some("secret"))
+            .unwrap()
+            .result
+            .is_some()
+    );
+
+    let no_params = json!({"jsonrpc":"2.0", "id":2, "method":"tools/call"}).to_string();
+    assert!(
+        handler
+            .handle_message_with_token(&no_params, Some("secret"))
+            .unwrap()
+            .error
+            .is_some()
+    );
+
+    let invalid_arguments = json!({
+        "jsonrpc":"2.0", "id":3, "method":"tools/call",
+        "params":{"name":"weave_repo_map", "arguments":[]}
+    })
+    .to_string();
+    assert!(
+        handler
+            .handle_message_with_token(&invalid_arguments, Some("secret"))
+            .unwrap()
+            .result
+            .is_some()
+    );
+
+    let valid = json!({
+        "jsonrpc":"2.0", "id":4, "method":"tools/call",
+        "params":{"name":"weave_repo_map", "arguments":{}}
+    })
+    .to_string();
+    assert!(
+        handler
+            .handle_message_with_token(&valid, Some("secret"))
+            .unwrap()
+            .result
+            .is_some()
+    );
+}
+
+#[test]
 fn handle_initialize() {
     let storage = setup_storage();
     let handler = McpHandler::new(storage).unwrap();
@@ -322,7 +376,7 @@ fn call_repo_map_text(handler: &McpHandler) -> String {
         .join("\n")
 }
 
-/// impl.md M2.11: without `with_weave_dir`, tool responses are byte-for-byte
+/// Without `with_weave_dir`, tool responses are byte-for-byte
 /// unaffected — the watch feature's staleness surfacing must be opt-in.
 #[test]
 fn no_weave_dir_means_no_staleness_appended() {
@@ -332,7 +386,7 @@ fn no_weave_dir_means_no_staleness_appended() {
     assert!(!call_repo_map_text(&handler).contains("debounce window"));
 }
 
-/// impl.md M2.11: `with_weave_dir` set but no marker files present — still
+/// `with_weave_dir` set but no marker files present — still
 /// unaffected (the common case: most repos are never mid-watch-cycle).
 #[test]
 fn weave_dir_set_but_no_marker_means_no_staleness_appended() {
@@ -345,7 +399,7 @@ fn weave_dir_set_but_no_marker_means_no_staleness_appended() {
     assert!(!call_repo_map_text(&handler).contains("debounce window"));
 }
 
-/// impl.md M2.11's actual task: a pending-manual-reindex marker on disk
+/// A pending-manual-reindex marker on disk
 /// shows up in every tool response's content, not just `weave status`.
 #[test]
 fn pending_reindex_marker_is_surfaced_in_tool_responses() {
@@ -379,7 +433,7 @@ fn in_flight_marker_is_surfaced_in_tool_responses() {
     assert!(text.contains("src/edited.rs"), "got: {text}");
 }
 
-// ─── impl.md M2.15: live reload on external reindex ─────────────────────────
+// ─── live reload on external reindex ─────────────────────────
 
 fn seed_file_db(path: &std::path::Path, symbol: &str) {
     let mut storage = SqliteStorage::open(path).unwrap();
@@ -603,6 +657,26 @@ fn unresolved_symbol_lookups_set_is_error_true() {
         assert_eq!(
             result["isError"], true,
             "{name} must set isError:true on an unresolved symbol: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn tools_reject_calls_without_the_required_symbol() {
+    let handler = McpHandler::new(setup_storage()).unwrap();
+    for name in ["weave_trace_calls", "weave_impact_radius"] {
+        let request = json!({
+            "jsonrpc":"2.0", "id":1, "method":"tools/call",
+            "params":{"name":name, "arguments":{}}
+        })
+        .to_string();
+        let result = handler.handle_message(&request).unwrap().result.unwrap();
+        assert_eq!(result["isError"], true, "{name}: {result:?}");
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Missing 'symbol'")
         );
     }
 }

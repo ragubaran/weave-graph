@@ -1,7 +1,7 @@
-/// Per-file wiring card (`impl.md` M1.2): a symbol's signature and exact
-/// line range, cheap enough for an AI agent to slice-edit from rather than
-/// ingesting the whole file. `moniker` is this crate's cross-file key —
-/// see the `moniker` module docs for what it deliberately is not.
+/// Per-file wiring card: a symbol's signature and exact line range, cheap
+/// enough for an AI agent to slice-edit from rather than ingesting the
+/// whole file. `moniker` is this crate's cross-file key — see the
+/// `moniker` module docs for what it deliberately is not.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WiringCard {
     pub moniker: String,
@@ -25,8 +25,7 @@ pub enum SymbolKind {
 }
 
 impl SymbolKind {
-    /// `nodes.kind` stays free-form TEXT in the schema (`plan.md` §1.1) —
-    /// this is that text.
+    /// `nodes.kind` stays free-form TEXT in the schema — this is that text.
     pub fn as_str(self) -> &'static str {
         match self {
             SymbolKind::Function => "function",
@@ -50,7 +49,7 @@ pub struct RawCall {
     pub is_member_call: bool,
 }
 
-/// `IMPORTS`/`INHERITS`/`IMPLEMENTS` structural edges (`plan.md` §1.2).
+/// `IMPORTS`/`INHERITS`/`IMPLEMENTS` structural edges.
 /// `target_name` is the raw textual reference (an import path, a base
 /// class, a trait); these resolve the same way `RawCall` does.
 #[derive(Debug, Clone, PartialEq)]

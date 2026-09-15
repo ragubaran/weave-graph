@@ -3,12 +3,20 @@ use std::collections::HashMap;
 use crate::model::ParsedFile;
 
 /// A call or structural reference resolved to a concrete target symbol.
-/// `kind` is one of the schema's free-form edge kinds (`plan.md` §1.2):
+/// `kind` is one of the schema's free-form edge kinds:
 /// `CALLS_EXACT`, `CALLS_DYNAMIC`, `IMPORTS`, `INHERITS`, `IMPLEMENTS`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedEdge {
     pub source_moniker: String,
     pub target_moniker: String,
+    pub kind: String,
+}
+
+/// ID-based edge result used by storage ingestion to avoid cloning monikers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedEdgeIds {
+    pub source_id: u32,
+    pub target_id: u32,
     pub kind: String,
 }
 
@@ -132,6 +140,20 @@ impl ProjectIndex {
     }
 
     pub fn resolve(&self, file: &ParsedFile) -> (Vec<ResolvedEdge>, Vec<String>) {
+        let (ids, unresolved) = self.resolve_ids(file);
+        let edges = ids
+            .into_iter()
+            .map(|edge| ResolvedEdge {
+                source_moniker: self.interner.resolve(edge.source_id).to_string(),
+                target_moniker: self.interner.resolve(edge.target_id).to_string(),
+                kind: edge.kind,
+            })
+            .collect();
+        (edges, unresolved)
+    }
+
+    /// Resolve references while retaining interned IDs for memory-bounded ingestion.
+    pub fn resolve_ids(&self, file: &ParsedFile) -> (Vec<ResolvedEdgeIds>, Vec<String>) {
         let mut edges = Vec::new();
         let mut unresolved = Vec::new();
 
@@ -141,10 +163,15 @@ impl ProjectIndex {
             if resolved.is_empty() {
                 unresolved.push(call.callee_name.clone());
             }
+            let source_id = self.interner.get_id(&call.caller_moniker);
             for (target, kind) in resolved {
-                edges.push(ResolvedEdge {
-                    source_moniker: call.caller_moniker.clone(),
-                    target_moniker: target,
+                let Some(source_id) = source_id else { continue };
+                let Some(target_id) = self.interner.get_id(&target) else {
+                    continue;
+                };
+                edges.push(ResolvedEdgeIds {
+                    source_id,
+                    target_id,
                     kind: kind.to_string(),
                 });
             }
@@ -156,9 +183,12 @@ impl ProjectIndex {
                 unresolved.push(structural.target_name.clone());
             }
             for &candidate_id in candidates {
-                edges.push(ResolvedEdge {
-                    source_moniker: structural.source_moniker.clone(),
-                    target_moniker: self.interner.resolve(candidate_id).to_string(),
+                let Some(source_id) = self.interner.get_id(&structural.source_moniker) else {
+                    continue;
+                };
+                edges.push(ResolvedEdgeIds {
+                    source_id,
+                    target_id: candidate_id,
                     kind: structural.kind.as_str().to_string(),
                 });
             }
@@ -170,15 +200,11 @@ impl ProjectIndex {
         (edges, unresolved)
     }
 
-    /// Only the references `self` alone can't resolve (an empty candidate
-    /// set here) — retried against `fallback`'s index before being given
-    /// up on. `resolve`'s own single-repo behavior is untouched by this;
-    /// this exists for the `federation` feature (`impl.md` M2.1) to let
-    /// one repo's otherwise-unresolved reference match a symbol actually
-    /// exported by a *different*, independently-indexed repo. Same
-    /// precision ceiling as `resolve` itself: by short name, not
-    /// type-aware — a same-named-but-unrelated symbol in `fallback` can
-    /// still match, exactly as within one repo today.
+    /// Only the references `self` alone can't resolve — retried against
+    /// `fallback`'s index so the `federation` feature can match a
+    /// reference in one repo to a symbol exported by a different,
+    /// independently-indexed repo. Same by-short-name precision ceiling
+    /// as `resolve`: a same-named-but-unrelated symbol can still match.
     pub fn resolve_cross_repo(
         &self,
         file: &ParsedFile,

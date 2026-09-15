@@ -37,9 +37,9 @@ fn detects_language_from_extension() {
     assert_eq!(Language::from_path(Path::new("a/b")), None);
 }
 
-/// The `lang-extended` set (`impl.md` M1.2b's widened ten) — split out
-/// from the core test above so the core assertions still run, unchanged,
-/// in a `--no-default-features` ("mini") build.
+/// The `lang-extended` set is split out from the core test above so the
+/// core assertions still run, unchanged, in a `--no-default-features`
+/// ("mini") build.
 #[test]
 #[cfg(feature = "lang-extended")]
 fn detects_extended_language_from_extension() {

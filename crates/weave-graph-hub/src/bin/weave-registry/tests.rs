@@ -151,6 +151,148 @@ fn parse_args_rejects_a_non_numeric_rate_limit() {
 }
 
 #[test]
+fn parse_args_rejects_a_non_numeric_snapshot_budget() {
+    let err = parse_args(args(&[
+        "--bind",
+        "[IP_ADDRESS]:8080",
+        "--data-dir",
+        "/data",
+        "--max-queue-depth-per-repo",
+        "50",
+        "--max-pushes-per-minute-per-repo",
+        "20",
+        "--max-snapshot-bytes",
+        "huge",
+    ]))
+    .unwrap_err();
+    assert!(err.contains("max-snapshot-bytes"), "got: {err}");
+}
+
+#[test]
+fn parse_args_splits_a_comma_separated_canvas_exclude_list() {
+    let parsed = parse_args(args(&[
+        "--bind",
+        "[IP_ADDRESS]:8080",
+        "--data-dir",
+        "/data",
+        "--max-queue-depth-per-repo",
+        "50",
+        "--max-pushes-per-minute-per-repo",
+        "20",
+        "--max-snapshot-bytes",
+        "1",
+        "--canvas-exclude",
+        "internal, legacy , ,drafts",
+    ]))
+    .unwrap();
+    assert_eq!(parsed.canvas_exclude, vec!["internal", "legacy", "drafts"]);
+}
+
+#[cfg(feature = "hub-provenance")]
+#[test]
+fn parse_args_rejects_a_non_numeric_provenance_key() {
+    let err = parse_args(args(&[
+        "--bind",
+        "[IP_ADDRESS]:8080",
+        "--data-dir",
+        "/data",
+        "--max-queue-depth-per-repo",
+        "50",
+        "--max-pushes-per-minute-per-repo",
+        "20",
+        "--max-snapshot-bytes",
+        "1",
+        "--provenance-key",
+        "not-a-number",
+    ]))
+    .unwrap_err();
+    assert!(err.contains("provenance-key"), "got: {err}");
+}
+
+#[test]
+fn read_canvas_exclude_reports_a_missing_file_clearly() {
+    let err = read_canvas_exclude(Path::new("/definitely/not/here.toml")).unwrap_err();
+    assert!(err.contains("failed to read"), "got: {err}");
+}
+
+#[test]
+fn read_canvas_exclude_reports_invalid_toml_clearly() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "not [ valid toml").unwrap();
+    let err = read_canvas_exclude(&path).unwrap_err();
+    assert!(err.contains("invalid"), "got: {err}");
+}
+
+#[test]
+fn read_canvas_exclude_reads_the_hub_canvas_exclude_array() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        "[hub.canvas]\nexclude = [\"internal\", \"drafts\"]\n",
+    )
+    .unwrap();
+    assert_eq!(
+        read_canvas_exclude(&path).unwrap(),
+        vec!["internal".to_string(), "drafts".to_string()]
+    );
+
+    // Section absent → empty list, never an error.
+    std::fs::write(&path, "mode = \"single\"\n").unwrap();
+    assert!(read_canvas_exclude(&path).unwrap().is_empty());
+}
+
+#[test]
+fn resolve_canvas_exclude_reads_the_config_when_the_flag_is_absent() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "[hub.canvas]\nexclude = [\"secret-mod\"]\n").unwrap();
+    let args = Args {
+        bind: String::new(),
+        data_dir: dir.path().to_path_buf(),
+        max_queue_depth_per_repo: 10,
+        max_pushes_per_minute_per_repo: 10,
+        max_snapshot_bytes: 10_485_760,
+        auth_token: None,
+        config_path: Some(config),
+        canvas_exclude: vec![],
+        #[cfg(feature = "hub-provenance")]
+        provenance_key: None,
+    };
+    assert_eq!(
+        resolve_canvas_exclude(&args).unwrap(),
+        vec!["secret-mod".to_string()]
+    );
+}
+
+#[test]
+fn provenance_status_names_the_verification_mode() {
+    // Both arms are pure label selection; exercise them directly since
+    // only `main` calls them otherwise. The `mut` only matters for
+    // provenance builds, which reassign `provenance_key` below.
+    #[allow(unused_mut)]
+    let mut args = Args {
+        bind: String::new(),
+        data_dir: PathBuf::new(),
+        max_queue_depth_per_repo: 0,
+        max_pushes_per_minute_per_repo: 0,
+        max_snapshot_bytes: 0,
+        auth_token: None,
+        config_path: None,
+        canvas_exclude: vec![],
+        #[cfg(feature = "hub-provenance")]
+        provenance_key: None,
+    };
+    let _ = provenance_status(&args);
+    #[cfg(feature = "hub-provenance")]
+    {
+        args.provenance_key = Some(7);
+        assert!(provenance_status(&args).contains("verified"));
+    }
+}
+
+#[test]
 fn build_server_opens_a_real_registry_and_binds_a_real_loopback_port() {
     let dir = tempfile::tempdir().unwrap();
     let args = Args {
@@ -200,5 +342,28 @@ fn read_canvas_exclude_reads_hub_canvas_paths() {
     assert_eq!(
         read_canvas_exclude(&config_path).unwrap(),
         vec!["internal".to_string(), "generated".to_string()]
+    );
+}
+
+#[test]
+fn the_flag_overrides_the_config_file_for_canvas_exclude() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "[hub.canvas]\nexclude = [\"from-file\"]\n").unwrap();
+    let args = Args {
+        bind: String::new(),
+        data_dir: dir.path().to_path_buf(),
+        max_queue_depth_per_repo: 10,
+        max_pushes_per_minute_per_repo: 10,
+        max_snapshot_bytes: 10_485_760,
+        auth_token: None,
+        config_path: Some(config),
+        canvas_exclude: vec!["from-flag".to_string()],
+        #[cfg(feature = "hub-provenance")]
+        provenance_key: None,
+    };
+    assert_eq!(
+        resolve_canvas_exclude(&args).unwrap(),
+        vec!["from-flag".to_string()]
     );
 }

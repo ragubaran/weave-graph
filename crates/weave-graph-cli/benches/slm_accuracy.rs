@@ -1,4 +1,4 @@
-//! `benches/slm_accuracy.rs` (`slm-spec.md` §4.3): router accuracy verification.
+//! Router accuracy verification.
 //! Measures fallback tool-selection and grounding rates against the held-out set;
 //! establishes the deterministic baseline that any candidate model must match
 //! to ensure zero invented symbols and predictable routing behavior.

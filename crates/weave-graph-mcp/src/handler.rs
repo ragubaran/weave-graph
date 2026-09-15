@@ -66,7 +66,7 @@ fn as_tool_result(text: String) -> CallToolResult {
 }
 
 /// Core MCP message processor executing against its own storage and CSR
-/// index (impl.md M2.15): the handler **owns** its `SqliteStorage` behind
+/// index: the handler **owns** its `SqliteStorage` behind
 /// `RefCell` (both transports are single-threaded) and, when it opened a
 /// file-backed database, live-reloads on external reindexes.
 pub struct McpHandler {
@@ -79,10 +79,10 @@ pub struct McpHandler {
     last_mtime: RefCell<Option<SystemTime>>,
     last_checked: Cell<Option<Instant>>,
     recheck_interval: Duration,
-    /// M3.0: the same `RbacGuard` `weave query`/`report`/`export` use,
+    /// The same `RbacGuard` `weave query`/`report`/`export` use,
     /// bound once per server session (`with_identity`) rather than
     /// per-call — this handler already models one session as one
-    /// identity (`plan.md` §3.1).
+    /// identity.
     #[cfg(feature = "rbac")]
     rbac_guard: Option<RbacGuard>,
     #[cfg(feature = "rbac")]
@@ -154,7 +154,7 @@ impl McpHandler {
         })
     }
 
-    /// Binds this session to one `RbacGuard` (M3.0, `plan.md` §3.1) — the
+    /// Binds this session to one `RbacGuard` — the
     /// same guard `weave query`/`report`/`export` build from `--as
     /// <subject>`, so a `weave serve --mcp --as <subject>` session masks
     /// consistently with the CLI. A no-op builder when never called (the
@@ -178,7 +178,7 @@ impl McpHandler {
         self
     }
 
-    /// Opts into surfacing `watch`'s (impl.md M2.11) staleness markers —
+    /// Opts into surfacing `watch`'s staleness markers —
     /// `.weave/pending-manual-reindex` and `.weave/watch-in-flight` — in
     /// every tool response when present. A no-op builder when the caller
     /// never sets it (the default `new`/`with_csr` path), so every existing
@@ -188,7 +188,7 @@ impl McpHandler {
         self
     }
 
-    /// Overrides the live-reload recheck bound (impl.md M2.15). The
+    /// Overrides the live-reload recheck bound. The
     /// default 500ms keeps the mtime `stat()` off the fast path between
     /// reindexes; tests drive it to zero to reload deterministically.
     pub fn with_recheck_interval(mut self, interval: Duration) -> Self {
@@ -196,7 +196,7 @@ impl McpHandler {
         self
     }
 
-    /// impl.md M2.15: bounded mtime check at the top of every message.
+    /// Bounded mtime check at the top of every message.
     /// When another process reindexed (Core Invariant 2's atomic rename
     /// always moves the mtime), the handler **fully closes and reopens**
     /// its connection — POSIX rename never retargets an already-open fd —
@@ -525,7 +525,7 @@ impl McpHandler {
         JsonRpcResponse::success(id, result_val)
     }
 
-    /// impl.md M2.11: appends a warning block for either `watch` staleness
+    /// Appends a warning block for either `watch` staleness
     /// marker when `weave_dir` is set and one is present — a no-op (and a
     /// byte-identical response) whenever `weave_dir` is unset, the `watch`
     /// feature isn't enabled, or neither marker exists. Deliberately reads
@@ -758,9 +758,9 @@ impl McpHandler {
             (Err(e), _) | (_, Err(e)) => return CallToolResult::err(format!("error: {e}")),
         };
         drop(storage);
-        // Same one-guard rule as `weave policy lint` (M3.0): a masked
+        // Same one-guard rule as `weave policy lint`: a masked
         // identity's clean run only means "no violations it could see"
-        // (POL-01) — never a repo-wide compliance guarantee.
+        // — never a repo-wide compliance guarantee.
         #[cfg(feature = "rbac")]
         let (nodes, edges) = match guard {
             Some(guard) => {

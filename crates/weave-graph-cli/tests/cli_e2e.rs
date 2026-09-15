@@ -587,9 +587,9 @@ fn test_cli_init_multiple_and_existing_config() {
         ));
 }
 
-/// impl.md M2.13: `weave report --html` renders standalone offline HTML
-/// viewer bundles next to the canvases; `weave viz` re-renders and prints
-/// the viewer path without launching a browser (`--open=false`).
+/// `weave report --html` renders standalone offline HTML viewer bundles
+/// next to the canvases; `weave viz` re-renders and prints the viewer
+/// path without launching a browser (`--open=false`).
 #[test]
 #[cfg(feature = "viz")]
 fn test_cli_report_html_and_viz_command() {
@@ -645,9 +645,9 @@ fn test_cli_report_html_and_viz_command() {
         .stderr(predicate::str::contains("weave report"));
 }
 
-/// impl.md M2.6: `weave init --mode multiple` emits the L1 CI-cache snippet
-/// (exact-sha key + prefix-fallback restore-keys), prints it, and writes it
-/// to `.weave/ci-cache.yml`; single mode stays cache-free (plan.md §1.3).
+/// `weave init --mode multiple` emits a CI-cache snippet (exact-sha key +
+/// prefix-fallback restore-keys), prints it, and writes it to
+/// `.weave/ci-cache.yml`; single mode stays cache-free.
 #[test]
 fn test_cli_init_multiple_emits_ci_cache_snippet() {
     let dir = tempdir().unwrap();
@@ -686,9 +686,9 @@ fn test_cli_init_single_does_not_emit_ci_cache_snippet() {
     assert!(!root.join(".weave/ci-cache.yml").exists());
 }
 
-/// impl.md M2.6 acceptance: a scripted two-run CI simulation over the
-/// snippet the real binary generated — run 1 saves under its exact sha,
-/// run 2 misses the sha but takes the restore path via restore-keys.
+/// A scripted two-run CI simulation over the snippet the real binary
+/// generated — run 1 saves under its exact sha, run 2 misses the sha but
+/// takes the restore path via restore-keys.
 #[test]
 fn test_cli_init_multiple_snippet_restores_cache_on_second_run() {
     fn cache_restore(
@@ -788,7 +788,7 @@ fn test_cli_query_export_report_and_reindex_fast_path() {
         .success()
         .stdout(predicate::str::contains("caller"));
 
-    // Report generates real LOD canvases + a markdown summary (M1.8)
+    // Report generates real LOD canvases + a markdown summary
     let mut cmd_report = Command::cargo_bin("weave").unwrap();
     cmd_report
         .current_dir(root)
@@ -850,34 +850,38 @@ fn test_cli_uncompiled_features_fail_with_clear_message() {
     uncompiled_commands.push(vec!["link", "a", "b"]);
     #[cfg(not(feature = "federation"))]
     uncompiled_commands.push(vec!["check-contracts"]);
-    // `ask`/`slm`/`journal` (M2.4) are real commands once `slm` is compiled.
+    // `ask`/`slm`/`journal` are real commands once `slm` is compiled.
     #[cfg(not(feature = "slm"))]
     uncompiled_commands.push(vec!["ask", "test"]);
     #[cfg(not(feature = "slm"))]
     uncompiled_commands.push(vec!["slm", "list"]);
     #[cfg(not(feature = "slm"))]
     uncompiled_commands.push(vec!["journal"]);
-    // `sync pull`/`push` (M2.5) are real commands once `hub` is compiled.
+    // `sync pull`/`push` are real commands once `hub` is compiled.
     #[cfg(not(feature = "hub"))]
     uncompiled_commands.push(vec!["sync", "pull"]);
     // `weave index --watch` is real once `watch` is compiled.
     #[cfg(not(feature = "watch"))]
     uncompiled_commands.push(vec!["index", "--watch"]);
-    // `weave note ...` (M2.10) is real once `notes` is compiled.
+    // `weave note ...` is real once `notes` is compiled.
     #[cfg(not(feature = "notes"))]
     uncompiled_commands.push(vec!["note", "list"]);
-    // `weave traces ...` (M3.3) and `weave policy ...` (M3.2) are real
-    // commands once `otel`/`policy-lint` are compiled.
+    // `weave traces ...` and `weave policy ...` are real commands once
+    // `otel`/`policy-lint` are compiled.
     #[cfg(not(feature = "otel"))]
     uncompiled_commands.push(vec!["traces", "import", "traces.json"]);
     #[cfg(not(feature = "policy-lint"))]
     uncompiled_commands.push(vec!["policy", "lint"]);
-    // `weave rbac serve-scim` (M3.4) and `weave plan-migration` (M3.5) are
-    // real once `rbac`/`federation` are compiled.
+    // `weave rbac serve-scim` and `weave plan-migration` are real once
+    // `rbac`/`federation` are compiled.
     #[cfg(not(feature = "rbac"))]
     uncompiled_commands.push(vec!["rbac", "serve-scim"]);
     #[cfg(not(feature = "federation"))]
     uncompiled_commands.push(vec!["plan-migration", "f"]);
+    #[cfg(not(feature = "federation"))]
+    uncompiled_commands.push(vec!["query-federated", "a", "b", "impact(x)"]);
+    #[cfg(not(feature = "federation"))]
+    uncompiled_commands.push(vec!["report-federated", "a", "b"]);
 
     for args in uncompiled_commands {
         let mut cmd = Command::cargo_bin("weave").unwrap();
@@ -905,10 +909,9 @@ fn test_cli_link_runs_for_real_once_federation_is_compiled() {
         .stderr(predicate::str::contains("No graph database found"));
 }
 
-/// impl.md M2.2's Acceptance Criteria Test D, driven through the compiled
-/// binary end to end: two real linked repos, `check-contracts` passes while
-/// identical, then fails under `strict` once one repo's exported contract
-/// changes.
+/// Driven through the compiled binary end to end: two real linked repos,
+/// `check-contracts` passes while identical, then fails under `strict`
+/// once one repo's exported contract changes.
 #[test]
 #[cfg(feature = "federation")]
 fn test_cli_check_contracts_detects_divergence_end_to_end() {
@@ -954,8 +957,8 @@ fn test_cli_check_contracts_detects_divergence_end_to_end() {
         .success();
 
     // `weave link` records contract expectations but doesn't yet append
-    // `linked_repos` to config (impl.md M2.1's still-open write-side gap) —
-    // write it directly so `check-contracts` has a repo list to read.
+    // `linked_repos` to config — write it directly so `check-contracts`
+    // has a repo list to read.
     std::fs::write(
         root_a.join(".weave").join("config.toml"),
         format!(
@@ -989,9 +992,9 @@ fn test_cli_check_contracts_detects_divergence_end_to_end() {
         .stdout(predicate::str::contains("Contract drift detected"));
 }
 
-/// impl.md M2.11: `weave index --watch` picks up a real file change on its
-/// own, through a real spawned process and a real (fast-debounced) watcher
-/// — not a mocked filesystem event.
+/// `weave index --watch` picks up a real file change on its own, through
+/// a real spawned process and a real (fast-debounced) watcher — not a
+/// mocked filesystem event.
 #[test]
 #[cfg(feature = "watch")]
 fn test_cli_index_watch_auto_reindexes_on_file_change() {
@@ -1041,10 +1044,10 @@ fn test_cli_index_watch_auto_reindexes_on_file_change() {
         .stdout(predicate::str::contains("Total Symbols:  2"));
 }
 
-/// impl.md M2.11: a change whose blast radius meets/exceeds
-/// `[watch] blast_radius_ceiling` defers behind the visible
-/// `pending-manual-reindex` marker instead of auto-reindexing, and a
-/// manual `weave index` clears it and picks up the change for real.
+/// A change whose blast radius meets/exceeds `[watch] blast_radius_ceiling`
+/// defers behind the visible `pending-manual-reindex` marker instead of
+/// auto-reindexing, and a manual `weave index` clears it and picks up the
+/// change for real.
 #[test]
 #[cfg(feature = "watch")]
 fn test_cli_index_watch_defers_a_large_blast_radius_change() {
@@ -1119,10 +1122,10 @@ fn test_cli_index_watch_defers_a_large_blast_radius_change() {
         .stdout(predicate::str::contains("blast radius pending").not());
 }
 
-/// impl.md M2.11's last open task, closed: a real `weave serve --mcp`
-/// process with `[watch] enabled` running in the background surfaces the
-/// in-flight (still-inside-the-debounce-window) staleness marker in a real
-/// `tools/call` response — not just `weave status`.
+/// A real `weave serve --mcp` process with `[watch] enabled` running in
+/// the background surfaces the in-flight (still-inside-the-debounce-window)
+/// staleness marker in a real `tools/call` response — not just
+/// `weave status`.
 #[test]
 #[cfg(feature = "watch")]
 fn test_cli_serve_mcp_surfaces_watch_staleness_in_tool_responses() {
@@ -1182,12 +1185,12 @@ fn test_cli_serve_mcp_surfaces_watch_staleness_in_tool_responses() {
     assert!(response.contains("lib.rs"), "got: {response}");
 }
 
-/// M3.0's own required verify criterion (`impl.md`): one test asserting
-/// CLI `query`, `report`, `.canvas` `export`, and an MCP tool call from
-/// four different simulated identities all return consistently masked
-/// results for the same underlying graph — proving one guard, not four
-/// that could drift. `secret_helper` is a private fn only `public_entry`
-/// calls; `"internal"` is the one role that bypasses masking.
+/// One test asserting CLI `query`, `report`, `.canvas` `export`, and an
+/// MCP tool call from four different simulated identities all return
+/// consistently masked results for the same underlying graph — proving
+/// one guard, not four that could drift. `secret_helper` is a private fn
+/// only `public_entry` calls; `"internal"` is the one role that bypasses
+/// masking.
 #[test]
 #[cfg(feature = "rbac")]
 fn test_cli_rbac_masks_consistently_across_query_report_export_and_mcp() {
@@ -1309,9 +1312,9 @@ fn test_cli_rbac_masks_consistently_across_query_report_export_and_mcp() {
     }
 }
 
-/// impl.md M3.2's verify criterion, through the real binary: a policy
-/// declaring a boundary the repo violates blocks (non-zero exit, the CI
-/// gate), and the same repo under a compliant policy does not.
+/// Through the real binary: a policy declaring a boundary the repo
+/// violates blocks (non-zero exit, the CI gate), and the same repo under
+/// a compliant policy does not.
 #[test]
 #[cfg(feature = "policy-lint")]
 fn test_cli_policy_lint_blocks_violation_and_passes_compliant_repo() {
@@ -1365,8 +1368,8 @@ fn test_cli_policy_lint_blocks_violation_and_passes_compliant_repo() {
         .stdout(predicate::str::contains("no boundary violations"));
 }
 
-/// impl.md M3.2's drift analytics through the real binary: a synthetic
-/// two-file cycle and an isolated orphan are both reported.
+/// Drift analytics through the real binary: a synthetic two-file cycle
+/// and an isolated orphan are both reported.
 #[test]
 #[cfg(feature = "policy-lint")]
 fn test_cli_policy_drift_reports_cycles_and_orphans() {
@@ -1445,10 +1448,9 @@ fn test_cli_policy_drift_annotates_orphans_hidden_by_masking() {
         ));
 }
 
-/// impl.md M3.3's verify criterion, through the real binary: an OTLP
-/// trace export annotates the matching symbol, its latency is queryable
-/// via `weave query`, and it survives a full reindex (the carry-over
-/// path).
+/// Through the real binary: an OTLP trace export annotates the matching
+/// symbol, its latency is queryable via `weave query`, and it survives a
+/// full reindex (the carry-over path).
 #[test]
 #[cfg(feature = "otel")]
 fn test_cli_traces_import_annotates_node_and_latency_is_queryable() {
@@ -1493,4 +1495,142 @@ fn test_cli_traces_import_annotates_node_and_latency_is_queryable() {
         .assert()
         .success()
         .stdout(predicate::str::contains("p50 400"));
+}
+
+#[test]
+fn test_cli_blast_reports_a_pr_range_end_to_end() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .unwrap();
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "T"]);
+    std::fs::write(root.join("lib.rs"), "fn base_fn() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    let base_sha = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let base_sha = base_sha.trim().to_string();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    std::fs::write(root.join("lib.rs"), "fn base_fn() {}\nfn new_fn() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "pr"]);
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["blast", "--base", &base_sha])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Weave blast radius"));
+}
+
+#[test]
+fn test_cli_incremental_index_and_fast_path_over_git() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .unwrap();
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "T"]);
+    std::fs::write(root.join("lib.rs"), "fn first() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "first"]);
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    // Modify + commit, then an incremental index picks up only the delta.
+    std::fs::write(root.join("lib.rs"), "fn first() {}\nfn second() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "second"]);
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["index", "--incremental"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Total Symbols:  2"));
+
+    // Re-indexing the same commit takes the fast path.
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Already up to date"));
+}
+
+#[test]
+fn test_cli_index_without_init_creates_the_weave_dir() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("main.rs"), "fn hello() {}").unwrap();
+
+    // No `weave init` first — `weave index` creates `.weave/` itself.
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+    assert!(root.join(".weave/graph.db").exists());
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Total Symbols:"));
 }

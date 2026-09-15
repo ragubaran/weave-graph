@@ -6,7 +6,7 @@ use crate::tools::{ImpactRadiusArgs, ImpactRadiusResult, resolve_symbol};
 /// Returns every outbound-reachable node (full BFS, no depth cap).
 /// CSR `reachable_within` uses a RoaringBitmap visited set — cycle-safe.
 ///
-/// `mask` is M3.0's query-layer RBAC hook (`weave_graph_core::rbac`),
+/// `mask` is the query-layer RBAC hook (`weave_graph_core::rbac`),
 /// applied once here to the whole node list — see
 /// `weave-graph-cli::query::run`'s doc comment for why.
 pub fn weave_impact_radius(
@@ -62,8 +62,8 @@ pub fn weave_impact_radius(
     };
 
     let full = render_full();
-    // M2.16: no budget → byte-identical to today. Over budget → shed in
-    // tiers: per-file summary, then module folding (M2.9's one Louvain
+    // No budget set → output stays byte-identical. Over budget → shed in
+    // tiers: per-file summary, then module folding (the one Louvain
     // implementation) — the hub's own totals stay in the header either way.
     if crate::tools::under_budget(&full, args.max_tokens) {
         return ImpactRadiusResult {

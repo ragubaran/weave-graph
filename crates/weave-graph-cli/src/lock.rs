@@ -1,8 +1,8 @@
 use std::io;
 use std::path::Path;
 
-/// Advisory lock serializing concurrent `weave index` runs on one repo
-/// (`plan.md` §1.4) — WAL tolerates many readers plus one writer, but two
+/// Advisory lock serializing concurrent `weave index` runs on one repo —
+/// WAL tolerates many readers plus one writer, but two
 /// concurrent *writers* would interleave upserts against the same file
 /// (not a corrupt database, but not a correct one either). Blocks and
 /// prints who it's waiting on rather than failing outright, since a queued

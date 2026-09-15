@@ -1,4 +1,4 @@
-//! M2.7 acceptance: the sqlite crate's round-trip suite runs against
+//! Acceptance: the sqlite crate's round-trip suite runs against
 //! `TursoStorage` through the shared, factory-parameterized suite —
 //! the same test bodies, a second backend.
 

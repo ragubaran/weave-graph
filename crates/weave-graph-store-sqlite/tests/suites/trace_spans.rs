@@ -1,4 +1,4 @@
-//! Parameterized M3.3 trace-span suite (see `suites/` convention: every
+//! Parameterized trace-span suite (see `suites/` convention: every
 //! test fn takes an `OpenFn` so the same bodies run against any backend).
 
 use weave_graph_core::trace::TraceSpan;

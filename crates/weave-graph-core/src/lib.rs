@@ -19,6 +19,7 @@ pub mod notes;
 pub mod policy;
 #[cfg(feature = "provenance")]
 pub mod provenance;
+pub mod ranking;
 #[cfg(feature = "rbac")]
 pub mod rbac;
 pub mod schema;

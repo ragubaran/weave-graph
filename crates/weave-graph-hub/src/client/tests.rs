@@ -261,6 +261,254 @@ fn parse_url_defaults_to_port_80_and_handles_no_path() {
 #[test]
 fn parse_url_rejects_non_http_schemes_and_garbage() {
     assert!(parse_url("https://hub").is_err());
+    assert!(parse_url("ftp://hub").is_err());
     assert!(parse_url("http://").is_err());
     assert!(parse_url("http://host:notaport").is_err());
+}
+
+#[test]
+fn base_headers_include_optional_snapshot_metadata() {
+    let headers = client_for("http://127.0.0.1:9").base_headers(7, Some("base"), Some("sig"));
+    assert!(headers.contains(&("X-Weave-Repo-Id".to_string(), "my-repo".to_string())));
+    assert!(headers.contains(&("X-Weave-Retention".to_string(), "7".to_string())));
+    assert!(headers.contains(&("X-Weave-Base-Sha".to_string(), "base".to_string())));
+    assert!(headers.contains(&("X-Weave-Signature".to_string(), "sig".to_string())));
+}
+
+#[test]
+fn map_status_covers_all_protocol_outcomes() {
+    let client = client_for("http://127.0.0.1:9");
+    assert_eq!(client.map_status(200, "").unwrap(), PushOutcome::Published);
+    assert_eq!(client.map_status(202, "").unwrap(), PushOutcome::Accepted);
+    assert_eq!(client.map_status(409, "").unwrap(), PushOutcome::Conflict);
+    assert_eq!(
+        client.map_status(429, "Retry-After: 12\r\n").unwrap(),
+        PushOutcome::RateLimited {
+            retry_after_secs: Some(12)
+        }
+    );
+    assert_eq!(
+        client.map_status(429, "Retry-After: invalid\r\n").unwrap(),
+        PushOutcome::RateLimited {
+            retry_after_secs: None
+        }
+    );
+    let error = client.map_status(500, "").unwrap_err();
+    assert!(error.to_string().contains("unexpected status 500"));
+}
+
+#[test]
+fn push_chunks_rejects_an_incomplete_source_chunk() {
+    let error = client_for("http://127.0.0.1:9")
+        .push_chunks("target", None, 1, None, 3, |_offset, _length| {
+            Ok(vec![1, 2])
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("incomplete chunk"));
+}
+
+#[test]
+fn parse_url_parses_an_explicit_port_and_prefix() {
+    let parsed = parse_url("http://hub.internal:9000/weave").unwrap();
+    assert_eq!(parsed.host, "hub.internal");
+    assert_eq!(parsed.port, 9000);
+    assert_eq!(parsed.prefix, "/weave");
+}
+
+#[test]
+fn parse_response_rejects_garbage_in_every_branch() {
+    // No `\r\n\r\n` separator at all.
+    let err = parse_response(b"HTTP/1.1 200 OK no separator").unwrap_err();
+    assert!(err.to_string().contains("separator"), "got: {err}");
+
+    // Non-UTF-8 header bytes.
+    let err = parse_response(b"\xff\xfe\xfd\r\n\r\nbody").unwrap_err();
+    assert!(err.to_string().contains("non-utf8"), "got: {err}");
+
+    // Separated, but no parseable status line.
+    let err = parse_response(b"garbage headers\r\n\r\nbody").unwrap_err();
+    assert!(err.to_string().contains("status"), "got: {err}");
+}
+
+#[test]
+fn pull_surfaces_the_signature_header_when_present() {
+    let (addr, handle) = serve_once(FakeHub {
+        status: 200,
+        headers: &["X-Weave-Signature: deadbeef"],
+        body: b"bytes",
+    });
+    let result = client_for(&addr).pull("abc").unwrap();
+    handle.join().unwrap();
+    assert_eq!(
+        result,
+        PullOutcome::Found(b"bytes".to_vec(), Some("deadbeef".to_string()))
+    );
+}
+
+#[test]
+fn pull_unexpected_status_is_a_malformed_response_error() {
+    let (addr, handle) = serve_once(FakeHub {
+        status: 500,
+        headers: &[],
+        body: b"boom",
+    });
+    let err = client_for(&addr).pull("abc").unwrap_err();
+    handle.join().unwrap();
+    assert!(
+        err.to_string().contains("unexpected status 500"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn push_unexpected_status_is_a_malformed_response_error() {
+    let (addr, handle) = serve_once(FakeHub {
+        status: 500,
+        headers: &[],
+        body: b"",
+    });
+    let err = client_for(&addr)
+        .push("t", None, 1, None, b"payload")
+        .unwrap_err();
+    handle.join().unwrap();
+    assert!(
+        err.to_string().contains("unexpected status 500"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn push_empty_payload_takes_the_zero_length_path() {
+    let (addr, handle) = serve_once(FakeHub {
+        status: 204,
+        headers: &[],
+        body: b"",
+    });
+    let result = client_for(&addr).push("t", None, 1, None, b"").unwrap();
+    let request = handle.join().unwrap();
+    assert_eq!(result, PushOutcome::Published);
+    assert!(
+        request.contains("Content-Range: bytes 0-0/0\r\n"),
+        "the zero-length envelope: {request}"
+    );
+}
+
+#[test]
+fn push_file_publishes_from_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let snapshot = dir.path().join("snap.tar.zst");
+    std::fs::write(&snapshot, b"file-bytes").unwrap();
+
+    let (addr, handle) = serve_once(FakeHub {
+        status: 201,
+        headers: &[],
+        body: b"",
+    });
+    let result = client_for(&addr)
+        .push_file("t", None, 1, None, &snapshot)
+        .unwrap();
+    handle.join().unwrap();
+    assert_eq!(result, PushOutcome::Published);
+}
+
+#[test]
+fn push_file_reports_a_missing_file_as_an_io_error() {
+    let err = client_for("http://127.0.0.1:9")
+        .push_file(
+            "t",
+            None,
+            1,
+            None,
+            std::path::Path::new("/definitely/absent.bin"),
+        )
+        .unwrap_err();
+    assert!(matches!(err, HubError::Io(_)), "got: {err:?}");
+}
+
+#[test]
+fn push_resumes_from_the_server_reported_upload_offset() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut put_request = String::new();
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_full_request(&mut stream);
+            if request.starts_with("HEAD ") {
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nUpload-Offset: 2\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+            } else {
+                stream
+                    .write_all(b"HTTP/1.1 201 Created\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+                put_request = request;
+            }
+        }
+        put_request
+    });
+
+    let outcome = client_for(&format!("http://{address}"))
+        .push("target", None, 1, None, b"abcd")
+        .unwrap();
+    assert_eq!(outcome, PushOutcome::Published);
+    assert!(
+        server
+            .join()
+            .unwrap()
+            .contains("Content-Range: bytes 2-3/4\r\n")
+    );
+}
+
+#[test]
+fn push_returns_the_transport_error_after_retry_exhaustion() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for _ in 0..8 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_full_request(&mut stream);
+            if request.starts_with("HEAD ") {
+                stream
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+            }
+        }
+    });
+
+    let error = client_for(&format!("http://{address}"))
+        .push("target", None, 1, None, b"payload")
+        .unwrap_err();
+    server.join().unwrap();
+    assert!(error.to_string().contains("separator"));
+}
+
+#[test]
+fn push_requeries_the_server_offset_after_a_transient_transport_error() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        for request_number in 0..4 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_full_request(&mut stream);
+            match request_number {
+                0 => stream
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
+                    .unwrap(),
+                2 => stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nUpload-Offset: 0\r\nConnection: close\r\n\r\n")
+                    .unwrap(),
+                3 => stream
+                    .write_all(b"HTTP/1.1 201 Created\r\nConnection: close\r\n\r\n")
+                    .unwrap(),
+                _ => assert!(request.starts_with("PUT ")),
+            }
+        }
+    });
+
+    let outcome = client_for(&format!("http://{address}"))
+        .push("target", None, 1, None, b"payload")
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(outcome, PushOutcome::Published);
 }

@@ -107,7 +107,7 @@ fn rbac_masked_files_report_redacted_symbols_not_an_empty_card() {
     assert_eq!(result.cards[0].symbols[0].signature, "");
 }
 
-// ─── impl.md M2.16: token-budgeted shedding tiers ───────────────────────────
+// ─── token-budgeted shedding tiers ───────────────────────────
 
 #[test]
 fn render_cards_sheds_to_names_then_counts_on_overflow() {

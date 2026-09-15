@@ -43,12 +43,12 @@ fn pair_args<'a>(args: &[&'a str]) -> Result<(&'a str, &'a str), String> {
     }
 }
 
-/// `weave query "<expression>"` (`plan.md` §1.3's `weave query
+/// `weave query "<expression>"` (e.g. `weave query
 /// "callers(AuthService.verify)"`): a small, deterministic query language
 /// over the already-indexed graph — no LLM, no network, same guarantee as
 /// the MCP tools this mirrors (`weave_trace_calls`, `weave_impact_radius`).
 ///
-/// `mask` is M3.0's query-layer RBAC hook (`weave_graph_core::rbac`):
+/// `mask` is the query-layer RBAC hook (`weave_graph_core::rbac`):
 /// applied once, here, to every fetched node before any lookup below
 /// touches it — `Node::clone`s a visible node untouched, replaces a
 /// hidden one's content with an opaque stand-in. Never drops or reorders
@@ -91,7 +91,7 @@ pub(crate) fn run(
             Ok(path_text(&csr, &nodes, from, to))
         }
         "latency" => {
-            // M3.3: trace-span overlay, resolved against the (possibly
+            // Trace-span overlay, resolved against the (possibly
             // rbac-masked) node list — a hidden symbol fails resolution
             // here and never reaches the span store.
             #[cfg(feature = "otel")]

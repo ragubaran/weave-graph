@@ -8,6 +8,12 @@ fn embed_produces_the_configured_dimension_count() {
 }
 
 #[test]
+fn fingerprint_binds_model_identity_to_dimensions() {
+    let provider = MockEmbeddingProvider::with_dimensions(16);
+    assert_eq!(provider.fingerprint(), "mock-fnv-v1:16d");
+}
+
+#[test]
 fn embed_is_deterministic() {
     let provider = MockEmbeddingProvider::new();
     assert_eq!(

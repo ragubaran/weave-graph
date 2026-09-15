@@ -1,4 +1,4 @@
-//! `docs` feature (`plan.md` §2.1, `impl.md` M2.0): wires
+//! `docs` feature: wires
 //! `weave-graph-parse::markdown` into `weave index` — one `doc_note` node
 //! per Markdown file, one `doc_topic` node per unique frontmatter
 //! tag/alias, `LINKS_TO` edges for resolved wikilinks, and
@@ -103,7 +103,7 @@ pub(crate) fn upsert_doc_nodes(
 /// `` `AuthService.verify()` `` needs both, since the extractor's own
 /// qualifier separator may not match the dotted form a human types. Each
 /// entry carries the symbol's file path so same-directory references can
-/// be disambiguated (`pending_p2.md` M2.0 gap 3).
+/// be disambiguated.
 type SymbolIndex = HashMap<String, Vec<(NodeId, String)>>;
 
 fn doc_note_id_by_path(storage: &SqliteStorage) -> Result<HashMap<String, NodeId>, StorageError> {
@@ -345,7 +345,7 @@ fn section_target(
     })
 }
 
-/// M2.0's orphan-topic GC (`pending_p2.md` §2.2 gap 2): a topic that lost
+/// Orphan-topic GC: a topic that lost
 /// its last inbound `TAGGED` edge — e.g. a tag deleted from a note's
 /// frontmatter — is swept rather than lingering forever. Inbound-only by
 /// design: outbound edges to a topic aren't a reason to keep it.

@@ -48,17 +48,16 @@ Addendum to `v1.0.1` below, not a replacement — that entry's packaging-tier
 sizes were pre-measurement estimates and are superseded by the real numbers
 here (`cargo build --release`, this repo's actual `[profile.release]`:
 `opt-level = "z"`, fat LTO, `codegen-units = 1`, stripped; measured
-2026-09-12).
+2026-09-14).
 
 - **Real measured binary sizes (all tiers larger than originally estimated)**:
   - Standard Normal Mode, unflagged `cargo build --release` (extended-language
     build): measured size is retained as historical evidence only; it is not
     the core-size target.
-  - Standard Normal Mode, `--no-default-features`: a prior local build was
-    below the 15 MB target; reproduce the exact artifact before publishing a
-    size number.
-  - Vector mode package and memory costs remain unverified; do not infer them
-    from the extended-language artifact.
+  - Standard Normal Mode, `--no-default-features`: **10,128,832 bytes
+    (9.66 MiB)**, below the 15 MiB core target.
+  - Vector mode: **10,241,872 bytes (9.77 MiB)** in the current mock-provider
+    build; learned-model quality and whole-pipeline memory remain unverified.
   - Turso mode package size remains unverified and the backend is not reachable
     from the current CLI command path.
   - Custom/Enterprise (`--features custom`): **41.6 MB**.

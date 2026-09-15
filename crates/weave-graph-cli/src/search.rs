@@ -1,12 +1,14 @@
-//! `weave search "<query>"` (`impl.md` M3.7 Tier 1, feature `fts`):
-//! deterministic BM25 symbol search with synonym expansion, zero neural
-//! weights. Results are filtered (not masked-in-place) through M3.0's
+//! `weave search "<query>"` (feature `fts`): deterministic BM25 symbol
+//! search with synonym expansion, zero neural weights. Results are
+//! filtered (not masked-in-place) through the
 //! `RbacGuard` when `--as` is given — same precedent as `weave report`.
 
 use std::path::Path;
 
 #[cfg(feature = "vector")]
 use weave_graph_core::Storage;
+#[cfg(feature = "vector")]
+use weave_graph_core::ranking::reciprocal_rank_fusion;
 use weave_graph_core::synonym::expand_query;
 use weave_graph_core::{MAX_SEARCH_LIMIT, Node, StorageError};
 use weave_graph_store_sqlite::SqliteStorage;
@@ -38,7 +40,7 @@ pub(crate) fn cmd_search(
     let (storage, _db_path) = open_storage_for_read(root)?;
     // Same rule as `cmd_query`/`cmd_report`: masking only engages with an
     // explicit `--as <subject>`, never merely because `rbac` is compiled
-    // in (Feature Isolation, `AGENTS.md` §1.8).
+    // in — enabling a feature must not change default behavior.
     #[cfg(feature = "rbac")]
     let guard = as_subject.map(|s| crate::rbac::guard_for(root, Some(s)));
     #[cfg(feature = "rbac")]
@@ -60,7 +62,7 @@ pub(crate) fn cmd_search(
     Ok(())
 }
 
-/// Tier 2 (`impl.md` M3.7): binary-ANN-then-int8-rerank semantic search
+/// Tier 2: binary-ANN-then-int8-rerank semantic search
 /// over AST-bounded chunks, via the `MockEmbeddingProvider` reference
 /// implementation — a real deployment supplies its own `EmbeddingProvider`
 /// (same "boundary here, real provider elsewhere" shape as `AuthProvider`).
@@ -75,8 +77,16 @@ pub(crate) fn run_semantic(
     visible: Option<&dyn Fn(&Node) -> bool>,
 ) -> Result<Vec<Node>, StorageError> {
     let embedder = weave_graph_core::embedding::MockEmbeddingProvider::new();
-    let mut nodes = Vec::new();
-    for id in storage.search_vector(&embedder, query, bounded_limit(limit), OVERSAMPLE, visible)? {
+    let candidate_limit = bounded_limit(limit.saturating_mul(OVERSAMPLE));
+    let vector_ids =
+        storage.search_vector(&embedder, query, candidate_limit, OVERSAMPLE, visible)?;
+    let lexical_ids: Vec<_> = run(storage, query, candidate_limit, visible)?
+        .into_iter()
+        .map(|node| node.id)
+        .collect();
+    let fused_ids = reciprocal_rank_fusion(&[&vector_ids, &lexical_ids], bounded_limit(limit));
+    let mut nodes = Vec::with_capacity(fused_ids.len());
+    for id in fused_ids {
         let Some(node) = storage.get_node(id)? else {
             continue;
         };

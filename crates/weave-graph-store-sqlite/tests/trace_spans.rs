@@ -1,7 +1,7 @@
-//! M3.3 integration tests — trace-span persistence.
+//! Integration tests — trace-span persistence.
 //!
 //! Bodies live in `suites/trace_spans.rs`, shared with the `turso`
-//! backend's test target (`impl.md` M2.7 convention).
+//! backend's test target.
 
 #[path = "suites/trace_spans.rs"]
 mod trace_spans_suite;

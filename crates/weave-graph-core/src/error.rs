@@ -4,8 +4,8 @@ pub enum StorageError {
     Backend(String),
 
     /// A binary must refuse to open a database whose schema is newer than
-    /// what it knows how to read (`impl.md` M1.1) rather than silently
-    /// misinterpreting unknown columns/tables.
+    /// what it knows how to read rather than silently misinterpreting
+    /// unknown columns/tables.
     #[error(
         "database schema version {found} is newer than this binary supports (max {max}); upgrade weave"
     )]

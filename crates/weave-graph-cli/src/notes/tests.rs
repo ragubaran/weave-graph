@@ -25,7 +25,7 @@ fn recall(root: &Path) -> Vec<weave_graph_core::Note> {
     storage.recall_notes(now).unwrap()
 }
 
-/// M2.10's required reattachment regression test: a note survives its
+/// Reattachment regression test: a note survives its
 /// symbol's purge-and-reinsert (moniker unchanged, node id changed) and
 /// stays retrievable by recall.
 #[test]
@@ -109,7 +109,7 @@ fn ephemeral_notes_vanish_from_recall_after_their_ttl() {
     let (dir, _weave_dir, active_db) = fixture();
     let root = dir.path();
     // Pinned directly with a TTL already elapsed: recall filters it at
-    // read time with no process running in between (M2.10 acceptance).
+    // read time with no process running in between.
     // Scoped: `weave index` runs as a separate process in real life — the
     // pin connection must be closed before the rebuild swap replaces the
     // file, or its stale WAL sidecar resurrects old pages.
@@ -145,7 +145,7 @@ fn ephemeral_notes_vanish_from_recall_after_their_ttl() {
     );
 }
 /// Crystallized note flagged `stale` after an equal-line-range content
-/// rewrite; untouched content not flagged (M2.10 acceptance).
+/// rewrite; untouched content not flagged.
 #[test]
 #[cfg(feature = "notes")]
 fn equal_line_range_rewrite_flags_staleness_and_untouched_content_does_not() {

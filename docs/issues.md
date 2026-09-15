@@ -12,21 +12,21 @@ Do not turn proposed performance targets into measured results.
 
 | ID | Status | Issue and required closure |
 | --- | --- | --- |
-| PERF-G01 | Open | The 500k-symbol **whole indexing process** has no repeatable peak-RSS gate proving the 80 MB envelope. The existing SQLite/CSR fixture is narrower. Add a pinned full-pipeline corpus and CI threshold. |
-| PERF-G02 | Open | No pinned cold-index, unchanged-index, one-file, rename/delete, high-fanout, exact/FTS/vector, or first-caller p50/p95 suite proves throughput claims. Establish profile-specific baselines first. |
-| PERF-G03 | Partial | The core-only release artifact has an automated 15 MiB check, but the repository says “<15 MB” and the MB/MiB interpretation remains unresolved. Extended, Basic, vector, and SLM distributions lack agreed independent budgets. |
-| PERF-G04 | Open | Incremental publication copies the full active SQLite database to `graph.db.rebuild`, giving O(database size) I/O and temporary disk cost. Any replacement needs atomicity and recovery tests. |
-| PERF-G05 | Open | The storage-derived resolver still materializes a process-wide `ProjectIndex` and moniker map. Measure and reduce it without breaking late-reference repair. |
-| PERF-G06 | Partial | Span-only edits retain node IDs; overloaded declarations still lack a persisted collision-safe semantic key and migration coverage. |
+| PERF-G01 | Partial | The existing 500k SQLite+CSR CI gate passes locally at 18 MiB peak RSS (500,000 nodes/499,999 edges, 80 MiB budget). A repeatable `scripts/pipeline_rss.sh` harness now generates a deterministic 500k-symbol corpus and runs the actual CLI pipeline, and CI invokes it; this macOS host cannot expose peak RSS through `/usr/bin/time`, so CI execution is still required before closure. |
+| PERF-G02 | Partial | Incremental reindex now short-circuits unchanged runs without staging or copying the database. The existing pinned 500-file/10-symbol benchmark measured `index/full_reindex/500_files` at 255.34 ms median (criterion range 251.74–259.23 ms) in this environment; changed/rename/delete, FTS/vector, and p50/p95 profile baselines are still missing. |
+| PERF-G03 | Partial | The core-only release artifact passes the 15 MiB (15,728,640-byte) gate: current macOS build is 10,128,832 bytes (9.66 MiB). The vector profile measures 10,241,872 bytes (9.77 MiB); the default extended artifact is 43,153,600 bytes (41.14 MiB), so the small target must remain scoped to core. Independent SLM budgets and an MB/MiB wording decision remain open. |
+| PERF-G04 | Partial | Unchanged incremental runs now avoid the staged copy entirely; changed-run publication still uses SQLite online backup plus atomic rename, so O(database) staging remains for real mutations and needs a different atomic delta design. |
+| PERF-G05 | Partial | Edge ingestion now consumes `ProjectIndex::resolve_ids`, retaining interned `u32` endpoints instead of cloning source/target moniker strings; resolver lifetime is still process-wide and needs a measured 500k-symbol allocation profile before further reduction. |
+| PERF-G06 | Closed | Persisted `nodes.semantic_key` preserves identity across span-only edits while distinguishing overload signatures; SQLite v7→v8 migration and backend regression tests pass. |
 | PERF-G07 | Partial | Reverse CSR is temporary, not retained at idle, but the full caller-path peak and 500k-node graph have not been measured end to end. |
-| PERF-G08 | Partial | Ordered parallel parsing is bounded by channel capacity but can accumulate later results behind a slow first file. Bound retained reorder bytes and test adversarial ordering. |
-| PERF-G09 | Open | FTS visibility over-fetch can underfill a requested page. Move authorization into candidate selection/refill at the storage boundary. |
-| PERF-G10 | Open | Optional vector retrieval uses a mock provider; no portable BGE runner, complete embedding fingerprint, held-out code-quality result, or benchmarked ANN path exists. Do not claim production semantic relevance or ANN latency. |
-| PERF-G11 | Open | Lexical and vector results have no evaluated deterministic fusion; quantization lacks float-baseline recall evidence. Treat both as optional experiments until measured. |
-| PERF-G12 | Partial | Feature-isolation smoke coverage exists, but release-build, long-lived MCP idle RSS/query latency, and optional worker process-tree measurements remain open. |
-| PERF-G13 | Open | Per-crate >=90% coverage and the full feature/release matrix are not established by the focused test results. The all-feature workspace test was inconclusive in the recorded environment. |
-| AUTH-GH-01 | Partial | Optional `github-auth` resolves `WEAVE_GITHUB_TOKEN` through GitHub `/user`, performs bounded retry, applies `[rbac.github_roles]`, and can query `/user/orgs` for `[rbac.github_org_roles]`. Local mock coverage currently proves `/user` only; organization-response tests and team-level mapping remain open. |
-| PERF-G14 | Partial | Optional MCP HTTP gzip compression is implemented, but Hub compression, unsupported-encoding fallback, small-payload crossover, and release package/RSS/CPU measurements remain unverified. |
+| PERF-G08 | Closed | Parallel parsing now processes fixed `PARSE_CHUNK` batches, folds each batch serially in input order, and drops parsed results before admitting the next batch. The 65-file cross-batch order test passes, so no pending-result map can grow with repository size. |
+| PERF-G09 | Closed | SQLite FTS search now adaptively over-fetches and refills after visibility filtering at the storage boundary, stopping on index exhaustion or a bounded factor. `masked_heavy_ranking_still_fills_the_limit_with_visible_hits` and `search_filters_masked_hits_before_applying_the_limit` pass with masked top-ranked rows. |
+| PERF-G10 | Partial | The binary-ANN/int8-rerank path has a repeatable mock-provider benchmark (`recall@10 = 0.300` on 2,000 chunks and 50 queries in the current release build), dimension guards, and a deterministic model-plus-dimension embedding fingerprint. A portable BGE provider and held-out code-quality result remain open; the measured mock recall must not be presented as BGE quality. |
+| PERF-G11 | Partial | Deterministic reciprocal-rank fusion of lexical and vector IDs is implemented with stable tie-breaking and unit coverage. The vector benchmark now computes brute-force float32 top-k ground truth (mock-provider recall@10 = 0.300); an explicit quantization-loss acceptance threshold and held-out quality comparison remain open, so semantic relevance is still an optional experiment. |
+| PERF-G12 | Partial | Feature-isolation smoke coverage now refuses to report a false zero when the platform `time` utility cannot expose peak RSS; the local macOS sandbox lacks that permission. A broad linkable CLI combination (`custom,vector,github-auth,http-compression`) passes 239 tests. Release-build, long-lived MCP idle RSS/query latency, and optional worker process-tree measurements remain open. |
+| PERF-G13 | Open | The full no-default workspace test matrix passes with loopback networking enabled, and all native optional features pass when the separate `weave-graph-python` wheel crate is excluded (287 tests). The Python shim tests pass and `cargo check --features python,extension-module` succeeds, but native PyO3 test linking is host-dependent. A fresh coverage run measured 62.45% total line coverage and failed the 90% gate; wheel packaging and per-crate coverage remain open. |
+| AUTH-GH-01 | Closed | Optional `github-auth` resolves `WEAVE_GITHUB_TOKEN` through GitHub `/user`, `/user/orgs`, and `/user/teams` with bounded retry, applies login, organization, and team role mappings, and uses Bearer authentication. A three-request local HTTP fixture verifies headers, identity parsing, org/team markers, and stable subject construction. |
+| PERF-G14 | Partial | Optional gzip negotiation is now implemented for Hub snapshot downloads: compression is used only when the client advertises gzip and the result is smaller; otherwise the original bytes and length are sent. MCP gzip remains available. Hub crossover and release package/RSS/CPU measurements remain unverified. |
 | RELEASE-01 | Conditional | The `v1.0.0` tag had no published GitHub Release in the 2026-09-11 record: two Intel macOS build legs remained queued and the run was cancelled. Decide whether Intel artifacts block release, then re-check current remote state before acting. |
 
 The dated RELEASE-01 record says 10 of 12 binary legs completed, while two
@@ -46,7 +46,7 @@ The accepted profile/model boundaries are in [plan.md](plan.md).
 
 | ID | Status | Issue and required closure |
 | --- | --- | --- |
-| DOC-OBS-01 | Open, environment-blocked | JSON Canvas export is covered by a passing schema test, but the Obsidian desktop rendering check is not complete. `/Applications/Obsidian.app` exists on the verification host, yet macOS reports `kLSNoExecutableErr` because the bundle has no Resources payload. Reinstall a complete Obsidian application, open a generated `.canvas` in a temporary vault, and record a successful render before marking this claim closed. |
+| DOC-OBS-01 | Closed, manually verified | JSON Canvas export is covered by a passing schema check, and a fresh CLI-generated canvas has valid `nodes`/`edges` arrays with unique IDs. A three-card, two-edge sample canvas was opened and visually verified in Obsidian on 2026-09-14. |
 
 ## Security, storage and Phase 3 capability register
 
@@ -79,7 +79,7 @@ deployment threat model.
 | POL-05 | Deferred capability | Waiver role hierarchy and bypass audit trail require a policy decision; do not rely on the obsolete `WEAVE_ALLOW_DRIFT` claim. |
 | FED-01 | Deferred capability | Cross-repository boundary linting is not yet a local federation capability. |
 | PROV-01 | Closed, opt-in | Hub registry can verify with an operator-supplied provenance key before commit; no key means no verification. Do not present the test verifier as public-key provenance. |
-| HUB-01 | Partial | Hub canvas now exposes an opt-in `CanvasAuthorizer` callback that receives the request credential and filters module nodes before JSON serialization; a focused filtering test passes. End-to-end identity/RBAC wiring, mesh-canvas filtering, and threat-model tests remain open; static exclusion alone is not RBAC. |
+| HUB-01 | Closed, opt-in | Hub canvas accepts an injected `CanvasAuthorizer` and applies repository and module filtering before serialization on both single-repository and mesh routes. Real TCP tests verify denied repositories/modules are absent; deployments must explicitly bind the authorizer with Hub bearer authentication for per-identity policy. |
 | HUB-02 | Closed, opt-in | Hub bearer authentication is available, but unset-token deployments retain the unauthenticated loopback default. |
 | HUB-03 | Deferred capability | Central mesh policy endpoint depends on an approved FED-01 design. |
 
@@ -152,13 +152,13 @@ mistaken for implementation or release approval.
 | Removed claim | Reason it was removed | Tracking |
 | --- | --- | --- |
 | The default build is below 15 MB and the full indexing process stays below 80 MB RAM at 500k symbols. | The small target applies only to the explicit `--no-default-features` artifact; whole-pipeline RSS has no repeatable CI gate. | PERF-G01, PERF-G03, PERF-G12 |
-| Vector search is production semantic search, binary ANN, or a measured hybrid BM25/vector system. | The current provider is mock groundwork; ANN, BGE quality, quantization loss, and fusion have no accepted measurements. | PERF-G10, PERF-G11 |
+| Vector search is production semantic search, binary ANN, or a measured hybrid BM25/vector system. | Deterministic hybrid rank fusion and a mock ANN benchmark now exist, but BGE quality, quantization loss, and production acceptance thresholds remain unverified. | PERF-G10, PERF-G11 |
 | BGE or another learned embedding model is bundled, portable, or quality-certified. | A real provider, installer, complete fingerprint, and Intel/macOS portability evidence are still open. | PERF-G10 |
 | SLMs provide measured accuracy/TTFT, ADR extraction, autonomous refactoring, or zero-RSS guarantees. | Model artifacts and end-to-end evaluation are not part of the verified release surface. | PERF-G10; Phase 4 P4-E |
-| Weave provides built-in SSO/OIDC/SAML integrations or vendor-specific IdP adapters. | Generic SCIM plus static role mapping remain available; the optional `github-auth` feature now performs GitHub token identity lookup only. Generic OAuth/OIDC, SAML, and group mapping are not shipped. | IDP-01, RBAC-02 |
+| Weave provides built-in SSO/OIDC/SAML integrations or vendor-specific IdP adapters. | Generic SCIM, group mappings, and the optional GitHub token identity adapter are available. Generic OAuth/OIDC authorization-code flow, SAML, and interactive SSO remain unimplemented. | IDP-01, RBAC-02 |
 | Provenance is built-in Merkle/PKI/non-repudiation protection. | Core operation is standalone and provenance is optional. The opt-in registry path uses an operator-supplied shared secret and provides integrity checking only; production Merkle/PKI requires a deployment-supplied provider. | PROV-01 |
 | Turso is a selectable backend of the normal `weave` CLI. | `TursoStorage` is library-only today; no CLI selector or supported Turso distribution exists. | CORE-01 |
-| Hub provides authenticated, per-identity RBAC diagrams or a centralized mesh policy endpoint. | Authentication is opt-in, canvas exclusion is not per-identity RBAC, and cross-repository policy linting is not implemented. | HUB-01, HUB-02, HUB-03, FED-01 |
+| Hub provides authenticated, per-identity RBAC diagrams or a centralized mesh policy endpoint. | Opt-in bearer authentication and injected per-identity canvas filtering are available; cross-repository policy linting is not implemented. | HUB-01, HUB-02, HUB-03, FED-01 |
 | Universal sub-millisecond latency, 92% token reduction, or cross-platform certification. | These were projections or environment-specific observations without reproducible release gates for every supported profile/platform. | PERF-G02, PERF-G03, PERF-G12, PERF-G13 |
 
 The canonical user-facing rule is: document only interfaces verified in the
@@ -326,8 +326,8 @@ in [unverified_claims.md](unverified_claims.md).
 ### 5. SSO / SCIM & Role Mapping Gaps (IDP-01 to IDP-02 & RBAC-01 to RBAC-02)
 
 #### IDP-01: Non-Standard SCIM 2.0 User Attribute & Role Ingestion
-- **✅ Fixed (2026-09-13)** (`roles` half only, as scoped — `groups` deferred to RBAC-02): `provision_request` now accepts both the flat-string and RFC 7643 object-array shapes. See §9 Phase 2 row 4.
-- **✅ Verified (2026-09-13) — real gap, but the exact failure mode is different from what's written**: read `provision_request` (`rbac.rs:302-318`) directly. `roles` is extracted via `json.get("roles").and_then(|v| v.as_array())` — an RFC 7643 array-of-objects payload **is** a JSON array, so `.as_array()` still succeeds; the inner `.filter_map(|r| r.as_str()...)` then silently drops every element (objects aren't strings), producing an **empty `Vec<String>`**. The `vec!["reader"]` fallback (`.unwrap_or_else`) only fires when the `roles` key is *missing entirely* — it is never reached for a present-but-wrongly-shaped array. Net effect is the same in practice (an identity with no meaningful roles), but "defaults to unprivileged `reader`" should read "silently resolves to zero roles" — there's no `"reader"` string anywhere in the actual outcome for this input shape. `groups` isn't parsed by `provision_request` at all (no such field exists on `DirectoryMutation::Provision`), so the doc's `"groups"` JSON example is aspirational, not a parsing target today.
+- **✅ Fixed (2026-09-13)**: `provision_request` accepts flat strings and RFC 7643 object arrays for both `roles` and `groups`, preserving groups as `group:<value>` markers for downstream mappings. See §9 Phase 2 row 4.
+- **Historical verification (superseded)**: the earlier audit described the pre-fix zero-role behavior. Current regression tests cover flat/object roles and groups, and RBAC-02 verifies group markers are translated into configured capabilities.
 - **Location**: [`crates/weave-graph-cli/src/rbac.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/rbac.rs) (`provision_request`)
 - **Root Cause**:
   `docs/feature_matrix.md` (§2, Row 44) specifies that `weave rbac serve-scim` ingests user and group provisioning from enterprise IdPs (Okta, Azure AD, Google Workspace). However, `provision_request` deserializes `roles` and `groups` assuming a non-standard flat JSON string array (`["internal"]`). Enterprise IdPs conforming to RFC 7643 send complex object arrays (`[{"value": "internal", "primary": true}]`), causing JSON deserialization errors and defaulting synced users to unprivileged `reader`.
@@ -337,24 +337,22 @@ in [unverified_claims.md](unverified_claims.md).
     "roles": [{"value": "internal", "primary": true}],
     "groups": [{"value": "grp-1", "display": "engineering-leads"}]
     ```
-  - Flat string extraction fails on objects, causing enterprise directory syncs to fall back to unprivileged `vec!["reader"]`.
+  - Valid flat and object-array values are retained; malformed values are ignored safely rather than granting a role.
 - **Remediation**:
-  - Accept both flat string arrays and standard RFC 7643 object arrays for `roles` and `groups`, extracting `.value` and `.display`.
-  - **Feasibility (2026-09-13)**: the `roles` half is real and low effort — `provision_request` already works with a raw `serde_json::Value`, so the array-element match just needs to try `.as_str()` first, then fall back to `.get("value").and_then(Value::as_str)` for an object shape, instead of the current `filter_map` that only tries the string case. The `groups` half is a bigger claim than it looks: `DirectoryMutation::Provision` has no `groups` field today at all (confirmed: `rbac.rs`), so "extracting `.display`" needs a new field end-to-end — the struct, the `.weave/rbac-directory.toml` serialization, and something downstream that actually *uses* a group (which doesn't exist yet — see RBAC-02, this is the same gap from the ingestion side). Do the `roles` fix alone first; treat `groups` as RBAC-02's dependency, not a one-line addition here.
+  - Keep both attribute shapes covered by the SCIM regression suite; generic SSO/OIDC/SAML remains outside this SCIM scope.
 
 ---
 
 #### IDP-02: Unauthenticated Loopback SCIM Server
-- **✅ Fixed (2026-09-13)**: `ScimServer`/`weave rbac serve-scim` now support an optional `[rbac.scim] token` requiring `Authorization: Bearer` on every request. See §9 Phase 1 row 2. (The "zero hits" grep in the verification note below predates this fix, from earlier the same day.)
-- **✅ Verified (2026-09-13)**: confirmed, and this session's own `docs/product/self-hosted.md` fix independently reached the same conclusion while correcting a fictional "validates bearer tokens" claim there — `grep -n "bearer\|Bearer\|Authorization" crates/weave-graph-cli/src/rbac.rs` returns zero hits. This is real, and (same as HUB-02) a deliberate v1 design choice per `impl.md` M3.4 ("loopback only... trusted network"), not an oversight — worth deciding explicitly whether that trust model is still acceptable now that SCIM can elevate a subject to `"internal"`, rather than treating it as an unnoticed bug.
+- **✅ Fixed (2026-09-13)**: `ScimServer`/`weave rbac serve-scim` now support an optional `[rbac.scim] token` requiring `Authorization: Bearer` on every request. See §9 Phase 1 row 2.
+- **✅ Verified (2026-09-14)**: configured `[rbac.scim] token` is checked before mutation/read dispatch, and a real TCP test proves unauthorized requests are rejected while authorized requests succeed. An unset token retains the loopback-only compatibility mode.
 - **Location**: [`crates/weave-graph-cli/src/rbac.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/rbac.rs) (`ScimServer`)
 - **Root Cause**:
-  `docs/feature_matrix.md` (§1 & §2, Row 44) specifies SCIM directory synchronization for secure user management. However, `ScimServer` binds a loopback HTTP socket and processes mutation endpoints (`POST /Users`, `POST /sync`) without validating an `Authorization: Bearer <token>` header or shared secret, allowing unauthenticated local processes to inject role elevations into `.weave/rbac-directory.toml`.
+  `docs/feature_matrix.md` (§1 & §2, Row 44) specifies SCIM directory synchronization for secure user management. `ScimServer` binds a loopback HTTP socket and optionally validates an `Authorization: Bearer <token>` header before processing mutation endpoints (`POST /Users`, `POST /sync`).
 - **Impact**:
   - Any local unprivileged process or multi-tenant container sharing the host network namespace can issue provisioning mutations and elevate its subject to `"internal"`.
 - **Remediation**:
-  - Add optional `bearer_token` configuration in `.weave/config.toml` (`[rbac.scim] token = "..."`).
-  - **Feasibility (2026-09-13)**: real, small-to-medium effort. Correction to scope: the SCIM server's `read_request` (`rbac.rs:322`) currently discards headers entirely (splits only method/path/body from the raw request) — it does not already parse individual headers the way `weave-graph-hub`'s `server.rs::header()` does. Adding bearer-token support means first giving `read_request` a header lookup (a small, bounded addition modeled on that exact existing hub helper), then checking it before dispatch. No architectural blocker, just slightly more than "one more header check."
+  - Keep the optional token configured for any deployment where another local process is not fully trusted.
 
 ---
 
@@ -374,15 +372,14 @@ in [unverified_claims.md](unverified_claims.md).
 ---
 
 #### RBAC-02: Lack of Enterprise Group-to-Capability Mapping
-- **✅ Verified (2026-09-13)**: confirmed — `read_rbac_users` (`config.rs`) only ever reads `[rbac.users]`'s flat `subject = ["role", ...]` table; no `[rbac.group_mappings]` or equivalent exists anywhere in `config.rs` or its callers. Real gap.
+- **✅ Fixed (2026-09-14)**: `[rbac.group_mappings]` is parsed and applied during guard construction. Direct roles remain intact, mapped roles are deduplicated, malformed entries are ignored, and focused ingestion/authorization tests pass.
 - **Location**: [`crates/weave-graph-cli/src/config.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/config.rs) (`read_rbac_users`)
 - **Root Cause**:
-  `docs/feature_matrix.md` (§2, Row 44 & Row 143) notes that SCIM synchronizes IdP user/group memberships into `.weave/rbac-directory.toml`. However, `read_rbac_users` in `config.rs` only parses direct 1:1 `username = ["role"]` tables under `[rbac.users]`. There is no group-mapping translation layer (`[rbac.group_mappings]`) to map enterprise directory groups (e.g. `CN=Architecture-Review-Board`) to Weave roles (`allow-drift`, `internal`).
+  `docs/feature_matrix.md` (§2, Row 44 & Row 143) notes that SCIM synchronizes IdP user/group memberships into `.weave/rbac-directory.toml`. Direct `[rbac.users]` assignments are now supplemented by a group-mapping translation layer that maps directory markers to Weave roles.
 - **Impact**:
-  - Directory groups synced from corporate IdPs (e.g., `CN=Architecture-Review-Board`) cannot be mapped to Weave capabilities (`allow-drift`) without manual username overrides.
+  - Directory groups can be mapped to Weave capabilities (`allow-drift`, `internal`) without per-user overrides.
 - **Remediation**:
-  - Introduce `[rbac.group_mappings]` table in `.weave/config.toml`.
-  - **Feasibility (2026-09-13)**: real, low-medium effort, but depends on IDP-01's `groups` parsing landing first — there's no group data flowing into `.weave/rbac-directory.toml` at all today for a mapping table to translate. Once `groups` exists on the ingested identity, a `[rbac.group_mappings]` table read by `config.rs` (same shape as the existing `read_rbac_users`) and applied as a lookup during `guard_for`/directory resolution is straightforward. Sequence after IDP-01, not before.
+  - Keep `[rbac.group_mappings]` versioned with deployment policy and test mappings whenever IdP group names change.
 
 ---
 
@@ -491,29 +488,29 @@ in [unverified_claims.md](unverified_claims.md).
 ---
 
 #### HUB-01: Hub Canvas Endpoint Bypasses RBAC & Policy Filters
-- **✅ Verified (2026-09-13)**: confirmed — `grep -n "rbac\|Rbac\|visible\|mask" crates/weave-graph-hub/src/canvas.rs` returns zero hits; `build_module_canvas` reads `storage.all_nodes()`/`all_edges()` directly with no visibility filter. Structural, not incidental: `weave-graph-hub` has no dependency on `weave_graph_core`'s `rbac` module at all, so there's currently no `RbacGuard` type reachable from this crate to apply — wiring this in is a real, larger cross-crate change, not a one-line fix. Real gap.
+- **✅ Fixed (2026-09-14)**: `CanvasAuthorizer` now runs before serialization for both single-repository and mesh canvas routes. Mesh requests apply an optional repository gate and module-label filter while constructing bands, so denied repositories and modules never enter the response. A real TCP integration test covers both gates and verifies the serialized body contains neither denied repo nor module data.
+- **Historical verification (superseded)**: the original implementation read raw nodes and edges without a visibility boundary. The callback boundary below replaces that behavior without coupling the Hub crate to CLI RBAC types.
 - **Location**: [`crates/weave-graph-hub/src/canvas.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-hub/src/canvas.rs)
 - **Root Cause**:
-  `docs/feature_matrix.md` (§2, Row 37 & Row 147) requires that architecture exports in Self-Hosted Tier emit LOD 1 diagrams with masked private subgraphs. In `canvas.rs`, `build_module_canvas` queries raw database nodes and edges directly without accepting an `RbacGuard` or applying LOD 1 module filters, serving unmasked internal topologies over HTTP.
+  `docs/feature_matrix.md` (§2, Row 37 & Row 147) requires that architecture exports in Self-Hosted Tier emit LOD 1 diagrams with masked private subgraphs. The Hub keeps storage and policy implementations decoupled, so `RegistryServer` accepts an injected `CanvasAuthorizer` and applies it at the response boundary for both single-repository and mesh routes.
 - **Mode & Security Impact**:
-  - In **Self-Hosted Tier**, external callers requesting diagrams from Hub receive unmasked internal module names, subpaths, and cross-boundary edges over HTTP.
+  - Without an authorizer, the endpoint remains intentionally unauthenticated and exposes the published LOD 1 canvas. Deployments requiring per-identity masking must bind `CanvasAuthorizer` together with the Hub bearer-token gate.
 - **Remediation**:
-  - Migrate Hub diagrams to Level-of-Detail 1 (LOD 1) Mermaid representations, consuming pre-filtered `&[Module]` slices as proposed in `docs/proposal.md`.
-  - **Feasibility (2026-09-13)**: the canvas is already LOD 1 module-level output (`canvas.rs::build_module_canvas`, added this session) — "Mermaid representations" would be a format change (JSON Canvas → Mermaid text), a real but separate ask from filtering. On the filtering half: full per-identity `RbacGuard` integration is arguably the wrong-sized fix here, since HUB-02 confirms this endpoint has no caller-identity concept at all (no auth means no "who is asking" to mask differently for) — wiring `RbacGuard` into an endpoint nobody authenticates to would mask by a fixed, hardcoded identity, not a real per-caller policy. A repo-level `[hub.canvas] exclude = [...]` path-glob (same shape SEC-02 proposes for `vector`) that hides specific modules from *everyone* is a more honest fit for an unauthenticated endpoint, and a smaller change. Sequence after HUB-02 if real per-caller masking is actually wanted.
+  - Keep the LOD 1 JSON Canvas representation and inject a deployment-specific authorizer at server construction.
+  - **Implementation note (2026-09-14)**: the endpoint remains LOD 1 JSON Canvas. `CanvasAuthorizer` is intentionally injected by the embedding server, keeping Hub independent of CLI RBAC types while allowing callers to bind identity and policy at the query boundary. The default remains unchanged when no authorizer is configured.
 
 ---
 
 #### HUB-02: Unauthenticated Hub Transport Exposure
-- **✅ Fixed (2026-09-13)**: `weave-registry --auth-token` now gates every route on `Authorization: Bearer`; `HubClient`/`weave sync` attach it via `.weave/config.toml`'s `[hub] token`. See §9 Phase 1 row 1. (The "no auth middleware" verification note below predates this fix, from earlier the same day.)
-- **✅ Verified (2026-09-13)**: confirmed, no auth middleware or token check anywhere in `server.rs`. Note the "token-authenticated HTTP" framing this cites from `feature_matrix.md` §2 Rows 41/43 is itself fictional — the real registry has never had any authentication (confirmed this session while auditing that file, now corrected there) — so there's no regression here, just a v1 design (`impl.md` M3.1: "a self-hosted hub on a trusted VPC/LAN") this issue correctly flags as worth hardening before any deployment binds beyond a fully trusted network.
+- **✅ Fixed (2026-09-13)**: `weave-registry --auth-token` now gates every route on `Authorization: Bearer`; `HubClient`/`weave sync` attach it via `.weave/config.toml`'s `[hub] token`. See §9 Phase 1 row 1.
+- **✅ Verified (2026-09-14)**: bearer validation is now performed in `handle_connection` before request bodies are read. `RegistryServer::bind_with_token` makes the gate opt-in, while the existing loopback-only unauthenticated mode remains available for local deployments. Client configuration passes the same token on sync requests.
 - **Location**: [`crates/weave-graph-hub/src/server.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-hub/src/server.rs)
 - **Root Cause**:
-  `docs/feature_matrix.md` (§2, Rows 41 & 43) specifies token-authenticated HTTP communication for Centralized Hub operations. However, `weave-graph-hub` lacks an HTTP authentication middleware layer (`[hub.auth] token = "..."`), relying strictly on loopback socket binding (Core Invariant 6) for process isolation.
+  `docs/feature_matrix.md` (§2, Rows 41 & 43) specifies token-authenticated HTTP communication for Centralized Hub operations. The registry now validates an optional bearer token at the request boundary; deployments that omit the token retain the loopback-only compatibility mode.
 - **Mode & Security Impact**:
-  - In **Self-Hosted Tier**, relies entirely on **Core Invariant 6** (binding to loopback `127.0.0.1` only). Any process with access to loopback can read raw repository graphs.
+  - Token-enabled deployments reject missing or invalid credentials before reading request bodies. Unconfigured deployments must remain loopback-only because any local process can otherwise read published graphs.
 - **Remediation**:
-  - Introduce `[hub.auth]` bearer token validation when binding beyond loopback or in multi-tenant environments.
-  - **Feasibility (2026-09-13)**: real, and should probably be prioritized first among the Hub-layer fixes — HUB-01's canvas filtering and PROV-01's verification both become more meaningful once the registry can establish *some* caller trust. `server.rs`'s `read_request` already parses headers into a `Vec<(String, String)>` with a `header()` lookup helper (unlike the SCIM server's `read_request`, which doesn't — see IDP-02's note), so this is a smaller addition here than the equivalent SCIM fix: check one header against a configured token before dispatching in `handle_connection`. Low-medium effort, no blocker.
+  - Keep `bind_with_token` wired to deployment configuration whenever the registry listens beyond a trusted loopback boundary.
 
 ---
 

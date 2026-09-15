@@ -23,9 +23,9 @@ pub fn parse_file(path: &Path, source: &str) -> Option<Result<ParsedFile, ParseE
 }
 
 /// Wraps a `tree_sitter::Parser` and its last-parsed tree so an edited
-/// file can be reparsed incrementally (`impl.md` M1.2: "use tree-sitter's
-/// native incremental reparse API from the start") instead of rebuilding
-/// parse state from scratch on every keystroke-sized change.
+/// file can be reparsed incrementally, using tree-sitter's native
+/// incremental reparse API, instead of rebuilding parse state from
+/// scratch on every keystroke-sized change.
 pub struct SourceParser {
     language: Language,
     parser: tree_sitter::Parser,

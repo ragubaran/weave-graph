@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::git;
 
-/// `plan.md` §1.3a: every generated canvas, report, and export carries a
+/// Every generated canvas, report, and export carries a
 /// visible provenance badge — commit SHA, branch, index timestamp, and a
 /// `Static Snapshot` status — so a stale diagram can't quietly mislead a
 /// reader. `index_timestamp` comes from `db_path`'s own mtime: there's no

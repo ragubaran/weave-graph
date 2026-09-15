@@ -247,6 +247,106 @@ fn http_transport_handle_empty_stream() {
     assert!(stream.write_buf.is_empty());
 }
 
+#[test]
+fn http_transport_rejects_invalid_request_metadata() {
+    let handler = McpHandler::new(setup_storage()).unwrap();
+    let transport = HttpTransport::new("127.0.0.1", 8080, false);
+
+    let mut invalid_length = MockStream::new(b"POST / HTTP/1.1\r\nContent-Length: invalid\r\n\r\n");
+    assert!(
+        transport
+            .handle_client(&mut invalid_length, &handler)
+            .is_err()
+    );
+
+    let mut oversized_headers = MockStream::new(
+        format!(
+            "GET / HTTP/1.1\r\nX-Long: {}\r\n\r\n",
+            "x".repeat(MAX_HTTP_HEADER_BYTES)
+        )
+        .as_bytes(),
+    );
+    assert!(
+        transport
+            .handle_client(&mut oversized_headers, &handler)
+            .is_err()
+    );
+}
+
+#[test]
+fn limited_line_reader_rejects_incomplete_and_non_utf8_headers() {
+    let mut incomplete = Cursor::new(b"GET / HTTP/1.1".to_vec());
+    assert!(read_limited_line(&mut incomplete, MAX_HTTP_HEADER_BYTES).is_err());
+
+    let mut non_utf8 = Cursor::new(b"\xff\n".to_vec());
+    assert!(read_limited_line(&mut non_utf8, MAX_HTTP_HEADER_BYTES).is_err());
+
+    let mut empty = Cursor::new(Vec::new());
+    assert_eq!(
+        read_limited_line(&mut empty, MAX_HTTP_HEADER_BYTES).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn http_transport_handles_multiple_well_formed_header_variants() {
+    let handler = McpHandler::new(setup_storage()).unwrap();
+    let transport = HttpTransport::new("127.0.0.1", 8080, false);
+
+    let request = b"GET / HTTP/1.1\r\nAuthorization: Bearer ignored\r\nAccept-Encoding: gzip\r\nX-Unknown: value\r\n\r\n";
+    transport
+        .handle_client(MockStream::new(request), &handler)
+        .unwrap();
+
+    let headers = format!(
+        "GET / HTTP/1.1\r\nX-One: {}\r\nX-Two: {}\r\n\r\n",
+        "a".repeat(MAX_HTTP_HEADER_BYTES / 2),
+        "b".repeat(MAX_HTTP_HEADER_BYTES / 2),
+    );
+    assert!(
+        transport
+            .handle_client(MockStream::new(headers.as_bytes()), &handler)
+            .is_err()
+    );
+}
+
+#[test]
+fn http_response_writer_emits_a_complete_uncompressed_response() {
+    let mut output = Vec::new();
+    write_http_response(&mut output, 200, "OK", r#"{"status":"ok"}"#, None).unwrap();
+    let response = String::from_utf8(output).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+    assert!(response.ends_with(r#"{"status":"ok"}"#));
+}
+
+#[test]
+#[cfg(not(feature = "rbac"))]
+fn http_transport_run_serves_its_configured_request_limit() {
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let handler = McpHandler::new(setup_storage()).unwrap();
+    let server = std::thread::spawn(move || {
+        let mut transport = HttpTransport::new("127.0.0.1", port, false);
+        transport.max_requests = Some(1);
+        transport.run(&handler)
+    });
+    let mut stream = loop {
+        match std::net::TcpStream::connect(("127.0.0.1", port)) {
+            Ok(stream) => break stream,
+            Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => continue,
+            Err(error) => panic!("failed to connect to test transport: {error}"),
+        }
+    };
+    stream.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+
+    assert!(response.starts_with("HTTP/1.1 200 OK"));
+    server.join().unwrap().unwrap();
+}
+
 #[cfg(feature = "http-compression")]
 #[test]
 fn gzip_response_is_used_only_when_smaller() {

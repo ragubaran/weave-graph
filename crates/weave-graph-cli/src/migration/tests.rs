@@ -50,7 +50,7 @@ impl RepoFixture {
     }
 }
 
-/// impl.md M3.5's verify fixture: three repos in a linear dependency
+/// Verify fixture: three repos in a linear dependency
 /// chain (app -> {service, core}, service -> core) with one deprecated
 /// cross-repo API in the bottom repo. The plan must schedule both caller
 /// repos before the provider — a repo's step never runs before a repo it
@@ -93,7 +93,7 @@ fn a_linear_chain_plans_callers_before_the_provider() {
     );
 }
 
-/// The other half of M3.5's verify fixture: a circular dependency reports
+/// The other half of the verify fixture: a circular dependency reports
 /// the cycle instead of silently picking an arbitrary order.
 #[test]
 fn a_cross_repo_cycle_is_reported_not_arbitrarily_ordered() {

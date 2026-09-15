@@ -1,6 +1,8 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::Mutex;
 
 use rayon::prelude::*;
 
@@ -12,6 +14,27 @@ pub(crate) struct IndexStats {
     pub(crate) files: usize,
     pub(crate) symbols: usize,
     pub(crate) edges: usize,
+}
+
+#[cfg(test)]
+static FAIL_PROMOTION_FOR: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+#[cfg(test)]
+fn fail_next_promotion(active_db: &Path) {
+    if let Ok(mut failure) = FAIL_PROMOTION_FOR.lock() {
+        *failure = Some(active_db.to_path_buf());
+    }
+}
+
+fn promote_rebuild(rebuild_db: &Path, active_db: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Ok(mut failure) = FAIL_PROMOTION_FOR.lock()
+        && failure.as_ref().is_some_and(|path| path == active_db)
+    {
+        *failure = None;
+        return Err(std::io::Error::other("injected rebuild promotion failure"));
+    }
+    fs::rename(rebuild_db, active_db)
 }
 
 /// Distinct file paths already in `active_db` — the `total_indexed` input
@@ -60,10 +83,10 @@ pub(crate) fn build_project_index_from_storage(
     Ok((project_index, moniker_to_node_id))
 }
 
-/// Files parsed concurrently — the parallel-parse bound (L10, `plan.md`
-/// §1.2a). Each in-flight `ParsedFile` is KBs, so the worst-case working
-/// set stays orders of magnitude under Invariant 4's 80 MB ceiling: the
-/// streaming property PERF-06 demanded, kept by construction, not by hope.
+/// Files parsed concurrently — the parallel-parse bound. Each in-flight
+/// `ParsedFile` is KBs, so the worst-case working set stays orders of
+/// magnitude under Invariant 4's 80 MB ceiling: a streaming property
+/// kept by construction, not by hope.
 const PARSE_CHUNK: usize = 32;
 
 /// The parse stage is the *only* parallel stage: chunks of files are
@@ -77,48 +100,35 @@ fn parse_files_bounded(
     files: &[PathBuf],
     mut fold: impl FnMut(&str, &ParsedFile) -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
-    let (tx, rx) =
-        std::sync::mpsc::sync_channel::<(usize, String, Option<ParsedFile>)>(PARSE_CHUNK);
-    let root = root.to_owned();
-    let files = files.to_vec();
-
-    let producer = std::thread::spawn(move || {
-        files.par_iter().enumerate().for_each(|(index, file_path)| {
-            let rel = rel_path(&root, file_path);
-            let parsed = match fs::read_to_string(file_path) {
-                Ok(source) => match parse_file(Path::new(&rel), &source) {
-                    Some(Ok(parsed)) => Some(parsed),
-                    Some(Err(err)) => {
-                        eprintln!("skipping {}: {err}", file_path.display());
-                        None
-                    }
-                    None => None,
-                },
-                Err(_) => None,
-            };
-            let _ = tx.send((index, rel, parsed));
-        });
-    });
-
-    let mut next = 0usize;
-    let mut pending = BTreeMap::new();
     let mut failure = None;
-    for (index, rel, parsed) in rx {
-        pending.insert(index, (rel, parsed));
-        while let Some((rel, parsed)) = pending.remove(&next) {
+    for chunk in files.chunks(PARSE_CHUNK) {
+        let parsed: Vec<_> = chunk
+            .par_iter()
+            .map(|file_path| {
+                let rel = rel_path(root, file_path);
+                let parsed = match fs::read_to_string(file_path) {
+                    Ok(source) => match parse_file(Path::new(&rel), &source) {
+                        Some(Ok(parsed)) => Some(parsed),
+                        Some(Err(err)) => {
+                            eprintln!("skipping {}: {err}", file_path.display());
+                            None
+                        }
+                        None => None,
+                    },
+                    Err(_) => None,
+                };
+                (rel, parsed)
+            })
+            .collect();
+        for (rel, parsed) in parsed {
             if let Some(parsed) = parsed
                 && failure.is_none()
                 && let Err(err) = fold(&rel, &parsed)
             {
                 failure = Some(err);
             }
-            next += 1;
         }
     }
-
-    producer
-        .join()
-        .map_err(|_| StorageError::Backend("parse worker panicked".to_string()))?;
     failure.map_or(Ok(()), Err)
 }
 
@@ -189,14 +199,12 @@ fn upsert_all_edges(
     moniker_id_to_node: &HashMap<u32, NodeId>,
 ) -> Result<(), StorageError> {
     parse_files_bounded(root, files, |rel, parsed| {
-        let (edges, unresolved) = project_index.resolve(parsed);
+        let (edges, unresolved) = project_index.resolve_ids(parsed);
         let resolved = edges
             .into_iter()
             .filter_map(|edge| {
-                let src_mid = project_index.get_moniker_id(&edge.source_moniker)?;
-                let tgt_mid = project_index.get_moniker_id(&edge.target_moniker)?;
-                let src_id = *moniker_id_to_node.get(&src_mid)?;
-                let tgt_id = *moniker_id_to_node.get(&tgt_mid)?;
+                let src_id = *moniker_id_to_node.get(&edge.source_id)?;
+                let tgt_id = *moniker_id_to_node.get(&edge.target_id)?;
                 Some(Edge {
                     id: 0,
                     source_id: src_id,
@@ -215,7 +223,7 @@ fn upsert_all_edges(
     Ok(())
 }
 
-/// AST-bounded chunk text per node (`impl.md` M3.7 Tier 2): the node's own
+/// AST-bounded chunk text per node: the node's own
 /// `line_start..=line_end` source span, reusing spans the parser already
 /// computed rather than a second span-finder. Falls back to the bare
 /// symbol name if the source file can't be read or the span is empty —
@@ -390,7 +398,7 @@ pub(crate) fn full_reindex(
     }
     #[cfg(feature = "otel")]
     {
-        // Carry imported trace spans over too (M3.3) — they match nodes
+        // Carry imported trace spans over too — they match nodes
         // by symbol at query time, so a plain row copy suffices. A first
         // index has no previous database to copy from.
         if active_db.exists() {
@@ -404,7 +412,7 @@ pub(crate) fn full_reindex(
     storage.commit_bulk_write()?;
     storage.checkpoint_wal()?;
     drop(storage);
-    fs::rename(&rebuild_db, active_db)?;
+    promote_rebuild(&rebuild_db, active_db)?;
 
     Ok(IndexStats {
         files: files.len(),
@@ -429,6 +437,15 @@ pub(crate) fn incremental_reindex(
     let rebuild_db = weave_dir.join("graph.db.rebuild");
     if rebuild_db.exists() {
         fs::remove_file(&rebuild_db)?;
+    }
+    if changed.is_empty() {
+        let storage = SqliteStorage::open(active_db)?;
+        use weave_graph_core::Storage;
+        return Ok(IndexStats {
+            files: files.len(),
+            symbols: storage.all_nodes()?.len(),
+            edges: storage.edge_count()?,
+        });
     }
     // Stage via SQLite's online backup, not a raw file copy: the backup
     // includes un-checkpointed WAL content a byte copy would miss, and it
@@ -538,7 +555,7 @@ pub(crate) fn incremental_reindex(
         // Notes ride inside the copied database — the purge leaves their
         // target_node_id dangling (no FK enforcement is enabled on this
         // connection); reattach_and_prune re-resolves by moniker below,
-        // explicitly nulling out anything that no longer resolves (M2.10).
+        // explicitly nulling out anything that no longer resolves.
         crate::notes::reattach_and_prune(
             &storage,
             root,
@@ -550,7 +567,7 @@ pub(crate) fn incremental_reindex(
     storage.commit_bulk_write()?;
     let total_symbols = storage.all_nodes()?.len();
     drop(storage);
-    fs::rename(&rebuild_db, active_db)?;
+    promote_rebuild(&rebuild_db, active_db)?;
 
     Ok(IndexStats {
         files: files.len(),

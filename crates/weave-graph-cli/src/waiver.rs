@@ -1,9 +1,9 @@
-//! `impl.md` M3.10: temporary bypass/waiver mechanisms shared by `weave
+//! Temporary bypass/waiver mechanisms shared by `weave
 //! check-contracts` and `weave blast` — the only two commands with a
 //! bypass path. One helper module, not two copies, for the same reason
-//! M3.0 built one `RbacGuard` instead of one per consumer.
+//! this codebase keeps one shared `RbacGuard` instead of one per consumer.
 //!
-//! **Feature-isolation precedent** (M3.0's own fix), **narrowed by SEC-06**:
+//! **Feature-isolation invariant, narrowed by SEC-06**:
 //! an omitted `--as` is unrestricted — byte-identical to a build without
 //! `rbac` at all — *unless* this repo's own `[rbac.users]` config already
 //! grants the `allow-drift` role to someone, in which case an anonymous
@@ -50,10 +50,9 @@ pub(crate) fn authorize(_root: &Path, _as_subject: Option<&str>) -> Result<(), S
     Ok(())
 }
 
-/// CLI-flag waivers require a mandatory `--reason` (`impl.md` M3.10 Level
-/// 2) — refuses with a clear error rather than silently waiving with no
-/// audit trail. Env-var-triggered waivers don't go through this: the spec
-/// only requires a reason for the CLI-flag path.
+/// CLI-flag waivers require a mandatory `--reason` — refuses with a clear
+/// error rather than silently waiving with no audit trail. Env-var-triggered
+/// waivers don't go through this: only the CLI-flag path requires a reason.
 pub(crate) fn require_reason(reason: Option<&str>) -> Result<String, String> {
     match reason.map(str::trim) {
         Some(r) if !r.is_empty() => Ok(r.to_string()),
@@ -66,9 +65,9 @@ pub(crate) fn require_reason(reason: Option<&str>) -> Result<String, String> {
 }
 
 /// Prints the required stderr warning banner and returns the matching
-/// Waiver Notice block to fold into a Markdown artifact (`impl.md` M3.10
-/// Level 2) — one stderr line, one Markdown block, both built from the
-/// same `reason` so they can never disagree.
+/// Waiver Notice block to fold into a Markdown artifact — one stderr line,
+/// one Markdown block, both built from the same `reason` so they can
+/// never disagree.
 pub(crate) fn emit_banner(command: &str, reason: &str) -> String {
     eprintln!("⚠️  WAIVER: {command} bypassed — reason: {reason}");
     format!("> **⚠️ Waiver Notice**: `{command}` was bypassed.\n> Reason: {reason}\n")

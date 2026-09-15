@@ -259,6 +259,10 @@ Configures lexical and semantic code search:
 - `fts` *(BM25)*: Automatically indexes symbol names, doc comments, signatures, and file paths into SQLite FTS5 with AST-aware synonym expansion.
 - `vector`: Utilizes `sqlite-vec` virtual tables for semantic similarity lookups across AST definition chunks via `weave search "<query>" --semantic`.
 
+Vector metadata records the provider model and dimension fingerprint. Reusing
+an index with an incompatible provider is rejected; rebuild the vector index
+after changing either value.
+
 ---
 
 # Part III: Turso Storage Engine (Library-only)

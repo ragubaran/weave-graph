@@ -2,10 +2,10 @@ use std::path::Path;
 
 use weave_graph_parse::{SymbolKind, parse_file};
 
-/// `impl.md` M1.2's required check: symbol extraction matches a
-/// hand-checked fixture file per language. Every `(symbol, kind, line_start,
-/// line_end)` tuple below was counted by hand against the fixture file
-/// next to this test, not derived from the extractor's own output.
+/// Checks symbol extraction against a hand-checked fixture file per
+/// language. Every `(symbol, kind, line_start, line_end)` tuple below was
+/// counted by hand against the fixture file next to this test, not
+/// derived from the extractor's own output.
 fn parse_fixture(name: &str) -> weave_graph_parse::ParsedFile {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -124,8 +124,8 @@ fn typescript_fixture_symbols_match_hand_count() {
     );
 }
 
-/// M1.2b (`impl.md` §0a): same hand-checked standard as M1.2's four
-/// languages above, extended to the 14 additional languages.
+/// Same hand-checked standard as the core languages above, extended to
+/// the additional languages.
 #[test]
 fn go_fixture_symbols_match_hand_count() {
     let file = parse_fixture("sample.go");

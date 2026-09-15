@@ -1,4 +1,4 @@
-//! Embedding boundary (`impl.md` M3.7 Tier 2, feature `vector`): the
+//! Embedding boundary (feature `vector`): the
 //! trait a real ONNX/`fastembed` model plugs into, plus a zero-ML
 //! reference implementation exercising the same interface — same
 //! "boundary here, real provider supplied by a deployment" shape already
@@ -24,6 +24,11 @@ pub trait EmbeddingProvider: Send + Sync {
     fn dimensions(&self) -> usize;
 
     fn model_id(&self) -> &str;
+
+    /// Stable provider identity used to reject incompatible vector indexes.
+    fn fingerprint(&self) -> String {
+        format!("{}:{}d", self.model_id(), self.dimensions())
+    }
 }
 
 /// Deterministic bag-of-hashed-words vector, L2-normalized. Not a real

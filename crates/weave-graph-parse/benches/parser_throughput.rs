@@ -1,17 +1,7 @@
-//! `impl.md` M1.2's required bench: this must exist and run before its
-//! target numbers are met, not the other way round.
-//!
-//! **Corpus note**: `plan.md`/`impl.md` name `tokio`/`ripgrep`/`typescript`
-//! as the target corpora (`performance_compare.md` §5.1). Vendoring those
-//! full repos into this crate isn't practical here (hundreds of MB, a
-//! network fetch on every fresh checkout, license/size bloat for a repo
-//! that otherwise has zero external data dependencies). This bench runs
-//! against the same hand-checked fixtures `tests/fixture_extraction.rs`
-//! verifies correctness against instead, tiled to a representative
-//! working-set size. Real numbers against the named corpora are an M1.9
-//! exit-gate task — point `WEAVE_BENCH_CORPUS_DIR` at a local checkout of
-//! those repos to run this bench against them instead; falls back to the
-//! bundled fixtures when unset.
+//! Benchmarks throughput on the hand-checked fixtures used to verify
+//! correctness, tiled to a representative size — avoids vendoring huge
+//! real-world repos into a crate with no other external data deps. Set
+//! `WEAVE_BENCH_CORPUS_DIR` to bench a local checkout instead.
 
 use std::path::{Path, PathBuf};
 

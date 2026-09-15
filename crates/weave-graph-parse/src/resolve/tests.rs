@@ -32,6 +32,23 @@ fn same_file_call_resolves_exact_even_when_name_exists_elsewhere_too() {
 }
 
 #[test]
+fn resolve_ids_preserves_edges_without_moniker_clones() {
+    let file = parse(
+        Language::Rust,
+        "a.rs",
+        "fn helper() {}\nfn caller() { helper(); }\n",
+    );
+    let mut index = ProjectIndex::new();
+    index.add_file(&file);
+
+    let (ids, unresolved) = index.resolve_ids(&file);
+    assert!(unresolved.is_empty());
+    assert_eq!(ids.len(), 1);
+    assert_eq!(index.interner.resolve(ids[0].source_id), "a.rs#caller");
+    assert_eq!(index.interner.resolve(ids[0].target_id), "a.rs#helper");
+}
+
+#[test]
 fn method_call_is_always_dynamic_and_fans_out_to_every_candidate() {
     let src = "struct A; impl A { fn run(&self) { self.step(); } fn step(&self) {} }\nstruct B; impl B { fn step(&self) {} }\n";
     let a = parse(Language::Rust, "a.rs", src);

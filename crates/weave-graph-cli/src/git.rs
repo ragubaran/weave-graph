@@ -50,7 +50,7 @@ pub(crate) fn changed_since(root: &Path, sha: &str) -> Option<Vec<String>> {
 /// Files changed on the PR side of `<ref>...HEAD` — a **three-dot**
 /// (merge-base) diff, distinct from `changed_since`'s two-dot diff: a PR
 /// blast-radius comment must not blame the PR for `main`'s own commits
-/// landed after the branch point (impl.md M2.12).
+/// landed after the branch point.
 ///
 /// Shallow checkouts (`fetch-depth: 1`) are refused with a clear message
 /// naming the fix — `git merge-base` silently has no common ancestor

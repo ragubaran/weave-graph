@@ -1,4 +1,4 @@
-//! Cross-agent memory graph (`impl.md` M2.10): CLI verbs (`weave note
+//! Cross-agent memory graph: CLI verbs (`weave note
 //! pin`/`list`) and the reindex hooks — moniker-based reattachment,
 //! blake3 staleness recompute, and opportunistic expiry deletion, all
 //! inside the reindex's own bulk-write transaction.
@@ -144,8 +144,8 @@ fn file_source(root: &Path, file: &str, cache: &mut HashMap<String, String>) -> 
 }
 
 /// The reindex hook, called inside the already-open bulk-write
-/// transaction of BOTH reindex paths (impl.md M2.10: "additive only", a
-/// `#[cfg(feature = "notes")]` block after the existing upsert phases).
+/// transaction of BOTH reindex paths, added as an additive-only
+/// `#[cfg(feature = "notes")]` block after the existing upsert phases.
 ///
 /// For every stored note: a live moniker re-attaches to the symbol's new
 /// node id (purge-and-reinsert gives new ids, Core Invariant 3); a

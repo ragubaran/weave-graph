@@ -1,4 +1,4 @@
-//! `--features watch` (impl.md M2.11): file-watcher auto-sync with
+//! `--features watch`: file-watcher auto-sync with
 //! blast-radius gating. `notify` reports raw filesystem events; this module
 //! debounces bursts of them into one batch per quiet period, gates each
 //! batch's blast radius (union of `reachable_within` over the changed
@@ -23,10 +23,10 @@ pub(crate) struct WatchConfig {
 }
 
 impl WatchConfig {
-    /// `debounce_ms` defaults to 2000, clamped to `[100, 60_000]` per
-    /// `ReindexConfig`'s own existing clamping discipline (`plan.md`).
-    /// `blast_radius_ceiling` defaults to 200, matching M1.8's own 200-node
-    /// canvas budget — a stated guess, not a measured number.
+    /// `debounce_ms` defaults to 2000, clamped to `[100, 60_000]` to match
+    /// `ReindexConfig`'s own existing clamping discipline.
+    /// `blast_radius_ceiling` defaults to 200, matching the report canvas's
+    /// 200-node budget — a stated guess, not a measured number.
     pub(crate) fn load(root: &Path) -> Self {
         let path = config_path(root);
         let debounce_ms = config::get_key(&path, "watch.debounce_ms")
@@ -56,8 +56,8 @@ pub(crate) fn enabled(root: &Path) -> bool {
 
 /// Names the changed files and the computed blast-radius size a deferred
 /// batch was too large to auto-reindex — surfaced through `weave status`
-/// and (M2.11's own task) MCP tool responses, re-evaluated on every
-/// subsequent tick, and cleared the moment a `weave index` run succeeds.
+/// and MCP tool responses, re-evaluated on every subsequent tick, and
+/// cleared the moment a `weave index` run succeeds.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct PendingMarker {
     pub(crate) files: Vec<String>,
@@ -90,9 +90,8 @@ pub(crate) fn clear_pending_marker(weave_dir: &Path) {
 
 /// Names files seen changed but still inside the current debounce window —
 /// distinct from [`PendingMarker`]: this is the transient "not reindexed
-/// *yet*" case (cleared the instant debounce fires, whether that leads to a
-/// real reindex or a deferral), not the "too large to auto-reindex" case.
-/// MCP tool responses surface both, worded differently, per M2.11's task.
+/// *yet*" case, not the "too large to auto-reindex" case. MCP tool
+/// responses surface both, worded differently.
 fn in_flight_path(weave_dir: &Path) -> PathBuf {
     weave_dir.join("watch-in-flight")
 }
@@ -117,8 +116,6 @@ pub(crate) fn read_in_flight(weave_dir: &Path) -> Vec<String> {
 /// `weave_impact_radius`'s own "full BFS, no depth cap" convention) over
 /// every already-indexed symbol in `changed_files` — the "how much would
 /// auto-reindexing touch" number `[watch] blast_radius_ceiling` gates on.
-/// Streams nodes rather than materializing them (M1.9's own established
-/// pattern) since this can run on every debounce tick, not just at load.
 pub(crate) fn blast_radius(
     storage: &dyn Storage,
     csr: &CsrGraph,

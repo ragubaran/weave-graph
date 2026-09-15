@@ -1,5 +1,5 @@
-//! Centralized Graph Registry (`impl.md` M3.1, `plan.md` §3.1): the
-//! server-side counterpart to M2.5's client (`client.rs`). HTTP handlers
+//! Centralized Graph Registry: the
+//! server-side counterpart to the client (`client.rs`). HTTP handlers
 //! never write directly to the committed blob store — every push lands in
 //! a per-repo disk-spool queue first, drained by one dedicated worker
 //! thread per repo (sequential within a repo, parallel across repos by
@@ -55,8 +55,8 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Operator-supplied limits — deliberately no `Default`: `plan.md` §3.1
-/// requires these calibrated against observed merge rates, not shipped as
+/// Operator-supplied limits — deliberately no `Default`: these must be
+/// calibrated against observed merge rates, not shipped as
 /// an arbitrary constant nobody actually measured.
 #[derive(Debug, Clone)]
 pub struct RegistryConfig {
@@ -574,7 +574,7 @@ impl Registry {
     }
 
     /// `commit_sha == "latest"` resolves against the persisted head —
-    /// mirrors the client's own `pull("latest")` fallback (M2.5).
+    /// mirrors the client's own `pull("latest")` fallback.
     pub fn pull(&self, repo_id: &str, commit_sha: &str) -> PullResult {
         if !is_safe_path_component(repo_id)
             || (commit_sha != "latest" && !is_safe_path_component(commit_sha))
@@ -849,8 +849,7 @@ fn commit_job(store_dir: &Path, job: &SpoolJob) -> bool {
 
 /// Keeps only the `retention` most-recently-committed blobs, oldest-first
 /// eviction by mtime — the client-supplied hint is the only retention
-/// policy a registry this small needs (closes M2.5's previously-untestable
-/// "retention actually prunes" acceptance criterion).
+/// policy a registry this small needs.
 fn prune_retention(store_dir: &Path, retention: usize) {
     let Ok(entries) = fs::read_dir(store_dir) else {
         return;

@@ -1,4 +1,4 @@
-//! `slm` feature (`impl.md` M2.4, `slm-spec.md`): local intent routing.
+//! `slm` feature: local intent routing.
 //! Subprocess-isolated inference ensures 0 MB idle-RSS budget by construction;
 //! model translates intent into exact graph queries without authoring facts,
 //! preserving deterministic execution invariants across all base paths.
@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 pub(crate) const TOOLS: [&str; 4] = ["callers", "callees", "impact", "path"];
 
 /// Hard kill for an inference subprocess: ensures CLI never hangs
-/// under graceful degradation rules (`slm-spec.md` §4.2).
+/// waiting on a stalled or runaway model process.
 const ROUTE_DEADLINE: Duration = Duration::from_secs(120);
 
 /// One routed intent: the tool plus parameters. `second` is only set
@@ -23,8 +23,8 @@ pub(crate) struct RoutedCall {
 }
 
 impl RoutedCall {
-    /// Exact query executed: transparency (`slm-spec.md` §2.1) requires
-    /// displaying resolved tool call before execution.
+    /// Exact query executed: shown to the user before execution so a
+    /// routed call is never a black box.
     pub(crate) fn expression(&self) -> String {
         match &self.second {
             Some(b) => format!("{}({},{})", self.tool, self.symbol, b),
@@ -53,7 +53,7 @@ impl std::fmt::Display for RouterError {
 
 pub(crate) trait IntentRouter {
     /// Symbol table is injected to ground models on real names and
-    /// enables fallback near-miss correction (`slm-spec.md` §5.4).
+    /// enables fallback near-miss correction.
     fn route(&self, question: &str, symbols: &[String]) -> Result<RoutedCall, RouterError>;
     fn name(&self) -> &'static str;
 }
@@ -65,7 +65,7 @@ pub(crate) struct ModelSpec {
     pub(crate) role: &'static str,
 }
 
-/// Model spectrum from `slm-spec.md` §2.2. Checksums must be provided
+/// Model spectrum. Checksums must be provided
 /// explicitly via `--sha256` at pull time rather than hardcoded,
 /// preventing silent upstream model substitution.
 pub(crate) const MODEL_REGISTRY: [ModelSpec; 4] = [
@@ -99,8 +99,8 @@ pub(crate) fn model_spec(name: &str) -> Option<&'static ModelSpec> {
     MODEL_REGISTRY.iter().find(|m| m.name == name)
 }
 
-/// Model cache path: checks `$XDG_CACHE_HOME` then `$HOME/.cache`
-/// per `slm-spec.md` §2.2, avoiding CWD-relative path ambiguity.
+/// Model cache path: checks `$XDG_CACHE_HOME` then `$HOME/.cache`,
+/// avoiding CWD-relative path ambiguity.
 pub(crate) fn models_dir() -> PathBuf {
     let base = std::env::var("XDG_CACHE_HOME")
         .map(PathBuf::from)
@@ -114,7 +114,7 @@ pub(crate) fn model_path(name: &str) -> PathBuf {
 }
 
 /// Models are loaded lazily from disk; weights are never bundled or
-/// automatically fetched at startup per `slm-spec.md` §4.2.
+/// automatically fetched at startup.
 pub(crate) fn model_available(name: &str) -> bool {
     let path = model_path(name);
     path.is_file()
@@ -134,8 +134,8 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String, String> {
 /// Downloads via `curl` (the one subprocess use for network I/O — no
 /// HTTP client is linked into any crate) to `<dest>.part`, verifies the
 /// publisher checksum, then atomically renames into place. Refuses to
-/// download at all without an expected checksum: unverified weights are
-/// exactly the silent-model-swap failure §2.2 forbids.
+/// download at all without an expected checksum: unverified weights would
+/// let a model swap silently, which this guards against.
 pub(crate) fn pull_model(
     spec: &ModelSpec,
     expected_sha256: &str,
@@ -171,7 +171,7 @@ pub(crate) fn pull_model(
     std::fs::rename(&partial, dest).map_err(|e| format!("install failed: {e}"))
 }
 
-/// Deterministic fallback router (`slm-spec.md` §4.2): keyword mapping
+/// Deterministic fallback router: keyword mapping
 /// and symbol near-miss correction. Fast, offline baseline that
 /// `weave slm doctor` measures candidate models against.
 pub(crate) struct FuzzyRouter;
@@ -265,7 +265,7 @@ fn path_call(question: &str, symbols: &[String]) -> Option<RoutedCall> {
 
 /// Case-insensitive exact match first, then a unique substring match —
 /// "jwt" resolving to `verifyJWTSession` is the near-miss correction
-/// §5.4 asks for. Ambiguous substrings stay unresolved rather than
+/// this enables. Ambiguous substrings stay unresolved rather than
 /// guessed (the same fan-out discipline `ProjectIndex` uses).
 fn ground(token: &str, symbols: &[String]) -> Option<String> {
     let lower = token.to_lowercase();
@@ -469,7 +469,7 @@ fn parse_route(output: &str) -> Result<RoutedCall, RouterError> {
     })
 }
 
-/// Router selection (`slm-spec.md` §4.2 graceful degradation): selects
+/// Graceful degradation: selects
 /// model router if weights exist, falling back to deterministic router.
 pub(crate) fn select_router(model_name: &str) -> Box<dyn IntentRouter> {
     if model_available(model_name) {
@@ -479,7 +479,7 @@ pub(crate) fn select_router(model_name: &str) -> Box<dyn IntentRouter> {
     }
 }
 
-/// Held-out prompt (`slm-spec.md` §2.5): fixed question, expected tool,
+/// Held-out prompt: fixed question, expected tool,
 /// symbol table, and expected exact symbol for automated accuracy checks.
 pub(crate) struct HeldOutPrompt {
     pub(crate) question: &'static str,
@@ -556,7 +556,7 @@ impl DoctorOutcome {
         (ok as f64 / total as f64) * 100.0
     }
 
-    /// Evaluates targets from `slm-spec.md` §2.5: requires 100% pass rate
+    /// Requires 100% pass rate
     /// across the held-out prompt suite to confirm grounding and selection.
     pub(crate) fn pass(&self) -> bool {
         self.failures.is_empty()
@@ -619,7 +619,7 @@ pub(crate) fn run_doctor(router: &dyn IntentRouter) -> DoctorOutcome {
     outcome
 }
 
-/// The `weave slm doctor` report, formatted to §2.5's output shape.
+/// The `weave slm doctor` report, formatted to match the held-out check's output shape.
 pub(crate) fn render_doctor(model: &str, outcome: &DoctorOutcome) -> String {
     let total = HELD_OUT.len();
     let ttft_p50 = percentile(outcome.route_ms.clone(), 50.0);

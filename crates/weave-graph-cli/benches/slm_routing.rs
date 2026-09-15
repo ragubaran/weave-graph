@@ -1,4 +1,4 @@
-//! `benches/slm_routing.rs` (`slm-spec.md` §4.3): TTFT and routing latency.
+//! TTFT and routing latency benchmarks.
 //! Deterministic fallback router serves as graceful-degradation floor;
 //! `llama-cli` path is benched only if `WEAVE_SLM_BENCH_MODEL` is set,
 //! preserving zero-network offline execution invariants.

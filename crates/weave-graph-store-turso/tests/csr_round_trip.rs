@@ -1,4 +1,4 @@
-//! M2.7 acceptance: the sqlite crate's CSR round-trip suite runs against
+//! Acceptance: the sqlite crate's CSR round-trip suite runs against
 //! `TursoStorage` through the shared, factory-parameterized suite.
 
 #[path = "../../weave-graph-store-sqlite/tests/suites/csr_round_trip.rs"]

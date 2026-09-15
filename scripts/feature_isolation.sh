@@ -21,24 +21,36 @@ MAX_RSS_DELTA_KB=${MAX_RSS_DELTA_KB:-8192}
 # wall-clock jitter on shared machines measured 10-45% at ~300ms, so a 10%
 # threshold was a flake generator, not a gate.
 MAX_LATENCY_REGRESSION_PCT=${MAX_LATENCY_REGRESSION_PCT:-30}
+BUILD_PROFILE=${BUILD_PROFILE:-debug}
+case "$BUILD_PROFILE" in
+    debug|release) ;;
+    *)
+        echo "BUILD_PROFILE must be debug or release" >&2
+        exit 2
+        ;;
+esac
 # slm/hub/turso excluded: slm shells out to external model weights, hub's
 # sync verbs hit a configured hub URL, turso swaps the storage backend
 # (its isolation is asserted by its own suite). The pure read/query
 # features are the ones L8's "no change to default-build latency/RSS"
 # claim covers.
-FEATURES=(${@:-docs federation provenance notes watch viz rbac fts})
+FEATURES=(${@:-docs federation provenance notes watch viz rbac fts vector slm})
 
 build() {
+    local cargo_profile=()
+    if [ "$BUILD_PROFILE" = release ]; then
+        cargo_profile=(--release)
+    fi
     if [ "$1" = default ]; then
-        cargo build -q -p weave-graph-cli --bin weave
+        cargo build -q -p weave-graph-cli "${cargo_profile[@]}" --bin weave
     else
-        cargo build -q -p weave-graph-cli --features "$1" --bin weave
+        cargo build -q -p weave-graph-cli "${cargo_profile[@]}" --features "$1" --bin weave
     fi
 }
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-ABS_BIN="$(pwd)/target/debug/weave"
+ABS_BIN="$(pwd)/target/$BUILD_PROFILE/weave"
 mkdir -p "$WORK/src"
 # A call chain big enough that an impact query does real traversal work —
 # on a two-symbol fixture the session is pure startup cost and the latency
@@ -61,11 +73,21 @@ build default
 
 rss_kb() { # peak RSS, normalized to KB (macOS reports bytes, Linux KB)
     local raw
-    raw=$(/usr/bin/time -l "$ABS_BIN" status 2>&1 >/dev/null |
-        awk '/maximum resident set size/ {print $1}')
     if [ "$(uname)" = Darwin ]; then
+        raw=$(/usr/bin/time -l "$ABS_BIN" status 2>&1 >/dev/null |
+            awk '/maximum resident set size/ {print $1}')
+        if [ -z "$raw" ]; then
+            echo "unable to read peak RSS from /usr/bin/time" >&2
+            return 1
+        fi
         echo $((raw / 1024))
     else
+        raw=$(/usr/bin/time -v "$ABS_BIN" status 2>&1 >/dev/null |
+            awk -F: '/Maximum resident set size/ {gsub(/ /, "", $2); print $2}')
+        if [ -z "$raw" ]; then
+            echo "unable to read peak RSS from /usr/bin/time" >&2
+            return 1
+        fi
         echo "$raw"
     fi
 }

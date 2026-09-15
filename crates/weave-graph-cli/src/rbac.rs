@@ -1,11 +1,11 @@
-//! CLI glue for M3.0's query-layer RBAC: resolves an identity from
-//! `.weave/config.toml`'s `[rbac.users]` table (plus M3.4's SCIM-managed
+//! CLI glue for the query-layer RBAC: resolves an identity from
+//! `.weave/config.toml`'s `[rbac.users]` table (plus the SCIM-managed
 //! directory, which overrides the config for the same subject) and builds
 //! the one `RbacGuard` every masked command (`query`/`report`/`export`,
 //! and `serve --mcp`) shares — see `weave_graph_core::rbac` for the guard
 //! itself and why masking lives there, not here.
 //!
-//! M3.4 (`impl.md`): the SCIM 2.0 directory server. One loopback endpoint
+//! The SCIM 2.0 directory server. One loopback endpoint
 //! covers Okta / Azure AD / Google Workspace — all three are SCIM *client*
 //! IdPs; they push provision/deprovision here, we never call out to any
 //! of them (Core Invariant 1: zero outbound network). Access is resolved
@@ -134,7 +134,7 @@ fn github_identity_from_endpoint(endpoint: &str, token: &str) -> Option<Identity
 }
 
 /// "Is this node part of the public API surface" — reuses the same
-/// per-language heuristic `contract.rs` uses for the M2.2 contract hash,
+/// per-language heuristic `contract.rs` uses for its contract hash,
 /// so RBAC visibility and that gate never disagree. A path with no
 /// recognized language is treated as fully internal — the safer default
 /// for an extension this crate can't classify.
@@ -149,7 +149,7 @@ fn is_public(node: &Node) -> bool {
 }
 
 /// Resolves `--as <subject>` against `.weave/config.toml`'s `[rbac.users]`
-/// map, overlaid with the SCIM-managed directory (`M3.4`): IdP-managed
+/// map, overlaid with the SCIM-managed directory: IdP-managed
 /// entries win for the same subject — the directory is the source of
 /// truth a deprovision propagates through; config is the static fallback.
 /// `as_subject = None` (no `--as` flag) resolves to the anonymous
@@ -167,10 +167,10 @@ pub(crate) fn guard_for(root: &Path, as_subject: Option<&str>) -> RbacGuard {
             .filter_map(|r| r.strip_prefix("group:").map(String::from))
             .collect::<Vec<_>>()
         {
-            if let Some(role) = group_mappings.get(&group) {
-                if !user_config.roles.iter().any(|existing| existing == role) {
-                    user_config.roles.push(role.clone());
-                }
+            if let Some(role) = group_mappings.get(&group)
+                && !user_config.roles.iter().any(|existing| existing == role)
+            {
+                user_config.roles.push(role.clone());
             }
         }
         users.insert(subject, user_config);
@@ -307,7 +307,7 @@ fn save_directory(path: &Path, users: &HashMap<String, UserConfig>) -> Result<()
 }
 
 /// An `AuthProvider` over a snapshot of the SCIM directory, completing
-/// M3.0's trait (impl.md M3.4). Holds the snapshot from the last `sync()`
+/// the RBAC trait. Holds the snapshot from the last `sync()`
 /// — deliberately *not* the live file — so a provision/deprovision lands
 /// at query time exactly one sync cycle late, never zero and never
 /// infinite.

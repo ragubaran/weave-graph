@@ -99,7 +99,7 @@ weave --as charlie serve --mcp
 
 ## 3. SCIM 2.0 Identity Provisioning
 
-Weave Graph accepts role assignments pushed from an enterprise IdP through a generic SCIM 2.0 endpoint. An optional `github-auth` build can also resolve a supplied GitHub token through GitHub's authenticated-user API; it is not generic OAuth/OIDC or interactive SSO.
+Weave Graph accepts role assignments pushed from an enterprise IdP through a generic SCIM 2.0 endpoint. An optional `github-auth` build can also resolve a supplied GitHub token through GitHub's authenticated-user, organization, and team APIs; configured membership mappings become RBAC roles. It is not generic OAuth/OIDC or interactive SSO.
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
@@ -235,7 +235,7 @@ One compact line per symbol — durations in microseconds, no separate "hotspot 
 
 ## 6. Centralized Snapshot Registry & Hub (`hub`)
 
-In enterprise monorepos or multi-repo microservice fleets, parsing millions of lines of code on every developer laptop and CI runner wastes CPU cycles and battery. The **Weave Hub** centralizes graph indexing into an ultra-fast artifact service.
+In enterprise monorepos or multi-repo microservice fleets, parsing millions of lines of code on every developer laptop and CI runner wastes CPU cycles and battery. The **Weave Hub** centralizes graph indexing into a shared artifact service.
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐

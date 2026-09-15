@@ -143,3 +143,62 @@ fn unquote_leaves_a_lone_delimiter_character_untouched() {
     // degenerate case must fall through unchanged instead.
     assert_eq!(super::unquote("\""), "\"");
 }
+
+#[test]
+fn create_function_becomes_a_function_symbol() {
+    let file = parse(
+        "CREATE FUNCTION add_one(x INT) RETURNS INT AS $$ SELECT x + 1 $$ LANGUAGE SQL;\n\
+         CREATE FUNCTION twice(x INT) RETURNS INT AS $$ SELECT x * 2 $$ LANGUAGE SQL;\n",
+    );
+    let functions: Vec<&str> = file
+        .symbols
+        .iter()
+        .filter(|s| s.kind == SymbolKind::Function)
+        .map(|s| s.symbol.as_str())
+        .collect();
+    assert!(functions.contains(&"add_one"), "{functions:?}");
+    assert!(functions.contains(&"twice"), "{functions:?}");
+}
+
+#[test]
+fn create_schema_becomes_a_class_symbol_and_an_empty_name_is_skipped() {
+    let file = parse("CREATE SCHEMA analytics;\nCREATE SCHEMA \"\";\n");
+    let classes: Vec<&str> = file
+        .symbols
+        .iter()
+        .filter(|s| s.kind == SymbolKind::Class)
+        .map(|s| s.symbol.as_str())
+        .collect();
+    assert_eq!(classes, vec!["analytics"]);
+}
+
+#[test]
+fn quoted_identifiers_are_unquoted_in_symbols_and_edges() {
+    let file = parse(
+        "CREATE TABLE \"order item\" (id INT);\n\
+         CREATE VIEW v AS SELECT id FROM \"order item\";\n",
+    );
+    assert!(
+        file.symbols
+            .iter()
+            .any(|s| s.symbol == "order item" && s.kind == SymbolKind::Struct)
+    );
+    assert!(
+        file.structural_edges
+            .iter()
+            .any(|e| e.target_name == "order item")
+    );
+}
+
+#[test]
+fn materialized_views_extract_like_plain_views() {
+    let file = parse(
+        "CREATE TABLE users (id INT);\n\
+         CREATE MATERIALIZED VIEW user_cache AS SELECT id FROM users;\n",
+    );
+    assert!(
+        file.symbols
+            .iter()
+            .any(|s| s.symbol == "user_cache" && s.kind == SymbolKind::Interface)
+    );
+}

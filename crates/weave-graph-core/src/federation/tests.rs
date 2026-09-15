@@ -32,7 +32,7 @@ fn a_linear_chain_has_no_cycle_and_stays_all_singletons() {
 #[test]
 fn a_deliberate_three_repo_cycle_is_reported_as_one_scc() {
     // A -> B -> C -> A: exactly the circular cross-repo dependency
-    // `plan.md` §2.3 names as Tarjan's SCC's reason to exist here.
+    // that is Tarjan's SCC's reason to exist here.
     let sccs = tarjan_scc(&[1, 2, 3], &[(1, 2), (2, 3), (3, 1)]);
     assert_eq!(sccs.len(), 1);
     let mut only = sccs[0].clone();
