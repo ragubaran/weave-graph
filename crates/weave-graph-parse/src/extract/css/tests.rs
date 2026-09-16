@@ -64,3 +64,34 @@ fn extracts_classes_ids_and_custom_properties() {
             .any(|c| c.callee_name == "--primary-color" && !c.is_member_call)
     );
 }
+
+#[test]
+fn extracts_import_url() {
+    let css = r#"
+@import url("fonts.css");
+"#;
+    let file = parse(css);
+    assert!(file.structural_edges.iter().any(|e| {
+        e.source_moniker == "styles.css#<module>"
+            && e.target_name == "fonts.css"
+            && e.kind == StructuralEdgeKind::Imports
+    }));
+}
+
+#[test]
+fn extracts_nested_class_and_id_selectors() {
+    let css = r#"
+div#my-id .my-class {
+    color: red;
+}
+"#;
+    let file = parse(css);
+    let names: Vec<(&str, SymbolKind)> = file
+        .symbols
+        .iter()
+        .map(|s| (s.symbol.as_str(), s.kind))
+        .collect();
+
+    assert!(names.contains(&("my-id", SymbolKind::Struct)));
+    assert!(names.contains(&("my-class", SymbolKind::Class)));
+}

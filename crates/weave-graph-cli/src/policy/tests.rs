@@ -180,13 +180,15 @@ fn cmd_lint_skips_rbac_masked_edges_and_says_so() {
     // `render`/`save` are Rust `fn`s with no `pub` — anonymous sees
     // nothing, so the ui->db edge is unclassifiable and must not become
     // a violation.
-    cmd_policy_lint(root.path(), Some("anonymous"), false).unwrap();
-
-    // But if --fail-on-masked is provided, it should fail.
-    let err = cmd_policy_lint(root.path(), Some("anonymous"), true)
+    let err = cmd_policy_lint(root.path(), Some("anonymous"), false)
         .unwrap_err()
         .to_string();
-    assert!(err.contains("Masked violations possible"));
+    assert!(err.contains("Policy view incomplete"));
+
+    let explicit_err = cmd_policy_lint(root.path(), Some("anonymous"), true)
+        .unwrap_err()
+        .to_string();
+    assert!(explicit_err.contains("Policy view incomplete"));
 }
 
 /// A two-file ring gives drift both remaining branches: a cycle *and*

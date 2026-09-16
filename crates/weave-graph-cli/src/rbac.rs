@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 #[cfg(feature = "github-auth")]
@@ -561,14 +561,67 @@ fn provision_request(body: &str) -> Result<DirectoryMutation, String> {
 
 type ScimRequest = (String, String, String, Vec<(String, String)>);
 
-fn read_request(stream: &mut TcpStream) -> Result<ScimRequest, std::io::Error> {
+/// Reads a whole HTTP/1.0 request from `stream`: headers first (bounded,
+/// so a runaway client can't grow memory without end), then the body —
+/// `content-length` bytes loop-read, never a single `read` that could
+/// truncate a payload split across TCP segments.
+fn read_request(stream: &mut impl std::io::Read) -> Result<ScimRequest, std::io::Error> {
+    const MAX_HEADERS: usize = 64 * 1024;
+    const MAX_BODY: usize = 1 << 20;
+
+    let mut raw = Vec::new();
     let mut buf = vec![0u8; 8192];
-    let n = stream.read(&mut buf)?;
-    let raw = String::from_utf8_lossy(&buf[..n]).to_string();
-    let head_end = raw.find("\r\n\r\n").unwrap_or(raw.len());
-    let mut lines = raw[..head_end].split("\r\n");
-    let request_line = lines.next().unwrap_or_default();
-    let mut parts = request_line.split(' ');
+    let head_end = loop {
+        let n = stream.read(&mut buf)?;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "SCIM request ended before the HTTP headers completed",
+            ));
+        }
+        raw.extend_from_slice(&buf[..n]);
+        if let Some(position) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position;
+        }
+        if raw.len() > MAX_HEADERS {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "SCIM request headers exceed 64 KiB",
+            ));
+        }
+    };
+    let head = String::from_utf8_lossy(&raw[..head_end]).into_owned();
+    let content_length = {
+        header_value(&head, "content-length")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0)
+    };
+    if content_length > MAX_BODY {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("SCIM body exceeds {MAX_BODY} bytes"),
+        ));
+    }
+    let body_start = head_end + 4;
+    let body_end = body_start + content_length;
+    while raw.len() < body_end {
+        let n = stream.read(&mut buf)?;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "SCIM request body is shorter than Content-Length",
+            ));
+        }
+        raw.extend_from_slice(&buf[..n]);
+    }
+    let body = String::from_utf8(raw[body_start..body_end].to_vec()).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("SCIM request body is not valid UTF-8: {error}"),
+        )
+    })?;
+    let mut lines = head.split("\r\n");
+    let mut parts = lines.next().unwrap_or_default().split(' ');
     let method = parts.next().unwrap_or_default().to_string();
     let path = parts.next().unwrap_or_default().to_string();
     let headers = lines
@@ -577,12 +630,36 @@ fn read_request(stream: &mut TcpStream) -> Result<ScimRequest, std::io::Error> {
                 .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
         })
         .collect();
-    // Split body off at the header/body boundary, if one arrived.
-    let body = match raw.find("\r\n\r\n") {
-        Some(i) => raw[i + 4..].to_string(),
-        None => String::new(),
-    };
     Ok((method, path, body, headers))
+}
+
+fn header_value<'a>(head: &'a str, wanted: &str) -> Option<&'a str> {
+    head.split("\r\n").skip(1).find_map(|line| {
+        line.split_once(':')
+            .filter(|(name, _)| name.trim().eq_ignore_ascii_case(wanted))
+            .map(|(_, value)| value.trim())
+    })
+}
+
+/// Test reader that hands out at most `step` bytes per `read` call, so the
+/// single-read truncation the request reader guards against actually occurs.
+#[cfg(test)]
+struct ChunkedReader<'a> {
+    data: &'a [u8],
+    step: usize,
+}
+
+#[cfg(test)]
+impl std::io::Read for ChunkedReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.data.is_empty() {
+            return Ok(0);
+        }
+        let n = self.step.min(buf.len()).min(self.data.len());
+        buf[..n].copy_from_slice(&self.data[..n]);
+        self.data = &self.data[n..];
+        Ok(n)
+    }
 }
 
 fn write_response(stream: &mut TcpStream, status: u16, body: &str) -> std::io::Result<()> {

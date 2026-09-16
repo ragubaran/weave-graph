@@ -323,7 +323,7 @@ jobs:
       # install into — build the wheel and pip-install it instead.
       - name: Build and install python wheel
         run: |
-          maturin build --manifest-path crates/weave-graph-python/Cargo.toml --features python --release --out dist
+          maturin build --manifest-path crates/weave-graph-python/Cargo.toml --features python,extension-module --release --out dist
           pip install dist/*.whl
         
       # The PyO3 module is registered as `weave_graph` (lib name), and the

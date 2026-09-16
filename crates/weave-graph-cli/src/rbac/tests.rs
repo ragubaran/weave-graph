@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Read;
 
 use weave_graph_core::Node;
 
@@ -559,4 +560,77 @@ fn cmd_serve_scim_enforces_a_configured_token() {
     assert!(authorized.starts_with("HTTP/1.0 200"), "{authorized}");
 
     drop(handle);
+}
+
+/// The body must arrive whole even when the socket delivers it in fragments
+/// far smaller than a single `read` — the regression the old one-shot 8 KiB
+/// read would have truncated.
+#[test]
+fn read_request_reassembles_a_body_split_across_many_segments() {
+    let body = "x".repeat(12_000);
+    let request = format!(
+        "POST /Users HTTP/1.0\r\nContent-Length: {}\r\nContent-Type: application/scim+json\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let mut stream = ChunkedReader {
+        data: request.as_bytes(),
+        step: 257, // primes a mid-header split well under the old 8 KiB window
+    };
+    let (method, path, body_out, headers) = read_request(&mut stream).unwrap();
+    assert_eq!(method, "POST");
+    assert_eq!(path, "/Users");
+    assert_eq!(body_out, body);
+    assert_eq!(
+        headers
+            .iter()
+            .find(|(name, _)| name == "Content-Type")
+            .map(|(_, value)| value.as_str()),
+        Some("application/scim+json")
+    );
+}
+
+#[test]
+fn read_request_preserves_utf8_split_across_reads() {
+    let body = r#"{"userName":"Zoë 🚀"}"#;
+    let request = format!(
+        "POST /Users HTTP/1.0\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let mut stream = ChunkedReader {
+        data: request.as_bytes(),
+        step: 1,
+    };
+
+    let (_, _, body_out, _) = read_request(&mut stream).unwrap();
+
+    assert_eq!(body_out, body);
+}
+
+#[test]
+fn read_request_rejects_a_body_shorter_than_content_length() {
+    let request = b"POST /Users HTTP/1.0\r\nContent-Length: 8\r\n\r\nshort";
+    let mut stream = ChunkedReader {
+        data: request,
+        step: 3,
+    };
+
+    let err = read_request(&mut stream).unwrap_err();
+
+    assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+}
+
+#[test]
+fn read_request_rejects_overlarge_bodies_and_headers() {
+    let request = format!(
+        "POST /Users HTTP/1.0\r\nContent-Length: {}\r\n\r\n",
+        1 << 30
+    );
+    let mut stream = ChunkedReader {
+        data: request.as_bytes(),
+        step: 8192,
+    };
+    let err = read_request(&mut stream).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
 }

@@ -45,6 +45,12 @@ impl CompactCsr {
 
         let mut current_node = 0;
         for &(u, v) in edges {
+            // Drop edges whose compact endpoints fall outside the dense
+            // `0..node_count` space instead of indexing out of bounds — the
+            // same skip-unknown-id tolerance `CsrGraph::load` already uses.
+            if (u as usize) >= node_count || (v as usize) >= node_count {
+                continue;
+            }
             while current_node < u {
                 current_node += 1;
                 row_offsets[current_node as usize] = column_indices.len();

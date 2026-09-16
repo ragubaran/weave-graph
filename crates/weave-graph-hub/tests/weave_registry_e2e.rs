@@ -70,11 +70,13 @@ fn weave_registry_binary_exits_2_with_usage_on_missing_args() {
 
 #[test]
 fn weave_registry_binary_exits_1_on_an_unbindable_address() {
+    let blocker = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = blocker.local_addr().unwrap().port();
     let dir = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_weave-registry"))
         .args([
             "--bind",
-            "not-a-valid-address",
+            &format!("127.0.0.1:{port}"),
             "--data-dir",
             dir.path().to_str().unwrap(),
             "--max-queue-depth-per-repo",
@@ -83,6 +85,8 @@ fn weave_registry_binary_exits_1_on_an_unbindable_address() {
             "50",
             "--max-snapshot-bytes",
             "10485760",
+            "--auth-token",
+            "test",
         ])
         .output()
         .unwrap();

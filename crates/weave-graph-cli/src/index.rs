@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::Mutex;
 
-use rayon::prelude::*;
+use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 
 use weave_graph_core::{Edge, Node, NodeId, Storage, StorageError};
 use weave_graph_parse::{ParsedFile, ProjectIndex, parse_file};
@@ -88,7 +88,7 @@ pub(crate) fn build_project_index_from_storage(
 /// magnitude under Invariant 4's 80 MB ceiling: a streaming property
 /// kept by construction, not by hope.
 const PARSE_CHUNK: usize = 32;
-const STAGED_WRITE_ROWS: usize = 50_000;
+const STAGED_WRITE_ROWS: usize = 10_000;
 
 fn rotate_staged_write(
     storage: &SqliteStorage,
@@ -117,6 +117,17 @@ fn restart_staged_write(
     Ok(())
 }
 
+fn bounded_parser_pool() -> Result<ThreadPool, StorageError> {
+    ThreadPoolBuilder::new()
+        .num_threads(
+            std::thread::available_parallelism()
+                .map(|count| count.get())
+                .unwrap_or(1),
+        )
+        .build()
+        .map_err(|error| StorageError::Backend(format!("could not start parser pool: {error}")))
+}
+
 /// The parse stage is the *only* parallel stage: chunks of files are
 /// parsed across the rayon pool, then folded strictly serially into the
 /// caller's closure — node/edge writes stay funnel-shaped through the one
@@ -128,26 +139,29 @@ fn parse_files_bounded(
     files: &[PathBuf],
     mut fold: impl FnMut(&str, &ParsedFile) -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
+    let parser_pool = bounded_parser_pool()?;
     let mut failure = None;
     for chunk in files.chunks(PARSE_CHUNK) {
-        let parsed: Vec<_> = chunk
-            .par_iter()
-            .map(|file_path| {
-                let rel = rel_path(root, file_path);
-                let parsed = match fs::read_to_string(file_path) {
-                    Ok(source) => match parse_file(Path::new(&rel), &source) {
-                        Some(Ok(parsed)) => Some(parsed),
-                        Some(Err(err)) => {
-                            eprintln!("skipping {}: {err}", file_path.display());
-                            None
-                        }
-                        None => None,
-                    },
-                    Err(_) => None,
-                };
-                (rel, parsed)
-            })
-            .collect();
+        let parsed = parser_pool.install(|| {
+            chunk
+                .par_iter()
+                .map(|file_path| {
+                    let rel = rel_path(root, file_path);
+                    let parsed = match fs::read_to_string(file_path) {
+                        Ok(source) => match parse_file(Path::new(&rel), &source) {
+                            Some(Ok(parsed)) => Some(parsed),
+                            Some(Err(err)) => {
+                                eprintln!("skipping {}: {err}", file_path.display());
+                                None
+                            }
+                            None => None,
+                        },
+                        Err(_) => None,
+                    };
+                    (rel, parsed)
+                })
+                .collect::<Vec<_>>()
+        });
         for (rel, parsed) in parsed {
             if let Some(parsed) = parsed
                 && failure.is_none()

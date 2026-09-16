@@ -1,4 +1,5 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
+
 use weave_graph_core::StorageError;
 use weave_graph_core::schema::{MIGRATIONS, migrations_after};
 
@@ -29,11 +30,7 @@ fn current_version(conn: &Connection) -> rusqlite::Result<u32> {
 /// once the database is at the latest version, this is a no-op.
 pub(crate) fn migrate(conn: &Connection) -> Result<(), StorageError> {
     let current = current_version(conn).map_err(backend_err)?;
-    let max = MIGRATIONS
-        .iter()
-        .map(|(v, _)| *v)
-        .max()
-        .ok_or_else(|| StorageError::Backend("MIGRATIONS is empty".to_string()))?;
+    let max = MIGRATIONS.iter().map(|(v, _)| *v).max().unwrap_or(0);
     if current > max {
         return Err(StorageError::SchemaTooNew {
             found: current,
@@ -41,10 +38,18 @@ pub(crate) fn migrate(conn: &Connection) -> Result<(), StorageError> {
         });
     }
     for (version, sql) in migrations_after(current) {
-        let batch = format!(
-            "BEGIN;\n{sql}\nINSERT INTO schema_version (version, applied_at) VALUES ({version}, strftime('%s', 'now'));\nCOMMIT;"
-        );
-        conn.execute_batch(&batch).map_err(backend_err)?;
+        // One rusqlite transaction per migration: the version row commits
+        // only with its DDL, so a failed statement rolls both back instead
+        // of recording a version whose SQL half-applied. Batch-free per
+        // statement; the version insert is parameterized, not formatted in.
+        let tx = conn.unchecked_transaction().map_err(backend_err)?;
+        tx.execute_batch(sql).map_err(backend_err)?;
+        tx.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES (?1, strftime('%s', 'now'))",
+            params![version],
+        )
+        .map_err(backend_err)?;
+        tx.commit().map_err(backend_err)?;
     }
     Ok(())
 }
@@ -58,11 +63,7 @@ pub(crate) fn schema_version(conn: &Connection) -> Result<u32, StorageError> {
 /// connection (`SqliteStorage::open_read_only`) can't run migrations at all.
 pub(crate) fn ensure_not_newer_than_supported(conn: &Connection) -> Result<(), StorageError> {
     let current = current_version(conn).map_err(backend_err)?;
-    let max = MIGRATIONS
-        .iter()
-        .map(|(v, _)| *v)
-        .max()
-        .ok_or_else(|| StorageError::Backend("MIGRATIONS is empty".to_string()))?;
+    let max = MIGRATIONS.iter().map(|(v, _)| *v).max().unwrap_or(0);
     if current > max {
         return Err(StorageError::SchemaTooNew {
             found: current,

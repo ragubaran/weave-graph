@@ -251,7 +251,7 @@ weave sync pull [--commit <sha>] [--fallback-latest] [--path <dir>]
 weave sync push [--signature <sig>] [--path <dir>]
 ```
 - `pull`: Hydrates the exact graph snapshot for a commit via atomic file swap, bypassing cold source parsing in CI runners.
-- `push`: Publishes a canonical graph snapshot from trunk branches upon merge. `--signature <sig>` (feature `hub-provenance`): attaches a signature computed by an external signer (e.g. `weave_graph_hub::SnapshotProvenanceVerifier`) — `weave` computes none of its own. The registry only checks it if started with `--provenance-key` (see the [Self-Hosted Guide](self-hosted.md) §6.0); the expected wire format is hex-encoded bytes, and an unconfigured registry accepts any value or none.
+- `push`: Publishes a canonical graph snapshot from trunk branches upon merge. `--signature <hex>` carries a precomputed signature. With `hub-provenance`, `--provenance-key-file <path>` instead reads a secret of at least 32 bytes and computes the domain-separated HMAC-SHA-256 signature locally; the two flags are mutually exclusive. A registry started with its own matching `--provenance-key-file` verifies the signature before commit. An unconfigured registry accepts unsigned snapshots.
 
 ### `weave search` (feature: `fts` / `vector`)
 Performs lexical BM25 search, or optional vector similarity search when

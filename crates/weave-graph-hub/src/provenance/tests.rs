@@ -80,3 +80,39 @@ fn default_matches_new() {
         MockSnapshotProvenanceVerifier::new()
     );
 }
+
+#[test]
+fn hmac_verifier_rejects_weak_secrets() {
+    assert_eq!(
+        HmacSnapshotProvenanceVerifier::new("too-short").unwrap_err(),
+        ProvenanceError::WeakKey
+    );
+}
+
+#[test]
+fn hmac_verifier_authenticates_every_snapshot_field() {
+    let verifier = HmacSnapshotProvenanceVerifier::new([7u8; 32]).unwrap();
+    let signature = verifier.sign_snapshot("auth-service", "abc123", b"snapshot bytes");
+
+    assert_eq!(signature.len(), 32);
+    assert!(
+        verifier
+            .verify_snapshot("auth-service", "abc123", b"snapshot bytes", &signature)
+            .is_ok()
+    );
+    assert!(
+        verifier
+            .verify_snapshot("other-service", "abc123", b"snapshot bytes", &signature)
+            .is_err()
+    );
+    assert!(
+        verifier
+            .verify_snapshot("auth-service", "def456", b"snapshot bytes", &signature)
+            .is_err()
+    );
+    assert!(
+        verifier
+            .verify_snapshot("auth-service", "abc123", b"changed", &signature)
+            .is_err()
+    );
+}

@@ -1,7 +1,6 @@
-//! `weave_search_semantic` (CORE-03/SEC-04, feature `vector`): the same
-//! reference `MockEmbeddingProvider` and SEC-01 pre-truncation visibility
-//! filter as `weave-graph-cli::search::run_semantic`, wired for MCP
-//! callers instead of the CLI.
+//! Experimental deterministic vector retrieval for MCP.
+//! The mock provider exercises storage and authorization boundaries but
+//! is not presented as a production semantic model.
 
 use weave_graph_core::embedding::MockEmbeddingProvider;
 use weave_graph_core::{MAX_SEARCH_LIMIT, Node, Storage, ranking::reciprocal_rank_fusion};

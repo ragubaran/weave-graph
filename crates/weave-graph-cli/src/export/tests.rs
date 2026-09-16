@@ -145,3 +145,262 @@ fn node_ids_matches_the_exported_node_set() {
         assert!(ids.contains(&id));
     }
 }
+
+#[test]
+fn inbound_exhausts_before_depth_limit() {
+    let (storage, _) = chain_storage();
+    // caller -> a -> b.
+    // At 'a', caller is at depth 1.
+    // If we ask for depth 5, it should exhaust after finding 'caller'.
+    let n = neighborhood(&storage, "a", 5, None).unwrap();
+    let symbols: Vec<&str> = n.nodes.iter().map(|x| x.symbol.as_str()).collect();
+    assert!(symbols.contains(&"caller"));
+}
+
+#[test]
+fn export_returns_error_if_nodes_fail() {
+    struct FailNodes;
+    impl Storage for FailNodes {
+        fn all_nodes(&self) -> Result<Vec<Node>, weave_graph_core::StorageError> {
+            Err(weave_graph_core::StorageError::Backend("failed".into()))
+        }
+        fn all_edges(&self) -> Result<Vec<Edge>, weave_graph_core::StorageError> {
+            Ok(vec![])
+        }
+        fn get_node(&self, _: NodeId) -> Result<Option<Node>, weave_graph_core::StorageError> {
+            Ok(None)
+        }
+        fn get_callers(&self, _: NodeId) -> Result<Vec<Edge>, weave_graph_core::StorageError> {
+            Ok(vec![])
+        }
+        fn query_path(
+            &self,
+            _: NodeId,
+            _: NodeId,
+        ) -> Result<Option<Vec<NodeId>>, weave_graph_core::StorageError> {
+            Ok(None)
+        }
+        fn get_edges(&self, _: NodeId) -> Result<Vec<Edge>, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn upsert_node(
+            &mut self,
+            _: &weave_graph_core::Node,
+        ) -> Result<u32, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn upsert_edge(&mut self, _: &Edge) -> Result<u32, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn schema_version(&self) -> Result<u32, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn purge_file_edges(
+            &mut self,
+            _: &str,
+            _: &str,
+        ) -> Result<u64, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn purge_file_nodes(
+            &mut self,
+            _: &str,
+            _: &str,
+        ) -> Result<u64, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn pin_note(
+            &self,
+            _: &weave_graph_core::Note,
+        ) -> Result<i64, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn all_notes(&self) -> Result<Vec<weave_graph_core::Note>, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn recall_notes(
+            &self,
+            _: i64,
+        ) -> Result<Vec<weave_graph_core::Note>, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn reattach_note(
+            &self,
+            _: i64,
+            _: std::option::Option<u32>,
+            _: bool,
+        ) -> Result<(), weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn delete_expired_notes(&self, _: i64) -> Result<u64, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+    }
+    assert!(neighborhood(&FailNodes, "a", 1, None).is_err());
+}
+
+#[test]
+fn export_returns_error_if_edges_fail() {
+    struct FailEdges;
+    impl Storage for FailEdges {
+        fn all_nodes(&self) -> Result<Vec<Node>, weave_graph_core::StorageError> {
+            Ok(vec![node("a.rs", "a")])
+        }
+        fn all_edges(&self) -> Result<Vec<Edge>, weave_graph_core::StorageError> {
+            Err(weave_graph_core::StorageError::Backend("failed".into()))
+        }
+        fn get_node(&self, _: NodeId) -> Result<Option<Node>, weave_graph_core::StorageError> {
+            Ok(None)
+        }
+        fn get_callers(&self, _: NodeId) -> Result<Vec<Edge>, weave_graph_core::StorageError> {
+            Ok(vec![])
+        }
+        fn query_path(
+            &self,
+            _: NodeId,
+            _: NodeId,
+        ) -> Result<Option<Vec<NodeId>>, weave_graph_core::StorageError> {
+            Ok(None)
+        }
+        fn get_edges(&self, _: NodeId) -> Result<Vec<Edge>, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn upsert_node(
+            &mut self,
+            _: &weave_graph_core::Node,
+        ) -> Result<u32, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn upsert_edge(&mut self, _: &Edge) -> Result<u32, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn schema_version(&self) -> Result<u32, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn purge_file_edges(
+            &mut self,
+            _: &str,
+            _: &str,
+        ) -> Result<u64, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn purge_file_nodes(
+            &mut self,
+            _: &str,
+            _: &str,
+        ) -> Result<u64, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn pin_note(
+            &self,
+            _: &weave_graph_core::Note,
+        ) -> Result<i64, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn all_notes(&self) -> Result<Vec<weave_graph_core::Note>, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn recall_notes(
+            &self,
+            _: i64,
+        ) -> Result<Vec<weave_graph_core::Note>, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn reattach_note(
+            &self,
+            _: i64,
+            _: std::option::Option<u32>,
+            _: bool,
+        ) -> Result<(), weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn delete_expired_notes(&self, _: i64) -> Result<u64, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+    }
+    assert!(neighborhood(&FailEdges, "a", 1, None).is_err());
+}
+
+#[test]
+fn export_returns_error_if_csr_load_fails() {
+    struct FailCsr;
+    impl Storage for FailCsr {
+        fn all_nodes(&self) -> Result<Vec<Node>, weave_graph_core::StorageError> {
+            Ok(vec![node("a.rs", "a")])
+        }
+        // all_edges returning an error during CSR load! CsrGraph::load calls all_edges.
+        // Wait, CsrGraph::load does call all_edges, so FailEdges covers it.
+        fn all_edges(&self) -> Result<Vec<Edge>, weave_graph_core::StorageError> {
+            Err(weave_graph_core::StorageError::Backend("failed".into()))
+        }
+        fn get_node(&self, _: NodeId) -> Result<Option<Node>, weave_graph_core::StorageError> {
+            Ok(None)
+        }
+        fn get_callers(&self, _: NodeId) -> Result<Vec<Edge>, weave_graph_core::StorageError> {
+            Ok(vec![])
+        }
+        fn query_path(
+            &self,
+            _: NodeId,
+            _: NodeId,
+        ) -> Result<Option<Vec<NodeId>>, weave_graph_core::StorageError> {
+            Ok(None)
+        }
+        fn get_edges(&self, _: NodeId) -> Result<Vec<Edge>, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn upsert_node(
+            &mut self,
+            _: &weave_graph_core::Node,
+        ) -> Result<u32, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn upsert_edge(&mut self, _: &Edge) -> Result<u32, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn schema_version(&self) -> Result<u32, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn purge_file_edges(
+            &mut self,
+            _: &str,
+            _: &str,
+        ) -> Result<u64, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn purge_file_nodes(
+            &mut self,
+            _: &str,
+            _: &str,
+        ) -> Result<u64, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn pin_note(
+            &self,
+            _: &weave_graph_core::Note,
+        ) -> Result<i64, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn all_notes(&self) -> Result<Vec<weave_graph_core::Note>, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn recall_notes(
+            &self,
+            _: i64,
+        ) -> Result<Vec<weave_graph_core::Note>, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn reattach_note(
+            &self,
+            _: i64,
+            _: std::option::Option<u32>,
+            _: bool,
+        ) -> Result<(), weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+        fn delete_expired_notes(&self, _: i64) -> Result<u64, weave_graph_core::StorageError> {
+            unimplemented!()
+        }
+    }
+    assert!(neighborhood(&FailCsr, "a", 1, None).is_err());
+}

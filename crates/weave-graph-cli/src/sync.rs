@@ -13,6 +13,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "hub-provenance")]
+use weave_graph_hub::{HmacSnapshotProvenanceVerifier, SnapshotProvenanceVerifier};
 use weave_graph_hub::{HubClient, PullOutcome, PushOutcome};
 use weave_graph_store_sqlite::SqliteStorage;
 
@@ -198,25 +200,43 @@ fn report_signature(signature: &Option<String>) {
     }
 }
 
-/// `weave sync push`: publish the current graph snapshot. Merge-only by
-/// construction — a feature branch is refused before any network call. The
-/// v1 payload is always the full snapshot (graphs are derived data;
-/// recompute-and-overwrite is the correct resolution on `409`), with the
-/// delta envelope's `base_commit_sha` carried as a header for the hub's
-/// fast-forward decision.
-///
-/// `signature` comes from `weave sync push --signature <sig>` (or `None`
-/// if the flag is omitted, the default) — this crate ships no
-/// `SnapshotProvenanceVerifier` of its own (signing is a deployment
-/// concern, the same boundary this crate's doc provenance draws
-/// elsewhere), so there is nothing built in to sign with. The flag is the
-/// seam: an operator with a real signature (computed via
-/// `weave_graph_hub`'s public, `hub-provenance`-gated trait, or any other
-/// external signer) hands it in here rather than `weave` ever computing
-/// one itself.
+fn push_signature(
+    root: &Path,
+    commit_sha: &str,
+    snapshot_path: &Path,
+    supplied: Option<&str>,
+    key_file: Option<&Path>,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    if supplied.is_some() && key_file.is_some() {
+        return Err("use either --signature or --provenance-key-file, not both".into());
+    }
+    let Some(key_file) = key_file else {
+        return Ok(supplied.map(String::from));
+    };
+    #[cfg(not(feature = "hub-provenance"))]
+    {
+        let _ = (root, commit_sha, snapshot_path, key_file);
+        return Err("--provenance-key-file requires the `hub-provenance` feature".into());
+    }
+    #[cfg(feature = "hub-provenance")]
+    {
+        let key = fs::read(key_file)?;
+        let verifier = HmacSnapshotProvenanceVerifier::new(key)?;
+        let payload = fs::read(snapshot_path)?;
+        let signature = verifier.sign_snapshot(&repo_label(root), commit_sha, &payload);
+        Ok(Some(
+            signature.iter().map(|byte| format!("{byte:02x}")).collect(),
+        ))
+    }
+}
+
+/// Publishes only from a default branch and always sends a full snapshot.
+/// A precomputed signature and local HMAC key file are mutually exclusive
+/// so the wire request can never carry an ambiguous integrity claim.
 pub(crate) fn cmd_sync_push(
     root: &Path,
-    signature: Option<&str>,
+    supplied_signature: Option<&str>,
+    provenance_key_file: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let branch = crate::git::current_branch(root);
     match branch.as_deref() {
@@ -242,13 +262,20 @@ pub(crate) fn cmd_sync_push(
     let db_path = data_db_path(root)?;
 
     let snapshot = snapshot_for_push(root, &db_path)?;
+    let signature = push_signature(
+        root,
+        &target,
+        &snapshot.path,
+        supplied_signature,
+        provenance_key_file,
+    )?;
 
     let outcome = push_with_backoff(
         &client,
         &target,
         base.as_deref(),
         retention(root),
-        signature,
+        signature.as_deref(),
         &snapshot.path,
     )?;
     match outcome {
@@ -269,7 +296,7 @@ pub(crate) fn cmd_sync_push(
                     &target,
                     None,
                     retention(root),
-                    signature,
+                    signature.as_deref(),
                     &snapshot.path,
                 )?;
                 if !matches!(outcome, PushOutcome::Conflict) {

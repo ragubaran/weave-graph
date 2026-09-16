@@ -30,6 +30,8 @@ impl SqliteStorage {
         let conn = Connection::open(path).map_err(backend_err)?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(backend_err)?;
+        conn.pragma_update(None, "mmap_size", 0)
+            .map_err(backend_err)?;
         migrate(&conn)?;
         #[cfg(feature = "fts")]
         crate::fts::ensure_fts_table(&conn)?;
@@ -43,6 +45,8 @@ impl SqliteStorage {
         #[cfg(feature = "vector")]
         crate::vector::ensure_vector_extension();
         let conn = Connection::open_in_memory().map_err(backend_err)?;
+        conn.pragma_update(None, "mmap_size", 0)
+            .map_err(backend_err)?;
         migrate(&conn)?;
         #[cfg(feature = "fts")]
         crate::fts::ensure_fts_table(&conn)?;
@@ -59,6 +63,8 @@ impl SqliteStorage {
         crate::vector::ensure_vector_extension();
         let conn = Connection::open(rebuild_path).map_err(backend_err)?;
         conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(backend_err)?;
+        conn.pragma_update(None, "mmap_size", 0)
             .map_err(backend_err)?;
         migrate(&conn)?;
         #[cfg(feature = "fts")]
@@ -79,6 +85,8 @@ impl SqliteStorage {
         #[cfg(feature = "vector")]
         crate::vector::ensure_vector_extension();
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(backend_err)?;
+        conn.pragma_update(None, "mmap_size", 0)
             .map_err(backend_err)?;
         ensure_not_newer_than_supported(&conn)?;
         Ok(Self { conn })
@@ -179,26 +187,6 @@ impl SqliteStorage {
     /// the transaction open, rolled back automatically when `self` drops.
     pub fn begin_bulk_write(&self) -> Result<(), StorageError> {
         self.conn.execute_batch("BEGIN").map_err(backend_err)
-    }
-
-    /// Resolves overload-safe identity from the indexed persisted columns.
-    pub fn node_id_by_semantic_key(
-        &self,
-        repo_id: &str,
-        path: &str,
-        symbol: &str,
-        kind: &str,
-        signature: &str,
-    ) -> Result<Option<NodeId>, StorageError> {
-        self.conn
-            .query_row(
-                "SELECT id FROM nodes WHERE repo_id = ?1 AND path = ?2 AND symbol = ?3 \
-                 AND kind = ?4 AND signature = ?5",
-                params![repo_id, path, symbol, kind, signature],
-                |row| row.get::<_, i64>(0).map(|v| v as NodeId),
-            )
-            .optional()
-            .map_err(backend_err)
     }
 
     /// Inserts a batch into a fresh staged database without identity lookups.

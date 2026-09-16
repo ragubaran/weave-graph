@@ -119,7 +119,15 @@ All code must follow the [Google Rust Style Guide](https://google.github.io/styl
 * Remove unreachable functions, types, fields, imports, and feature branches. Do not add `allow(dead_code)`, `expect(dead_code)`, or crate-wide dead-code suppression to hide obsolete code.
 * A suppression is permitted only for a compiler-context false positive (for example, a benchmark importing a live private module by path). It must sit directly beside the suppression and state the concrete reason; remove it when that context no longer applies.
 
-### 5.6 Imports Organization
+### 5.6 Lint Suppressions: Use `#[expect]` over `#[allow]`
+* **Rule:** Never use `#[allow(lint_name)]` to suppress compiler or clippy lints. Always use `#[expect(lint_name)]` instead.
+* **Reason:** `#[expect]` ensures that if the code changes and the lint is no longer triggered, the compiler will emit a warning to remove the stale suppression.
+
+### 5.7 Strict `unsafe` Documentation
+* **Rule:** If `unsafe` is mathematically or systemically required (e.g., for SIMD, CSR layouts, or FFI like `libc::statfs`), the `unsafe` block MUST be preceded by a `// Safety: ` comment block.
+* **Reason:** You must explicitly document the invariants that prevent Undefined Behavior (UB) for the human reader and the compiler. Never use `#[allow(unsafe_code)]` without documenting the exact safety guarantee.
+
+### 5.8 Imports Organization
 Organize `use` statements into 3 distinct, sorted blocks separated by empty lines:
 ```rust
 // 1. Standard library

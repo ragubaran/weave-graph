@@ -15,9 +15,9 @@ crate-type = ["cdylib", "rlib"]
 # compile an empty shim so `cargo build/test --workspace` never needs a
 # Python interpreter (feature isolation, plan.md §0.2).
 python = ["dep:pyo3", "dep:weave-graph-core", "dep:weave-graph-store-sqlite"]
-# Wheel builds enable this (maturin auto-enables it when present): never
-# link libpython into the artifact — the host interpreter provides the
-# symbols at load time.
+# Wheel builds pass this explicitly (`maturin build --features python,extension-module`):
+# without it the artifact links libpython, which maturin rejects. The host
+# interpreter provides the symbols at load time instead.
 extension-module = ["pyo3/extension-module"]
 
 [dependencies]

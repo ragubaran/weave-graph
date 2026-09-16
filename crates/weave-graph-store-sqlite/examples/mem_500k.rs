@@ -6,7 +6,7 @@ use weave_graph_core::{CsrGraph, Edge, Node};
 use weave_graph_store_sqlite::SqliteStorage;
 
 const SYMBOL_COUNT: u32 = 500_000;
-const WRITE_BATCH_ROWS: usize = 50_000;
+const WRITE_BATCH_ROWS: usize = 10_000;
 const PEAK_RSS_BUDGET: u64 = 80 * 1024 * 1024;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

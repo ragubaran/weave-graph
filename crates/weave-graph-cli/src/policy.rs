@@ -115,9 +115,10 @@ pub(crate) fn cmd_policy_lint(
             view.skipped_edges, view.hidden_nodes
         );
     }
-    if violations.is_empty() {
+    let incomplete = view.hidden_nodes > 0 || view.skipped_edges > 0;
+    if violations.is_empty() && !incomplete {
         println!("✓ no boundary violations");
-    } else {
+    } else if !violations.is_empty() {
         for v in &violations {
             println!("✗ [{}] {} -> {}", v.kind, v.from, v.to);
             for example in &v.examples {
@@ -137,9 +138,9 @@ pub(crate) fn cmd_policy_lint(
         .into());
     }
 
-    if fail_on_masked && (view.hidden_nodes > 0 || view.skipped_edges > 0) {
+    if incomplete && (fail_on_masked || as_subject.is_some()) {
         return Err(
-            "Masked violations possible: nodes or edges were skipped due to RBAC masking, and --fail-on-masked was provided."
+            "Policy view incomplete: nodes or edges were skipped by RBAC, so this run cannot certify repository-wide boundaries."
             .into()
         );
     }

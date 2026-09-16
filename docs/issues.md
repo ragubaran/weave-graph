@@ -72,15 +72,15 @@ deployment threat model.
 | IDP-02 | Closed, opt-in | Loopback SCIM can enforce a configured bearer token; an unset token retains the earlier local unauthenticated mode. |
 | RBAC-01 | Deferred capability | Path-scoped roles need an approved role-model expansion and authorization tests. |
 | RBAC-02 | Closed | `[rbac.group_mappings]` maps SCIM `group:<value>` markers to Weave roles during guard construction. Direct roles are preserved, mapped roles are deduplicated, malformed mappings are ignored, and focused RBAC tests cover ingestion plus authorization. |
-| POL-01 | Open | RBAC-masked policy lint can report false clean results in CI. Define whether CI uses an unmasked privileged identity or fails on incomplete visibility; do not invent an existing flag. |
+| POL-01 | Closed, staged validation | CLI policy lint now fails closed whenever an RBAC guard hides nodes or edges, even without `--fail-on-masked`; the MCP policy tool returns an error for the same incomplete view. Focused regressions are present, but the currently hanging Rust test executables must be resolved before release closure. |
 | POL-02 | Deferred capability | Semantic-coupling policy checks are not implemented; require a quality and false-positive evaluation before gating CI. |
 | POL-03 | Closed | Mask-induced orphan reports are annotated, using one graph fetch for both views. |
 | POL-04 | Deferred capability | Role/team ownership and boundary exemptions need an approved policy schema. |
 | POL-05 | Deferred capability | Waiver role hierarchy and bypass audit trail require a policy decision; do not rely on the obsolete `WEAVE_ALLOW_DRIFT` claim. |
 | FED-01 | Deferred capability | Cross-repository boundary linting is not yet a local federation capability. |
-| PROV-01 | Closed, opt-in | Hub registry can verify with an operator-supplied provenance key before commit; no key means no verification. Do not present the test verifier as public-key provenance. |
+| PROV-01 | Closed, shared-secret scope | Live registry wiring now uses domain-separated HMAC-SHA-256 with a secret read from `--provenance-key-file`; `weave sync push --provenance-key-file` can sign locally. Both reject secrets shorter than 32 bytes, and the inline secret flag was removed to avoid process-list exposure. This provides integrity and shared-secret possession, not public-key PKI, non-repudiation, or a Merkle tree. |
 | HUB-01 | Closed, opt-in | Hub canvas accepts an injected `CanvasAuthorizer` and applies repository and module filtering before serialization on both single-repository and mesh routes. Real TCP tests verify denied repositories/modules are absent; deployments must explicitly bind the authorizer with Hub bearer authentication for per-identity policy. |
-| HUB-02 | Closed, opt-in | Hub bearer authentication is available, but unset-token deployments retain the unauthenticated loopback default. |
+| HUB-02 | Closed, fail-closed remotely | Hub bearer authentication remains optional on loopback, but argument validation rejects every non-loopback bind without a non-empty token. Remote MCP HTTP similarly requires an RBAC build plus configured per-request bearer tokens and rejects a fixed `--as` identity. |
 | HUB-03 | Deferred capability | Central mesh policy endpoint depends on an approved FED-01 design. |
 
 ## Closed historical resource findings

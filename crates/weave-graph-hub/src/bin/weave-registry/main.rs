@@ -15,6 +15,7 @@
 //! unit test away without spawning a real process.
 
 use std::fs;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
@@ -31,22 +32,17 @@ struct Args {
     config_path: Option<PathBuf>,
     canvas_exclude: Vec<String>,
     #[cfg(feature = "hub-provenance")]
-    provenance_key: Option<u64>,
+    provenance_key_file: Option<PathBuf>,
 }
 
 const USAGE: &str = "Usage: weave-registry --bind <host:port> --data-dir <path> \\\n  \
      --max-queue-depth-per-repo <n> --max-pushes-per-minute-per-repo <n> \\\n  \
-     --max-snapshot-bytes <n> [--auth-token <token>] [--config <path>] [--provenance-key <secret-u64>]\n\n\
-     Both rate limits are required — calibrate them against this deployment's \
-     own observed merge rate (plan.md §3.1), not a guessed default. \
-     --auth-token is optional (HUB-02): omitting it keeps the v1 unauthenticated \
-     loopback-trust behavior; setting it requires every caller to send \
-     `Authorization: Bearer <token>`. --canvas-exclude is optional (HUB-01): comma-separated \
-     list of modules to drop from canvas endpoints. --provenance-key is optional (PROV-01, \
-     feature hub-provenance): omitting it keeps every push unverified, exactly \
-     as before; setting it rejects any push whose `X-Weave-Signature` (hex-encoded \
-     bytes) doesn't verify under `MockSnapshotProvenanceVerifier::with_key` and \
-     that same secret — pick a real secret, never the verifier's own default key.";
+     --max-snapshot-bytes <n> [--auth-token <token>] [--config <path>] [--provenance-key-file <path>]\n\n\
+     Both rate limits are required and must match the deployment's measured load. \
+     Non-loopback binds require --auth-token. --canvas-exclude is an optional \
+     comma-separated module list. With feature hub-provenance, --provenance-key-file \
+     reads a secret of at least 32 bytes and verifies hex-encoded HMAC-SHA-256 \
+     snapshot signatures; omitting it leaves snapshot verification disabled.";
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut bind = None;
@@ -58,7 +54,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut config_path = None;
     let mut canvas_exclude = Vec::new();
     #[cfg(feature = "hub-provenance")]
-    let mut provenance_key = None;
+    let mut provenance_key_file = None;
 
     let mut args = args;
     while let Some(flag) = args.next() {
@@ -91,12 +87,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
                     .collect();
             }
             #[cfg(feature = "hub-provenance")]
-            "--provenance-key" => {
-                provenance_key =
-                    Some(value()?.parse().map_err(|_| {
-                        "--provenance-key must be a non-negative integer".to_string()
-                    })?);
-            }
+            "--provenance-key-file" => provenance_key_file = Some(PathBuf::from(value()?)),
             other => return Err(format!("unrecognized argument: {other}")),
         }
     }
@@ -117,7 +108,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
     else {
         return Err("missing one or more required arguments".to_string());
     };
-    Ok(Args {
+    let parsed = Args {
         bind,
         data_dir,
         max_queue_depth_per_repo,
@@ -127,8 +118,25 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
         config_path,
         canvas_exclude,
         #[cfg(feature = "hub-provenance")]
-        provenance_key,
-    })
+        provenance_key_file,
+    };
+    validate_auth_boundary(&parsed)?;
+    Ok(parsed)
+}
+
+fn validate_auth_boundary(args: &Args) -> Result<(), String> {
+    if args.auth_token.as_deref().is_some_and(str::is_empty) {
+        return Err("--auth-token cannot be empty".to_string());
+    }
+    let loopback = args
+        .bind
+        .parse::<SocketAddr>()
+        .map(|address| address.ip().is_loopback())
+        .unwrap_or_else(|_| args.bind.starts_with("localhost:"));
+    if !loopback && args.auth_token.is_none() {
+        return Err("a non-loopback --bind requires --auth-token".to_string());
+    }
+    Ok(())
 }
 
 /// Flag first, config file second, empty when neither is set — extracted
@@ -161,10 +169,15 @@ fn build_server(args: &Args) -> Result<RegistryServer, String> {
         )
     })?;
     #[cfg(feature = "hub-provenance")]
-    let registry = match args.provenance_key {
-        Some(key) => registry.with_provenance_verifier(std::sync::Arc::new(
-            weave_graph_hub::MockSnapshotProvenanceVerifier::with_key(key),
-        )),
+    let registry = match args.provenance_key_file.as_deref() {
+        Some(path) => {
+            let key = fs::read(path)
+                .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+            registry.with_provenance_verifier(std::sync::Arc::new(
+                weave_graph_hub::HmacSnapshotProvenanceVerifier::new(key)
+                    .map_err(|error| error.to_string())?,
+            ))
+        }
         None => registry,
     };
     RegistryServer::bind_with_token(&args.bind, registry, args.auth_token.clone())
@@ -193,7 +206,7 @@ fn read_canvas_exclude(config_path: &Path) -> Result<Vec<String>, String> {
 
 #[cfg(feature = "hub-provenance")]
 fn provenance_status(args: &Args) -> &'static str {
-    if args.provenance_key.is_some() {
+    if args.provenance_key_file.is_some() {
         ", snapshot signatures: verified"
     } else {
         ", snapshot signatures: unverified"

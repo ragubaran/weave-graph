@@ -5,6 +5,7 @@
 mod backend;
 #[cfg(feature = "provenance")]
 mod doc_provenance;
+mod ext;
 mod fs_safety;
 #[cfg(feature = "fts")]
 mod fts;
@@ -15,6 +16,7 @@ mod vector;
 pub use backend::SqliteStorage;
 #[cfg(feature = "provenance")]
 pub use doc_provenance::DocLinkProvenance;
+pub use ext::{SqliteExt, SqliteStorageBuilder};
 pub use fs_safety::is_network_filesystem;
 // The migration SQL itself lives in `weave-graph-core::schema` (shared
 // with the libSQL backend); re-exported to keep this crate's public API.

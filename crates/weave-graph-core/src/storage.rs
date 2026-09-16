@@ -188,5 +188,22 @@ pub trait Storage {
     }
 }
 
+/// Factory trait for creating storage backends from a file path.
+/// Allows dependency injection and avoids hard-coding concrete backend types
+/// in CLI/MCP layers (`plan.md` §1.1, Core Invariant 4).
+pub trait StorageBuilder {
+    /// Open a read-write database at `path`, migrating if needed.
+    fn open(&self, path: &std::path::Path) -> Result<Box<dyn Storage>, StorageError>;
+
+    /// Open a fresh database at `rebuild_path` for bulk rebuilds.
+    fn open_rebuild(&self, path: &std::path::Path) -> Result<Box<dyn Storage>, StorageError>;
+
+    /// Open an in-memory database (no reload path).
+    fn open_in_memory(&self) -> Result<Box<dyn Storage>, StorageError>;
+
+    /// Open a read-only database at `path` (shared-snapshot mode for network mounts).
+    fn open_read_only(&self, path: &std::path::Path) -> Result<Box<dyn Storage>, StorageError>;
+}
+
 #[cfg(test)]
 mod tests;

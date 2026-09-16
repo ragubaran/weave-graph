@@ -49,12 +49,31 @@ pub(crate) fn migrate(conn: &libsql::Connection) -> Result<(), StorageError> {
         });
     }
     for (version, sql) in migrations_after(current) {
-        let batch = format!(
-            "BEGIN;\n{sql}\nINSERT INTO schema_version (version, applied_at) VALUES ({version}, strftime('%s', 'now'));\nCOMMIT;"
-        );
-        futures::executor::block_on(conn.execute_batch(&batch)).map_err(backend_err)?;
+        futures::executor::block_on(apply_migration(conn, version, sql)).map_err(backend_err)?;
     }
     Ok(())
+}
+
+async fn apply_migration(
+    conn: &libsql::Connection,
+    version: u32,
+    sql: &str,
+) -> Result<(), libsql::Error> {
+    conn.execute_batch("BEGIN").await?;
+    let result = async {
+        conn.execute_batch(sql).await?;
+        conn.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES (?1, strftime('%s', 'now'))",
+            libsql::params![version],
+        )
+        .await?;
+        conn.execute_batch("COMMIT").await
+    }
+    .await;
+    if result.is_err() {
+        let _ = conn.execute_batch("ROLLBACK").await;
+    }
+    result.map(|_| ())
 }
 
 pub(crate) fn schema_version(conn: &libsql::Connection) -> Result<u32, StorageError> {

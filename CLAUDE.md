@@ -110,12 +110,24 @@ All code must follow the [Google Rust Style Guide](https://google.github.io/styl
 * If `unsafe` is mathematically required for SIMD/CSR memory layouts:
   * Must be isolated inside a minimal function with a mandatory `// Safety: ...` invariant comment explaining why undefined behavior is impossible.
 
-### 5.5 Error Handling: No `unwrap()`/`expect()` in Libraries
-* **Library crates** (`weave-graph-core`, `weave-graph-parse`, `weave-graph-store-sqlite`, `weave-graph-store-turso`, `weave-graph-mcp`, `weave-graph-hub`, `weave-graph-python`): zero `unwrap()`/`expect()`. Every fallible call returns a typed `Result<T, thiserror::Error>` up to the caller.
-* **`weave-graph-cli`** has softer rules — `anyhow` and top-level `main`/setup code may use `unwrap()`/`expect()` where a failure is truly unrecoverable at startup. But a panic reachable from a normal user-invoked code path (parsing user input, handling a file that exists, a subcommand's core logic) is still a quality bug, not an accepted shortcut — use `anyhow::Context` and propagate `Result` instead.
-* A panic is acceptable only for states that indicate a programming error (an invariant already checked upstream), never for external input, I/O, or user-triggered conditions.
+### 5.5 Error Handling: No Panics in Production
+* **Library crates** (`weave-graph-core`, `weave-graph-parse`, `weave-graph-store-sqlite`, `weave-graph-store-turso`, `weave-graph-mcp`, `weave-graph-hub`, `weave-graph-python`, `weave-graph-wasm`): production code must contain no `unwrap()`, `expect()`, `panic!`, `unreachable!`, `todo!`, or `unimplemented!`. Every fallible call returns a typed `Result<T, thiserror::Error>` up to the caller. Test, benchmark, and example code may use test assertions and failure helpers.
+* **`weave-graph-cli`** has softer rules — `anyhow` and top-level `main`/setup code may terminate with a user-facing error only after reporting the failure. `unwrap()`, `expect()`, and panic macros are prohibited in normal user-invoked paths (parsing input, handling files, and subcommand logic); use `anyhow::Context` and propagate `Result` instead.
+* Panic macros are allowed only in test, benchmark, and example code; production code reports every failure through its declared error boundary.
 
-### 5.6 Imports Organization
+### 5.5.1 Dead Code: Remove Before Suppressing
+* Remove unreachable functions, types, fields, imports, and feature branches. Do not add `allow(dead_code)`, `expect(dead_code)`, or crate-wide dead-code suppression to hide obsolete code.
+* A suppression is permitted only for a compiler-context false positive (for example, a benchmark importing a live private module by path). It must sit directly beside the suppression and state the concrete reason; remove it when that context no longer applies.
+
+### 5.6 Lint Suppressions: Use `#[expect]` over `#[allow]`
+* **Rule:** Never use `#[allow(lint_name)]` to suppress compiler or clippy lints. Always use `#[expect(lint_name)]` instead.
+* **Reason:** `#[expect]` ensures that if the code changes and the lint is no longer triggered, the compiler will emit a warning to remove the stale suppression.
+
+### 5.7 Strict `unsafe` Documentation
+* **Rule:** If `unsafe` is mathematically or systemically required (e.g., for SIMD, CSR layouts, or FFI like `libc::statfs`), the `unsafe` block MUST be preceded by a `// Safety: ` comment block.
+* **Reason:** You must explicitly document the invariants that prevent Undefined Behavior (UB) for the human reader and the compiler. Never use `#[allow(unsafe_code)]` without documenting the exact safety guarantee.
+
+### 5.8 Imports Organization
 Organize `use` statements into 3 distinct, sorted blocks separated by empty lines:
 ```rust
 // 1. Standard library
@@ -257,3 +269,5 @@ re-read whole files.
 After big code changes, refresh the graph with `graft build` (deterministic,
 no API key, $0).
 <!-- graft:end -->
+
+@RTK.md

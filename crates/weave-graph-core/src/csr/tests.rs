@@ -284,6 +284,22 @@ fn empty_and_default_graphs_have_zero_size() {
 }
 
 #[test]
+fn from_sorted_edges_skips_out_of_range_compact_indices() {
+    // An edge whose target lands exactly on node_count must be filtered, not
+    // indexed into `build_reverse`'s `in_degrees` vec (which would OOB).
+    let csr = CompactCsr::from_sorted_edges(&[(0, 3)], 3);
+    assert_eq!(csr.edge_count(), 0);
+    assert_eq!(csr.neighbors_slice(0), &[]);
+    let reverse = csr.build_reverse();
+    assert_eq!(reverse.edge_count(), 0);
+
+    // Same for a source index at/past node_count.
+    let csr = CompactCsr::from_sorted_edges(&[(3, 0), (4, 1)], 3);
+    assert_eq!(csr.edge_count(), 0);
+    assert_eq!(csr.node_count(), 3);
+}
+
+#[test]
 fn id_of_index_and_reachable_nodes_map_correctly() {
     let nodes = vec![100, 200, 300];
     let edges = vec![(100, 200, 1.0), (200, 300, 1.0)];

@@ -142,7 +142,7 @@ enum Commands {
         query: String,
         #[arg(long, default_value_t = 10)]
         limit: usize,
-        /// Also run Tier 2 semantic search over AST-bounded chunks (feature: vector)
+        /// Run the experimental mock-embedding vector path (feature: vector)
         #[cfg(feature = "vector")]
         #[arg(long)]
         semantic: bool,
@@ -299,7 +299,7 @@ enum Commands {
         #[command(subcommand)]
         action: NoteAction,
     },
-    /// Import distributed trace spans and overlay them on graph nodes (feature: otel)
+    /// Import an OTLP JSON file and overlay spans on graph nodes (feature: otel)
     Traces {
         #[command(subcommand)]
         action: TracesAction,
@@ -418,11 +418,12 @@ enum SyncAction {
     Push {
         #[arg(long, default_value = ".")]
         path: PathBuf,
-        /// Snapshot signature from an external signer (e.g. one built on
-        /// `weave_graph_hub::SnapshotProvenanceVerifier`, feature
-        /// `hub-provenance`) — `weave` computes none of its own.
+        /// Precomputed hex signature supplied by another signer
         #[arg(long)]
         signature: Option<String>,
+        /// HMAC-SHA-256 secret file used to sign the snapshot locally
+        #[arg(long)]
+        provenance_key_file: Option<PathBuf>,
     },
 }
 
@@ -577,7 +578,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             repo_a,
             repo_b,
             expression,
-        } => federation::cmd_query_federated(&repo_a, &repo_b, &expression)?,
+        } => federation::cmd_query_federated(&repo_a, &repo_b, &expression, as_subject.as_deref())?,
         #[cfg(not(feature = "federation"))]
         Commands::QueryFederated { .. } => {
             feature_not_compiled("weave query-federated", "federation")
@@ -587,7 +588,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             repo_a,
             repo_b,
             out,
-        } => federation::cmd_report_federated(&repo_a, &repo_b, out.as_deref())?,
+        } => federation::cmd_report_federated(
+            &repo_a,
+            &repo_b,
+            out.as_deref(),
+            as_subject.as_deref(),
+        )?,
         #[cfg(not(feature = "federation"))]
         Commands::ReportFederated { .. } => {
             feature_not_compiled("weave report-federated", "federation")
@@ -642,8 +648,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => sync::cmd_sync_pull(&path, commit.as_deref(), fallback_latest)?,
         #[cfg(feature = "hub")]
         Commands::Sync {
-            action: SyncAction::Push { path, signature },
-        } => sync::cmd_sync_push(&path, signature.as_deref())?,
+            action:
+                SyncAction::Push {
+                    path,
+                    signature,
+                    provenance_key_file,
+                },
+        } => sync::cmd_sync_push(&path, signature.as_deref(), provenance_key_file.as_deref())?,
         #[cfg(not(feature = "hub"))]
         Commands::Sync { .. } => feature_not_compiled("weave sync", "hub"),
         #[cfg(feature = "slm")]
@@ -1586,6 +1597,33 @@ fn cmd_config_get(root: &Path, key: &str) -> Result<(), Box<dyn std::error::Erro
     }
 }
 
+fn is_remote_host(host: &str) -> bool {
+    host.parse::<std::net::IpAddr>()
+        .map(|address| !address.is_loopback())
+        .unwrap_or(host != "localhost")
+}
+
+#[cfg(feature = "rbac")]
+fn mcp_token_subjects(root: &Path) -> Result<std::collections::HashMap<String, String>, String> {
+    let config_path = root.join(".weave").join("config.toml");
+    let users = crate::config::read_rbac_users(&config_path);
+    let mut token_to_subject = std::collections::HashMap::new();
+    for (subject, user_cfg) in users {
+        let Some(token) = user_cfg.token else {
+            continue;
+        };
+        if token.is_empty() {
+            return Err(format!(
+                "RBAC token for subject {subject:?} cannot be empty"
+            ));
+        }
+        if token_to_subject.insert(token, subject).is_some() {
+            return Err("duplicate token found for multiple subjects in [rbac.users]".to_string());
+        }
+    }
+    Ok(token_to_subject)
+}
+
 fn cmd_serve(
     mcp: bool,
     transport: &str,
@@ -1601,6 +1639,27 @@ fn cmd_serve(
     }
 
     let root = Path::new(".");
+
+    #[cfg(feature = "rbac")]
+    let token_to_subject = mcp_token_subjects(root)?;
+    if transport == "http" && is_remote_host(host) {
+        #[cfg(not(feature = "rbac"))]
+        return Err("remote MCP HTTP requires a build with the `rbac` feature".into());
+        #[cfg(feature = "rbac")]
+        if as_subject.is_some() {
+            return Err(
+                "remote MCP HTTP requires per-request bearer authentication; do not use a fixed --as identity"
+                    .into(),
+            );
+        }
+        #[cfg(feature = "rbac")]
+        if token_to_subject.is_empty() {
+            return Err(
+                "remote MCP HTTP requires at least one non-empty [rbac.users.<subject>] token"
+                    .into(),
+            );
+        }
+    }
 
     #[cfg(feature = "rbac")]
     {
@@ -1647,19 +1706,6 @@ fn cmd_serve(
     let handler = match as_subject {
         Some(subject) => handler.with_identity(rbac::guard_for(root, Some(subject))),
         None => {
-            let config_path = root.join(".weave").join("config.toml");
-            let users = crate::config::read_rbac_users(&config_path);
-            let mut token_to_subject = std::collections::HashMap::new();
-            for (subject, user_cfg) in users {
-                if let Some(token) = user_cfg.token
-                    && token_to_subject.insert(token, subject.clone()).is_some()
-                {
-                    eprintln!(
-                        "Error: duplicate token found for multiple subjects in [rbac.users] (SEC-07)."
-                    );
-                    std::process::exit(1);
-                }
-            }
             let require_auth = !token_to_subject.is_empty();
 
             let root_path = root.to_path_buf();

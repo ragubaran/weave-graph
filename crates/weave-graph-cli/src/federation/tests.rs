@@ -80,6 +80,32 @@ impl RepoFixture {
     }
 }
 
+#[cfg(feature = "rbac")]
+#[test]
+fn federated_rbac_uses_each_repositories_own_policy() {
+    let repo_a = RepoFixture::new();
+    let repo_b = RepoFixture::new();
+    fs::write(
+        repo_a.weave_dir.join("config.toml"),
+        "[rbac.users]\nalice = [\"internal\"]\n",
+    )
+    .unwrap();
+    fs::write(
+        repo_b.weave_dir.join("config.toml"),
+        "[rbac.users]\nalice = []\n",
+    )
+    .unwrap();
+    let guard = super::FederatedRbac::new(repo_a.root(), repo_b.root(), "alice");
+    let mut primary_node = node(1, "private.ts", "primary_private");
+    primary_node.repo_id = super::repo_label(repo_a.root());
+    let mut partner_node = node(2, "private.ts", "partner_private");
+    partner_node.repo_id = super::repo_label(repo_b.root());
+
+    assert!(guard.visible(&primary_node));
+    assert!(!guard.visible(&partner_node));
+    assert_eq!(guard.mask(&partner_node).symbol, "<rbac: hidden>");
+}
+
 /// Two fixture repos each containing `utils.ts` (with a same-named
 /// function) must compose into one addressable graph without either
 /// repo's node overwriting the other.
@@ -275,7 +301,7 @@ fn linking_persists_a_queryable_composite_graph_for_both_repos() {
     let text = crate::query::run(&storage, "callees(fromA)", None).unwrap();
     assert!(text.contains("fromB"), "{text}");
 
-    super::cmd_query_federated(repo_a.root(), repo_b.root(), "callees(fromA)").unwrap();
+    super::cmd_query_federated(repo_a.root(), repo_b.root(), "callees(fromA)", None).unwrap();
 }
 
 /// `hub-canvas` v1: `weave report-federated` reuses `report::generate`
@@ -291,7 +317,7 @@ fn report_federated_renders_one_lod0_canvas_node_per_linked_repo() {
     repo_b.index(&[("b.ts", "export function fromB() { fromA(); }\n")]);
 
     super::cmd_link(repo_a.root(), repo_b.root()).unwrap();
-    super::cmd_report_federated(repo_a.root(), repo_b.root(), None).unwrap();
+    super::cmd_report_federated(repo_a.root(), repo_b.root(), None, None).unwrap();
 
     let label_a = super::repo_label(repo_a.root());
     let label_b = super::repo_label(repo_b.root());
@@ -316,7 +342,7 @@ fn report_federated_without_a_prior_link_errors_clearly() {
     let repo_b = RepoFixture::new();
     repo_b.index(&[("b.ts", "export function g() {}\n")]);
 
-    let err = super::cmd_report_federated(repo_a.root(), repo_b.root(), None)
+    let err = super::cmd_report_federated(repo_a.root(), repo_b.root(), None, None)
         .unwrap_err()
         .to_string();
     assert!(err.contains("weave link"), "{err}");
@@ -331,7 +357,7 @@ fn query_federated_without_a_prior_link_errors_clearly() {
     let repo_b = RepoFixture::new();
     repo_b.index(&[("b.ts", "export function g() {}\n")]);
 
-    let err = super::cmd_query_federated(repo_a.root(), repo_b.root(), "callees(f)")
+    let err = super::cmd_query_federated(repo_a.root(), repo_b.root(), "callees(f)", None)
         .unwrap_err()
         .to_string();
     assert!(err.contains("weave link"), "{err}");

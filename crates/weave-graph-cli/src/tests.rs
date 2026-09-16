@@ -436,3 +436,38 @@ fn is_indexable_rejects_dotfiles_and_depends_on_docs_feature() {
     #[cfg(not(feature = "docs"))]
     assert!(!is_indexable(Path::new("README.md")));
 }
+
+#[test]
+fn remote_host_detection_accepts_only_explicit_loopback_names_and_addresses() {
+    assert!(!is_remote_host("127.0.0.1"));
+    assert!(!is_remote_host("::1"));
+    assert!(!is_remote_host("localhost"));
+    assert!(is_remote_host("0.0.0.0"));
+    assert!(is_remote_host("192.0.2.1"));
+    assert!(is_remote_host("example.test"));
+}
+
+#[cfg(feature = "rbac")]
+#[test]
+fn mcp_tokens_reject_empty_and_duplicate_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".weave")).unwrap();
+    let config = dir.path().join(".weave/config.toml");
+    fs::write(&config, "[rbac.users.alice]\nroles = []\ntoken = \"\"\n").unwrap();
+    assert!(
+        mcp_token_subjects(dir.path())
+            .unwrap_err()
+            .contains("empty")
+    );
+
+    fs::write(
+        &config,
+        "[rbac.users.alice]\nroles = []\ntoken = \"same\"\n\n[rbac.users.bob]\nroles = []\ntoken = \"same\"\n",
+    )
+    .unwrap();
+    assert!(
+        mcp_token_subjects(dir.path())
+            .unwrap_err()
+            .contains("duplicate")
+    );
+}

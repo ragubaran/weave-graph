@@ -62,10 +62,9 @@ pub(crate) fn cmd_search(
     Ok(())
 }
 
-/// Tier 2: binary-ANN-then-int8-rerank semantic search
-/// over AST-bounded chunks, via the `MockEmbeddingProvider` reference
-/// implementation — a real deployment supplies its own `EmbeddingProvider`
-/// (same "boundary here, real provider elsewhere" shape as `AuthProvider`).
+/// Experimental vector path using deterministic mock embeddings.
+/// The explicit label prevents benchmark scaffolding from being mistaken
+/// for a production semantic model.
 #[cfg(feature = "vector")]
 const OVERSAMPLE: usize = 4;
 

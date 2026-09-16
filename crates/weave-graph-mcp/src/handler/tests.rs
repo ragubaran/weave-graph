@@ -680,3 +680,252 @@ fn tools_reject_calls_without_the_required_symbol() {
         );
     }
 }
+
+#[test]
+fn handle_message_invalid_json() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+    let res = handler.handle_message("invalid json").unwrap();
+    assert_eq!(res.error.unwrap().code, -32700);
+}
+
+#[test]
+fn handle_message_unknown_method_no_id() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+    let res = handler.handle_message(r#"{"jsonrpc":"2.0","method":"unknown"}"#);
+    assert!(res.is_none());
+}
+
+#[test]
+fn handle_tools_call_missing_name() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+    let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{}}"#;
+    let res = handler.handle_message(req).unwrap();
+    assert_eq!(res.error.unwrap().code, -32602);
+}
+
+#[test]
+fn pending_reindex_marker_invalid_json_is_ignored() {
+    let storage = setup_storage();
+    let temp = tempfile::tempdir().unwrap();
+    let handler = McpHandler::new(storage)
+        .unwrap()
+        .with_weave_dir(temp.path().to_path_buf());
+
+    std::fs::write(temp.path().join("pending-manual-reindex"), "not json").unwrap();
+
+    let res = handler.handle_message(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weave_repo_map","arguments":{}}}"#).unwrap();
+    let content = res
+        .result
+        .unwrap()
+        .get("content")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(content.len(), 1);
+}
+
+#[test]
+fn pending_reindex_marker_missing_fields_is_ignored() {
+    let storage = setup_storage();
+    let temp = tempfile::tempdir().unwrap();
+    let handler = McpHandler::new(storage)
+        .unwrap()
+        .with_weave_dir(temp.path().to_path_buf());
+
+    std::fs::write(temp.path().join("pending-manual-reindex"), "{}").unwrap();
+
+    let res = handler.handle_message(r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weave_repo_map","arguments":{}}}"#).unwrap();
+    let content = res
+        .result
+        .unwrap()
+        .get("content")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(content.len(), 1);
+}
+
+#[test]
+fn token_normalization_skips_when_no_token_provided() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+    let req =
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weave_repo_map"}}"#;
+    let res = handler.handle_message_with_token(req, None).unwrap();
+    assert!(res.error.is_none());
+}
+
+#[test]
+fn token_normalization_skips_when_invalid_json() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+    let res = handler
+        .handle_message_with_token("invalid", Some("secret"))
+        .unwrap();
+    assert_eq!(res.error.unwrap().code, -32700);
+}
+
+#[test]
+fn token_normalization_skips_when_no_params() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+    let req = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call"}"#;
+    let res = handler
+        .handle_message_with_token(req, Some("secret"))
+        .unwrap();
+    assert_eq!(res.error.unwrap().code, -32602);
+}
+
+#[cfg(test)]
+mod more_tests {
+    use crate::handler::McpHandler;
+    use serde_json::json;
+    use std::time::Duration;
+    use tempfile::tempdir;
+    use weave_graph_store_sqlite::SqliteStorage;
+
+    #[test]
+    fn test_handler_open_read_only() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("ro.db");
+        // Create it first
+        let _ = SqliteStorage::open(&db_path).unwrap();
+
+        let handler = McpHandler::open_with_mode(&db_path, true).unwrap();
+        assert!(handler.read_only);
+    }
+
+    #[test]
+    fn test_handler_reload_read_only() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("ro2.db");
+        let _ = SqliteStorage::open(&db_path).unwrap();
+
+        let handler = McpHandler::open_with_mode(&db_path, true).unwrap();
+
+        // Touch to trigger reload
+        std::thread::sleep(Duration::from_millis(10));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true)
+            .open(&db_path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now())
+            .unwrap();
+
+        // Set recheck interval low
+        handler.last_checked.set(None);
+
+        // Send a message
+        handler.handle_message(r#"{"jsonrpc": "2.0", "method": "ping", "id": 1}"#);
+    }
+
+    #[test]
+    fn test_handler_reload_fails_reopen() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("fail_reopen.db");
+        let _ = SqliteStorage::open(&db_path).unwrap();
+
+        let handler = McpHandler::open_with_mode(&db_path, false).unwrap();
+
+        std::thread::sleep(Duration::from_millis(10));
+        // Overwrite with garbage
+        std::fs::write(&db_path, "not a database").unwrap();
+
+        handler.last_checked.set(None);
+        handler.handle_message(r#"{"jsonrpc": "2.0", "method": "ping", "id": 1}"#);
+    }
+
+    #[test]
+    fn test_handler_file_api_no_paths() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("file_api.db");
+        let _ = SqliteStorage::open(&db_path).unwrap();
+
+        let handler = McpHandler::open_with_mode(&db_path, false).unwrap();
+
+        // Call weave_file_api with no paths
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "weave_file_api",
+                "arguments": {
+                    // "paths" missing
+                }
+            }
+        });
+
+        let resp = handler.handle_message(&req.to_string()).unwrap();
+        // Since paths is missing, it will return an empty vector of results, or success with empty string.
+        let result = resp.result.unwrap();
+        assert!(result["isError"].is_null() || result["isError"] == false);
+    }
+
+    #[test]
+    fn test_handle_message_with_token() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("token.db");
+        let _ = SqliteStorage::open(&db_path).unwrap();
+        let handler = McpHandler::open(&db_path).unwrap();
+
+        let req = r#"{"jsonrpc": "2.0", "method": "ping", "id": 1}"#;
+        let resp = handler.handle_message_with_token(req, None);
+        assert!(resp.is_some());
+
+        let resp = handler.handle_message_with_token(req, Some("secret"));
+        assert!(resp.is_some());
+
+        let req2 = r#"{"jsonrpc": "2.0", "method": "tools/call", "id": 2, "params": {"name": "weave_repo_map"}}"#;
+        let resp = handler.handle_message_with_token(req2, Some("secret"));
+        assert!(resp.is_some());
+
+        let req3 = r#"invalid json"#;
+        let resp = handler.handle_message_with_token(req3, Some("secret"));
+        assert!(resp.is_some());
+    }
+
+    #[test]
+    fn test_closures_in_tool_calls() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("closures.db");
+        let _ = SqliteStorage::open(&db_path).unwrap();
+        let handler = McpHandler::open(&db_path).unwrap();
+
+        // weave_trace_calls with depth and max_tokens
+        let req_trace = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "weave_trace_calls",
+                "arguments": {
+                    "symbol": "foo",
+                    "depth": 3,
+                    "max_tokens": 100
+                }
+            }
+        });
+        let _ = handler.handle_message(&req_trace.to_string());
+
+        // weave_impact_radius with max_tokens
+        let req_impact = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "weave_impact_radius",
+                "arguments": {
+                    "symbol": "foo",
+                    "max_tokens": 50
+                }
+            }
+        });
+        let _ = handler.handle_message(&req_impact.to_string());
+    }
+}

@@ -7,7 +7,7 @@
 
 /// Highest schema version any migration in `MIGRATIONS` brings a database
 /// to — round-trip tests assert against it.
-pub const LATEST_SCHEMA_VERSION: u32 = 8;
+pub const LATEST_SCHEMA_VERSION: u32 = 9;
 
 /// Base schema: `nodes`, `edges`, `doc_links`, `contracts`,
 /// `schema_version`. Unique indices on each table's natural key make
@@ -154,6 +154,12 @@ ALTER TABLE nodes ADD COLUMN semantic_key TEXT;
 CREATE INDEX idx_nodes_semantic_key ON nodes(repo_id, path, symbol, kind, signature);
 ";
 
+/// The natural-key index already covers the production identity lookup prefix.
+/// Keeping this wider duplicate index raised write RSS without query benefit.
+pub const V9_DROP_UNUSED_SEMANTIC_KEY_INDEX: &str = "
+DROP INDEX IF EXISTS idx_nodes_semantic_key;
+";
+
 /// Versioned migration history shared by every storage backend.
 pub const MIGRATIONS: &[(u32, &str)] = &[
     (1, V1_CREATE_TABLES),
@@ -164,6 +170,7 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (6, V6_CONTRACT_ENTRIES),
     (7, V7_RESOLVER_INPUTS),
     (8, V8_NODE_SEMANTIC_KEY),
+    (9, V9_DROP_UNUSED_SEMANTIC_KEY_INDEX),
 ];
 
 /// Returns unapplied migrations in version order, independent of declaration order.

@@ -41,6 +41,40 @@ pub(crate) struct RepoGraph {
     pub(crate) parsed_files: Vec<(PathBuf, ParsedFile)>,
 }
 
+#[cfg(feature = "rbac")]
+struct FederatedRbac {
+    partner_label: String,
+    primary: weave_graph_core::rbac::RbacGuard,
+    partner: weave_graph_core::rbac::RbacGuard,
+}
+
+#[cfg(feature = "rbac")]
+impl FederatedRbac {
+    fn new(repo_a: &Path, repo_b: &Path, subject: &str) -> Self {
+        Self {
+            partner_label: repo_label(repo_b),
+            primary: crate::rbac::guard_for(repo_a, Some(subject)),
+            partner: crate::rbac::guard_for(repo_b, Some(subject)),
+        }
+    }
+
+    fn guard<'a>(&'a self, node: &Node) -> &'a weave_graph_core::rbac::RbacGuard {
+        if node.repo_id == self.partner_label {
+            &self.partner
+        } else {
+            &self.primary
+        }
+    }
+
+    fn mask(&self, node: &Node) -> Node {
+        self.guard(node).mask_node(node)
+    }
+
+    fn visible(&self, node: &Node) -> bool {
+        self.guard(node).visible(node)
+    }
+}
+
 fn repo_label(repo_root: &Path) -> String {
     repo_root
         .canonicalize()
@@ -267,18 +301,26 @@ pub(crate) fn open_federated_storage(
     Ok((storage, db_path))
 }
 
-/// `weave query-federated <repo_a> <repo_b> "<expr>"`: runs the same
-/// deterministic query language `weave query` uses (`query::run`), against
-/// the composite graph `weave link` persisted for this pair. No RBAC
-/// masking yet — a federated query spans two repos' policies, which is a
-/// real gap, not an oversight; single-repo `weave query` is unaffected.
 pub(crate) fn cmd_query_federated(
     repo_a: &Path,
     repo_b: &Path,
     expression: &str,
+    as_subject: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (storage, _db_path) = open_federated_storage(repo_a, repo_b)?;
-    match crate::query::run(&storage, expression, None) {
+    #[cfg(feature = "rbac")]
+    let guard = as_subject.map(|subject| FederatedRbac::new(repo_a, repo_b, subject));
+    #[cfg(feature = "rbac")]
+    let masker = |node: &Node| {
+        guard
+            .as_ref()
+            .map_or_else(|| node.clone(), |g| g.mask(node))
+    };
+    #[cfg(feature = "rbac")]
+    let mask = guard.as_ref().map(|_| &masker as &dyn Fn(&Node) -> Node);
+    #[cfg(not(feature = "rbac"))]
+    let (mask, _) = (None::<&dyn Fn(&Node) -> Node>, as_subject);
+    match crate::query::run(&storage, expression, mask) {
         Ok(text) => {
             println!("{text}");
             Ok(())
@@ -287,22 +329,13 @@ pub(crate) fn cmd_query_federated(
     }
 }
 
-/// `weave report-federated <repo_a> <repo_b>` — the multi-repo counterpart
-/// to `weave report`. Reuses `report::generate` exactly as `weave
-/// report` calls it, just pointed at the persisted composite graph
-/// instead of a single repo's `graph.db`. `report.rs`'s LOD 0 canvas
-/// already groups nodes by `Node::repo_id` — its own comment notes that
-/// today this is "always exactly one ... since cross-repo federation
-/// isn't built yet". Composite nodes carry each repo's real label in that
-/// field (`cmd_link`), so this one call turns LOD 0 into a real multi-repo
-/// root canvas: zero new rendering code, zero new clustering code (the
-/// existing Louvain + 200-node budget apply unchanged, now over the
-/// composite file-dependency graph). No RBAC masking yet, same stated gap
-/// as `query-federated`.
+/// Uses each repository's guard because a composite graph spans two
+/// independently configured authorization domains.
 pub(crate) fn cmd_report_federated(
     repo_a: &Path,
     repo_b: &Path,
     out_dir: Option<&Path>,
+    as_subject: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (storage, db_path) = open_federated_storage(repo_a, repo_b)?;
     let partner_label = repo_label(repo_b);
@@ -312,7 +345,17 @@ pub(crate) fn cmd_report_federated(
             .join("federation-report")
             .join(&partner_label)
     });
-    let paths = crate::report::generate(repo_a, &out_dir, &db_path, &storage, None, None)?;
+    #[cfg(feature = "rbac")]
+    let guard = as_subject.map(|subject| FederatedRbac::new(repo_a, repo_b, subject));
+    #[cfg(feature = "rbac")]
+    let visible_check = |node: &Node| guard.as_ref().is_none_or(|g| g.visible(node));
+    #[cfg(feature = "rbac")]
+    let visible = guard
+        .as_ref()
+        .map(|_| &visible_check as &dyn Fn(&Node) -> bool);
+    #[cfg(not(feature = "rbac"))]
+    let (visible, _) = (None::<&dyn Fn(&Node) -> bool>, as_subject);
+    let paths = crate::report::generate(repo_a, &out_dir, &db_path, &storage, None, visible)?;
     println!("Wrote {}", paths.report_md.display());
     for canvas in &paths.canvas_files {
         println!("Wrote {}", canvas.display());

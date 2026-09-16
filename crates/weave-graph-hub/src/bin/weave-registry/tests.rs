@@ -35,14 +35,14 @@ fn parse_args_accepts_all_required_flags() {
             config_path: None,
             canvas_exclude: vec![],
             #[cfg(feature = "hub-provenance")]
-            provenance_key: None,
+            provenance_key_file: None,
         }
     );
 }
 
 #[cfg(feature = "hub-provenance")]
 #[test]
-fn parse_args_accepts_an_optional_provenance_key() {
+fn parse_args_accepts_an_optional_provenance_key_file() {
     let parsed = parse_args(args(&[
         "--bind",
         "127.0.0.1:8080",
@@ -54,11 +54,14 @@ fn parse_args_accepts_an_optional_provenance_key() {
         "20",
         "--max-snapshot-bytes",
         "10485760",
-        "--provenance-key",
-        "42",
+        "--provenance-key-file",
+        "/run/secrets/weave-provenance",
     ]))
     .unwrap();
-    assert_eq!(parsed.provenance_key, Some(42));
+    assert_eq!(
+        parsed.provenance_key_file.as_deref(),
+        Some(Path::new("/run/secrets/weave-provenance"))
+    );
 }
 
 #[test]
@@ -94,10 +97,52 @@ fn parse_args_accepts_flags_in_any_order() {
         "10485760",
         "--bind",
         "0.0.0.0:9000",
+        "--auth-token",
+        "remote-secret",
     ]))
     .unwrap();
     assert_eq!(parsed.bind, "0.0.0.0:9000");
     assert_eq!(parsed.data_dir, PathBuf::from("/data"));
+}
+
+#[test]
+fn parse_args_rejects_remote_bind_without_authentication() {
+    let err = parse_args(args(&[
+        "--bind",
+        "0.0.0.0:9000",
+        "--data-dir",
+        "/data",
+        "--max-queue-depth-per-repo",
+        "50",
+        "--max-pushes-per-minute-per-repo",
+        "20",
+        "--max-snapshot-bytes",
+        "10485760",
+    ]))
+    .unwrap_err();
+
+    assert!(err.contains("requires --auth-token"), "{err}");
+}
+
+#[test]
+fn parse_args_rejects_an_empty_auth_token() {
+    let err = parse_args(args(&[
+        "--bind",
+        "127.0.0.1:8080",
+        "--data-dir",
+        "/data",
+        "--max-queue-depth-per-repo",
+        "50",
+        "--max-pushes-per-minute-per-repo",
+        "20",
+        "--max-snapshot-bytes",
+        "10485760",
+        "--auth-token",
+        "",
+    ]))
+    .unwrap_err();
+
+    assert!(err.contains("cannot be empty"), "{err}");
 }
 
 #[test]
@@ -172,7 +217,7 @@ fn parse_args_rejects_a_non_numeric_snapshot_budget() {
 fn parse_args_splits_a_comma_separated_canvas_exclude_list() {
     let parsed = parse_args(args(&[
         "--bind",
-        "[IP_ADDRESS]:8080",
+        "127.0.0.1:8080",
         "--data-dir",
         "/data",
         "--max-queue-depth-per-repo",
@@ -190,10 +235,10 @@ fn parse_args_splits_a_comma_separated_canvas_exclude_list() {
 
 #[cfg(feature = "hub-provenance")]
 #[test]
-fn parse_args_rejects_a_non_numeric_provenance_key() {
+fn parse_args_rejects_the_removed_inline_provenance_key() {
     let err = parse_args(args(&[
         "--bind",
-        "[IP_ADDRESS]:8080",
+        "127.0.0.1:8080",
         "--data-dir",
         "/data",
         "--max-queue-depth-per-repo",
@@ -203,7 +248,7 @@ fn parse_args_rejects_a_non_numeric_provenance_key() {
         "--max-snapshot-bytes",
         "1",
         "--provenance-key",
-        "not-a-number",
+        "too-short",
     ]))
     .unwrap_err();
     assert!(err.contains("provenance-key"), "got: {err}");
@@ -258,7 +303,7 @@ fn resolve_canvas_exclude_reads_the_config_when_the_flag_is_absent() {
         config_path: Some(config),
         canvas_exclude: vec![],
         #[cfg(feature = "hub-provenance")]
-        provenance_key: None,
+        provenance_key_file: None,
     };
     assert_eq!(
         resolve_canvas_exclude(&args).unwrap(),
@@ -270,7 +315,7 @@ fn resolve_canvas_exclude_reads_the_config_when_the_flag_is_absent() {
 fn provenance_status_names_the_verification_mode() {
     // Both arms are pure label selection; exercise them directly since
     // only `main` calls them otherwise. The `mut` only matters for
-    // provenance builds, which reassign `provenance_key` below.
+    // provenance builds, which reassign the key-file path below.
     #[allow(unused_mut)]
     let mut args = Args {
         bind: String::new(),
@@ -282,12 +327,12 @@ fn provenance_status_names_the_verification_mode() {
         config_path: None,
         canvas_exclude: vec![],
         #[cfg(feature = "hub-provenance")]
-        provenance_key: None,
+        provenance_key_file: None,
     };
     let _ = provenance_status(&args);
     #[cfg(feature = "hub-provenance")]
     {
-        args.provenance_key = Some(7);
+        args.provenance_key_file = Some(PathBuf::from("/run/secrets/weave-provenance"));
         assert!(provenance_status(&args).contains("verified"));
     }
 }
@@ -305,17 +350,67 @@ fn build_server_opens_a_real_registry_and_binds_a_real_loopback_port() {
         config_path: None,
         canvas_exclude: vec![],
         #[cfg(feature = "hub-provenance")]
-        provenance_key: None,
+        provenance_key_file: None,
     };
     let server = build_server(&args).unwrap();
     assert!(server.local_addr().unwrap().port() > 0);
 }
 
+#[cfg(feature = "hub-provenance")]
+#[test]
+fn build_server_reads_a_strong_provenance_secret_from_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_file = dir.path().join("provenance.key");
+    std::fs::write(&key_file, [9u8; 32]).unwrap();
+    let args = Args {
+        bind: "127.0.0.1:0".to_string(),
+        data_dir: dir.path().join("registry"),
+        max_queue_depth_per_repo: 10,
+        max_pushes_per_minute_per_repo: 10,
+        max_snapshot_bytes: 10_485_760,
+        auth_token: None,
+        config_path: None,
+        canvas_exclude: vec![],
+        provenance_key_file: Some(key_file),
+    };
+
+    let server = build_server(&args).unwrap();
+
+    assert!(server.local_addr().unwrap().port() > 0);
+}
+
+#[cfg(feature = "hub-provenance")]
+#[test]
+fn build_server_rejects_a_weak_provenance_secret_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_file = dir.path().join("provenance.key");
+    std::fs::write(&key_file, b"too-short").unwrap();
+    let args = Args {
+        bind: "127.0.0.1:0".to_string(),
+        data_dir: dir.path().join("registry"),
+        max_queue_depth_per_repo: 10,
+        max_pushes_per_minute_per_repo: 10,
+        max_snapshot_bytes: 10_485_760,
+        auth_token: None,
+        config_path: None,
+        canvas_exclude: vec![],
+        provenance_key_file: Some(key_file),
+    };
+
+    let error = build_server(&args)
+        .err()
+        .expect("expected a weak-key error");
+
+    assert!(error.contains("at least 32 bytes"), "{error}");
+}
+
 #[test]
 fn build_server_reports_a_clear_error_for_an_unbindable_address() {
+    let blocker = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = blocker.local_addr().unwrap().port();
     let dir = tempfile::tempdir().unwrap();
     let args = Args {
-        bind: "not-a-valid-address".to_string(),
+        bind: format!("127.0.0.1:{port}"),
         data_dir: dir.path().to_path_buf(),
         max_queue_depth_per_repo: 10,
         max_pushes_per_minute_per_repo: 10,
@@ -324,7 +419,7 @@ fn build_server_reports_a_clear_error_for_an_unbindable_address() {
         config_path: None,
         canvas_exclude: vec![],
         #[cfg(feature = "hub-provenance")]
-        provenance_key: None,
+        provenance_key_file: None,
     };
     let err = build_server(&args).err().expect("expected a bind error");
     assert!(err.contains("failed to bind"), "got: {err}");
@@ -360,7 +455,7 @@ fn the_flag_overrides_the_config_file_for_canvas_exclude() {
         config_path: Some(config),
         canvas_exclude: vec!["from-flag".to_string()],
         #[cfg(feature = "hub-provenance")]
-        provenance_key: None,
+        provenance_key_file: None,
     };
     assert_eq!(
         resolve_canvas_exclude(&args).unwrap(),

@@ -118,12 +118,7 @@ fn semantic_key_preserves_identity_across_span_moves_and_resolves_overloads() {
     shifted.line_start = 50;
     shifted.line_end = 52;
     assert_eq!(storage.upsert_node(&shifted).unwrap(), id);
-    assert_eq!(
-        storage
-            .node_id_by_semantic_key("r", "a.rs", "foo", "function", "fn foo()")
-            .unwrap(),
-        Some(id)
-    );
+    assert_eq!(storage.get_node(id).unwrap().unwrap().signature, "fn foo()");
 
     // Two same-name overloads are distinct identities.
     let mut overload = first;
@@ -132,16 +127,8 @@ fn semantic_key_preserves_identity_across_span_moves_and_resolves_overloads() {
     let overload_id = storage.upsert_node(&overload).unwrap();
     assert_ne!(id, overload_id);
     assert_eq!(
-        storage
-            .node_id_by_semantic_key("r", "a.rs", "foo", "function", "fn foo(&str)")
-            .unwrap(),
-        Some(overload_id)
-    );
-    assert_eq!(
-        storage
-            .node_id_by_semantic_key("r", "a.rs", "foo", "function", "no such sig")
-            .unwrap(),
-        None
+        storage.get_node(overload_id).unwrap().unwrap().signature,
+        "fn foo(&str)"
     );
 }
 

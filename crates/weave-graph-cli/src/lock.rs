@@ -26,11 +26,7 @@ pub(crate) fn acquire_timeout(
     let lock_path = weave_dir.join("index.lock");
     let mut file = fslock::LockFile::open(&lock_path)?;
     if !file.try_lock()? {
-        let holder = holder_pid(&lock_path);
-        match holder {
-            Some(pid) => println!("waiting for indexer (PID {pid})..."),
-            None => println!("waiting for another weave index to finish..."),
-        }
+        println!("waiting for another weave index to finish...");
         let start = std::time::Instant::now();
         let mut acquired = false;
         while start.elapsed() < timeout {
@@ -41,22 +37,12 @@ pub(crate) fn acquire_timeout(
             }
         }
         if !acquired {
-            let msg = match holder {
-                Some(pid) => format!("timed out after {timeout:?} waiting for indexer (PID {pid})"),
-                None => {
-                    format!("timed out after {timeout:?} waiting for another weave index to finish")
-                }
-            };
+            let msg =
+                format!("timed out after {timeout:?} waiting for another weave index to finish");
             return Err(io::Error::new(io::ErrorKind::TimedOut, msg));
         }
     }
-    // Record our own PID now that we hold the lock, for the next waiter.
-    std::fs::write(&lock_path, std::process::id().to_string())?;
     Ok(IndexLock { _file: file })
-}
-
-fn holder_pid(lock_path: &Path) -> Option<u32> {
-    std::fs::read_to_string(lock_path).ok()?.trim().parse().ok()
 }
 
 #[cfg(test)]

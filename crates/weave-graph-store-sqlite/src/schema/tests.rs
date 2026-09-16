@@ -139,7 +139,7 @@ fn legacy_v3_db_upgrades_to_v4_notes_table() {
 }
 
 #[test]
-fn legacy_v7_db_upgrades_to_v8_semantic_key_column() {
+fn legacy_v7_db_upgrades_and_removes_the_unused_semantic_key_index() {
     let conn = Connection::open_in_memory().unwrap();
     let v7_only = format!(
         "BEGIN;\n{V1_CREATE_TABLES}\n{V2_TRAVERSAL_INDICES}\n{V3_DOC_LINK_PROVENANCE}\n\
@@ -160,4 +160,95 @@ fn legacy_v7_db_upgrades_to_v8_semantic_key_column() {
         )
         .unwrap();
     assert!(has_column, "nodes.semantic_key must exist after v8");
+    let has_index: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_nodes_semantic_key')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        !has_index,
+        "v9 must remove the unused wide semantic-key index"
+    );
+}
+
+#[test]
+fn ensure_not_newer_than_supported_allows_current_schema() {
+    let conn = Connection::open_in_memory().unwrap();
+    migrate(&conn).unwrap();
+    ensure_not_newer_than_supported(&conn).unwrap();
+}
+
+#[test]
+fn ensure_not_newer_than_supported_allows_older_schema() {
+    let conn = Connection::open_in_memory().unwrap();
+    let v1_only = format!(
+        "BEGIN;\n{V1_CREATE_TABLES}\nINSERT INTO schema_version (version, applied_at) VALUES (1, strftime('%s', 'now'));\nCOMMIT;"
+    );
+    conn.execute_batch(&v1_only).unwrap();
+    ensure_not_newer_than_supported(&conn).unwrap();
+}
+
+#[test]
+fn ensure_not_newer_than_supported_rejects_newer_schema() {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+         INSERT INTO schema_version (version, applied_at) VALUES (999, strftime('%s', 'now'));",
+    )
+    .unwrap();
+
+    let err = ensure_not_newer_than_supported(&conn).unwrap_err();
+    assert!(matches!(
+        err,
+        StorageError::SchemaTooNew {
+            found: 999,
+            max: LATEST_SCHEMA_VERSION
+        }
+    ));
+}
+
+#[test]
+fn migrate_fails_on_sql_error() {
+    let conn = Connection::open_in_memory().unwrap();
+    // Simulate a v1 database
+    let v1_only = format!(
+        "BEGIN;\n{V1_CREATE_TABLES}\nINSERT INTO schema_version (version, applied_at) VALUES (1, strftime('%s', 'now'));\nCOMMIT;"
+    );
+    conn.execute_batch(&v1_only).unwrap();
+
+    // Create an index that V2 will try to create, causing a conflict
+    conn.execute_batch("CREATE INDEX idx_edges_source ON nodes(id);")
+        .unwrap();
+
+    let err = migrate(&conn).unwrap_err();
+    assert!(matches!(err, StorageError::Backend(_)));
+}
+
+#[test]
+fn migrate_fails_on_version_insert() {
+    let conn = Connection::open_in_memory().unwrap();
+    let v1_only = format!(
+        "BEGIN;\n{V1_CREATE_TABLES}\nINSERT INTO schema_version (version, applied_at) VALUES (1, strftime('%s', 'now'));\nCOMMIT;"
+    );
+    conn.execute_batch(&v1_only).unwrap();
+
+    conn.execute_batch("CREATE TRIGGER block_insert BEFORE INSERT ON schema_version BEGIN SELECT RAISE(ABORT, 'blocked'); END;").unwrap();
+
+    let err = migrate(&conn).unwrap_err();
+    assert!(matches!(err, StorageError::Backend(_)));
+}
+
+#[test]
+fn migrate_fails_if_already_in_transaction() {
+    let conn = Connection::open_in_memory().unwrap();
+    let v1_only = format!(
+        "BEGIN;\n{V1_CREATE_TABLES}\nINSERT INTO schema_version (version, applied_at) VALUES (1, strftime('%s', 'now'));\nCOMMIT;"
+    );
+    conn.execute_batch(&v1_only).unwrap();
+
+    conn.execute_batch("BEGIN TRANSACTION;").unwrap();
+    let err = migrate(&conn).unwrap_err();
+    assert!(matches!(err, StorageError::Backend(_)));
 }
