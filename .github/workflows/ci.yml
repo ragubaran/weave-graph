@@ -319,8 +319,14 @@ jobs:
       - name: Install maturin
         run: pip install maturin
         
+      # CI python is not a virtualenv, so `maturin develop` has nowhere to
+      # install into — build the wheel and pip-install it instead.
       - name: Build and install python wheel
-        run: maturin develop --manifest-path crates/weave-graph-python/Cargo.toml -features python
+        run: |
+          maturin build --manifest-path crates/weave-graph-python/Cargo.toml --features python --release --out dist
+          pip install dist/*.whl
         
+      # The PyO3 module is registered as `weave_graph` (lib name), and the
+      # surface is `WeaveGraph` + `schema_version` — importable without a DB.
       - name: Smoke-test python import
-        run: python -c "import weave-graph; print(weave_graph import OK)"    
+        run: python -c "import weave_graph; assert hasattr(weave_graph, 'WeaveGraph') and hasattr(weave_graph, 'schema_version'); print('weave_graph import OK')"    

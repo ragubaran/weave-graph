@@ -33,7 +33,9 @@ pub(crate) fn signature_spanning(outer: Node, inner: Node, source: &[u8]) -> Str
 }
 
 /// Same as `signature`, but for grammars (Kotlin, PowerShell) whose body
-/// child has no field name — found by node kind instead.
+/// child has no field name — found by node kind instead. Those extractors
+/// are `lang-extended`-only, so the helper follows the same gate.
+#[cfg(feature = "lang-extended")]
 pub(crate) fn signature_by_body_kind(node: Node, source: &[u8], body_kind: &str) -> String {
     let mut cursor = node.walk();
     let header_end = node

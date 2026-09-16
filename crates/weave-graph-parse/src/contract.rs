@@ -39,26 +39,38 @@ pub type VisibilityRule = fn(signature: &str, name: &str) -> bool;
 pub fn visibility_rule(language: Language) -> VisibilityRule {
     match language {
         Language::Rust => |sig, _| sig.starts_with("pub") && !sig.starts_with("pub("),
-        Language::Python | Language::Dart => |_, name| !name.starts_with('_'),
+        Language::Python => |_, name| !name.starts_with('_'),
         Language::Go => |_, name| name.chars().next().is_some_and(|c| c.is_ascii_uppercase()),
-        Language::TypeScript | Language::JavaScript | Language::ArkTs => {
-            |sig, _| sig.contains("export")
-        }
-        Language::Java
-        | Language::Kotlin
+        Language::TypeScript | Language::JavaScript => |sig, _| sig.contains("export"),
+        Language::Java => |sig, _| sig.to_ascii_lowercase().contains("public"),
+        Language::C | Language::Cpp => |sig, _| !sig.starts_with("static"),
+        // Extended-language variants are gated like the enum: when
+        // `lang-extended` is off none of them exist, so their rules (mirroring
+        // the base-language rule above) are compiled only under the feature.
+        #[cfg(feature = "lang-extended")]
+        Language::Dart => |_, name| !name.starts_with('_'),
+        #[cfg(feature = "lang-extended")]
+        Language::ArkTs => |sig, _| sig.contains("export"),
+        #[cfg(feature = "lang-extended")]
+        Language::Kotlin
         | Language::CSharp
         | Language::Scala
         | Language::Swift
         | Language::Php
         | Language::VisualBasic => |sig, _| sig.to_ascii_lowercase().contains("public"),
+        #[cfg(feature = "lang-extended")]
         Language::Solidity => |sig, _| sig.contains("public") || sig.contains("external"),
+        #[cfg(feature = "lang-extended")]
         Language::Elixir => |sig, _| !sig.contains("defp"),
+        #[cfg(feature = "lang-extended")]
         Language::Zig => |sig, _| sig.starts_with("pub"),
-        Language::C | Language::Cpp | Language::ObjC | Language::Metal | Language::Cuda => {
-            |sig, _| !sig.starts_with("static")
-        }
+        #[cfg(feature = "lang-extended")]
+        Language::ObjC | Language::Metal | Language::Cuda => |sig, _| !sig.starts_with("static"),
         // Scripting/config languages: every symbol is top-level and callable
-        // by any importer — exported by construction.
+        // by any importer — exported by construction. Base variants have
+        // explicit arms above, so this catch-all exists only when the
+        // extended variants (which it absorbs) are present.
+        #[cfg(feature = "lang-extended")]
         _ => |_, _| true,
     }
 }
