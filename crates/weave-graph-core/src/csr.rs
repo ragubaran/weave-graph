@@ -284,7 +284,7 @@ impl CsrGraph {
 
     /// Every node that reaches `from` within `max_hops` inbound steps.
     /// `build_reverse_csr` allocates a full transient reverse csr - peak rss
-    /// spikes to ~2x the forward csr for this calll's duration. Avoid calling 
+    /// spikes to ~2x the forward csr for this calll's duration. Avoid calling
     /// in a tight loop: cache the reverse externally if needed.
     pub fn callers_within(&self, from: NodeId, max_hops: u32) -> RoaringBitmap {
         let Ok(from_index) = self.index_to_id.binary_search(&from) else {
