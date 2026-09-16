@@ -1,4 +1,4 @@
-//! Cryptographic provenance boundary (`plan.md` §2.2, `impl.md` M2.3).
+//! Cryptographic provenance boundary.
 //! The trait is the interface — Lodestone Nexus or any host application
 //! is one implementation behind it, never a dependency of this crate.
 //! No networking: real providers are wired by the host, never here.
@@ -38,8 +38,8 @@ pub trait ProvenanceProvider {
     fn verify(&self, provenance: &Provenance) -> VerifyResult;
 }
 
-/// Reference implementation proving the boundary decouples (`impl.md`
-/// M2.3's own Verifies line): a host app wires a real provider, tests
+/// Reference implementation proving the boundary decouples:
+/// a host app wires a real provider, tests
 /// wire this one. FNV-1a stands in for the real hash/signature
 /// primitives so the contract is exercised with zero new dependencies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

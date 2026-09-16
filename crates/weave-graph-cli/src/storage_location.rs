@@ -12,7 +12,7 @@ pub(crate) struct DataDir {
     pub(crate) on_network_fs: bool,
 }
 
-/// `plan.md` §1.4: an explicit relocation config or `WEAVE_HOME` always
+/// An explicit relocation config or `WEAVE_HOME` always
 /// wins — the user has already said where they want the data, so it's
 /// trusted outright rather than re-checked for being "network enough."
 /// Otherwise, refuse (via `on_network_fs`) only when the *default* location

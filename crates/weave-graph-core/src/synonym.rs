@@ -1,4 +1,4 @@
-//! Query-expansion boundary (`impl.md` M3.7 Tier 1): static synonym
+//! Query-expansion boundary: static synonym
 //! groups and identifier splitting. Pure string transforms, no I/O/SQL —
 //! FTS5's own `porter` tokenizer covers stemming, so that part of the
 //! original proposal needs no code here at all.
@@ -45,7 +45,7 @@ pub fn expand_query(query: &str) -> String {
                         .collect::<Vec<_>>()
                         .join(" OR ")
                 ),
-                None => format!("\"{lower}\""),
+                None => format!("\"{}\"", lower.replace('"', "\"\"")),
             }
         })
         .collect::<Vec<_>>()

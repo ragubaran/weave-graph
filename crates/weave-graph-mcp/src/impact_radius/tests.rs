@@ -339,7 +339,7 @@ fn omitted_max_tokens_returns_the_legacy_full_format() {
         },
         None,
     );
-    // Byte-identical to the M1.7-era format: 20 symbols + "and N more".
+    // Byte-identical to the un-truncated format: 20 symbols + "and N more".
     assert!(
         result
             .text

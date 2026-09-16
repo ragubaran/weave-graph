@@ -1,7 +1,7 @@
 #![deny(unsafe_code)]
 //! MCP transport adapter and tool surface. Depends only on
 //! `weave-graph-core`. All four tools are 100% deterministic — no LLM,
-//! no network, regardless of which features are compiled in (`plan.md` §1.5).
+//! no network, regardless of which features are compiled in.
 
 mod error;
 mod file_api;

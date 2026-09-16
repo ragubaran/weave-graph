@@ -1,5 +1,5 @@
-//! `weave traces` (`impl.md` M3.3, `plan.md` §3.3): import distributed
-//! trace spans from an OTLP/JSON file and overlay them onto the indexed
+//! `weave traces` imports distributed
+//! trace spans from an OTLP/JSON file and overlays them onto the indexed
 //! graph. File ingest only — no OTLP collector endpoint, ever, in this
 //! process (Core Invariant 1: deterministic, zero network). Export your
 //! traces from Jaeger/Datadog as OTLP JSON and point this at the file.

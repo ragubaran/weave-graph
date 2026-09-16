@@ -152,3 +152,90 @@ fn schema_version_helper_reports_latest() {
         weave_graph_core::schema::LATEST_SCHEMA_VERSION
     );
 }
+
+#[test]
+fn test_weave_graph_initialization() {
+    init_python();
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("graph.db");
+    seed_db(&path);
+
+    // Test successful initialization
+    let result = Python::with_gil(|_| WeaveGraph::new(path.to_str().unwrap()));
+    assert!(result.is_ok());
+
+    // Test initialization with non-existent file
+    let nonexistent_path = dir.path().join("nonexistent.db");
+    let result = Python::with_gil(|_| WeaveGraph::new(nonexistent_path.to_str().unwrap()));
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_node_edge_cases() {
+    init_python();
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("graph.db");
+    let (_a, _b, _c) = seed_db(&path);
+    let graph = open_graph(&path);
+
+    Python::with_gil(|py| {
+        // Test with very large ID that doesn't exist
+        let result = graph.get_node(py, u32::MAX);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+
+        // Test get_edges with non-existent node
+        let edges = graph.get_edges(py, u32::MAX);
+        assert!(edges.is_ok());
+        assert_eq!(edges.unwrap().len(), 0);
+    });
+}
+
+#[test]
+fn test_query_path_edge_cases() {
+    init_python();
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("graph.db");
+    let (a, b, c) = seed_db(&path);
+    let graph = open_graph(&path);
+
+    // Test path to self
+    assert_eq!(graph.query_path(a, a).unwrap(), Some(vec![a]));
+
+    // Test path between disconnected nodes
+    assert_eq!(graph.query_path(a, c).unwrap(), None);
+
+    // Test with non-existent nodes
+    assert_eq!(graph.query_path(u32::MAX, b).unwrap(), None);
+    assert_eq!(graph.query_path(a, u32::MAX).unwrap(), None);
+}
+
+#[test]
+fn test_impact_radius_edge_cases() {
+    init_python();
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("graph.db");
+    seed_db(&path);
+    let graph = open_graph(&path);
+
+    // Test with non-existent symbol
+    let result = graph.impact_radius("nonexistent_symbol");
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_trace_calls_edge_cases() {
+    init_python();
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("graph.db");
+    seed_db(&path);
+    let graph = open_graph(&path);
+
+    // Test with non-existent symbol
+    let result = graph.trace_calls("nonexistent_symbol", 2);
+    assert!(result.is_err());
+
+    // Test with zero depth
+    let result = graph.trace_calls("caller", 0);
+    assert!(result.is_ok());
+}

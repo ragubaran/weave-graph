@@ -51,7 +51,7 @@ fn identifier_looking_token_is_preferred_over_plain_words() {
 
 #[test]
 fn substring_near_miss_corrects_against_the_symbol_table() {
-    // "jwt" is not a symbol; a unique substring hit corrects it (§5.4).
+    // "jwt" is not a symbol; a unique substring hit corrects it.
     let call = route("who calls jwt?", &["verifyJWTSession", "unrelated"]).unwrap();
     assert_eq!(call.symbol, "verifyJWTSession");
 }

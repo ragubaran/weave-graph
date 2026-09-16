@@ -42,34 +42,40 @@ pub(crate) fn replace_row(
     symbol: &str,
     signature: &str,
 ) -> Result<(), StorageError> {
-    conn.execute("DELETE FROM symbol_fts WHERE rowid = ?1", params![id])
+    let mut delete = conn
+        .prepare_cached("DELETE FROM symbol_fts WHERE rowid = ?1")
         .map_err(backend_err)?;
+    delete.execute(params![id]).map_err(backend_err)?;
     insert_row(conn, id, symbol, signature)
 }
 
 pub(crate) fn delete_row(conn: &Connection, id: i64) -> Result<(), StorageError> {
-    conn.execute("DELETE FROM symbol_fts WHERE rowid = ?1", params![id])
+    let mut delete = conn
+        .prepare_cached("DELETE FROM symbol_fts WHERE rowid = ?1")
         .map_err(backend_err)?;
+    delete.execute(params![id]).map_err(backend_err)?;
     Ok(())
 }
 
 pub(crate) fn purge_path(conn: &Connection, repo_id: &str, path: &str) -> Result<(), StorageError> {
-    conn.execute(
-        "DELETE FROM symbol_fts WHERE rowid IN (
-             SELECT id FROM nodes WHERE repo_id = ?1 AND path = ?2
-         )",
-        params![repo_id, path],
-    )
-    .map_err(backend_err)?;
+    let mut delete = conn
+        .prepare_cached(
+            "DELETE FROM symbol_fts WHERE rowid IN (
+                 SELECT id FROM nodes WHERE repo_id = ?1 AND path = ?2
+             )",
+        )
+        .map_err(backend_err)?;
+    delete
+        .execute(params![repo_id, path])
+        .map_err(backend_err)?;
     Ok(())
 }
 
 pub(crate) fn purge_missing_nodes(conn: &Connection) -> Result<(), StorageError> {
-    conn.execute(
-        "DELETE FROM symbol_fts WHERE rowid NOT IN (SELECT id FROM nodes)",
-        [],
-    )
-    .map_err(backend_err)?;
+    let mut delete = conn
+        .prepare_cached("DELETE FROM symbol_fts WHERE rowid NOT IN (SELECT id FROM nodes)")
+        .map_err(backend_err)?;
+    delete.execute([]).map_err(backend_err)?;
     Ok(())
 }
 
@@ -102,7 +108,7 @@ pub(crate) fn search_nodes(
     limit: usize,
 ) -> Result<Vec<Node>, StorageError> {
     let mut stmt = conn
-        .prepare(
+        .prepare_cached(
             "SELECT n.id, n.repo_id, n.path, n.symbol, n.kind, n.line_start, n.line_end, n.signature
              FROM symbol_fts
              JOIN nodes AS n ON n.id = symbol_fts.rowid

@@ -79,7 +79,7 @@ fn repo_map_truncates_to_max_files() {
     assert_eq!(file_lines, 2);
 }
 
-/// M2.9 fixture: two dense modules (src/parser: a/b/c.rs wired together;
+/// Fixture: two dense modules (src/parser: a/b/c.rs wired together;
 /// src/render: x/y.rs wired together) plus one isolated file. Used by the
 /// budget/coverage, byte-identical-default, and drill-down tests below.
 struct ModuleFixture {
@@ -204,7 +204,7 @@ fn file_level_default_is_byte_identical_without_module_flag() {
     );
 }
 
-/// M2.9's required drill-down regression: module → file → symbol reaches
+/// Drill-down regression: module → file → symbol reaches
 /// the exact wiring cards the file-level path returns for the same files.
 #[test]
 fn module_drill_down_reaches_the_same_wiring_cards_as_the_file_level_path() {
@@ -263,7 +263,7 @@ fn assert_wiring_cards_equal(a: &FileApiResult, b: &FileApiResult) {
     }
 }
 
-// ─── impl.md M2.16: token-budgeted truncation ───────────────────────────────
+// ─── token-budgeted truncation ───────────────────────────────
 
 #[test]
 fn max_tokens_replaces_max_files_truncation_when_set() {
@@ -298,7 +298,7 @@ fn max_tokens_replaces_max_files_truncation_when_set() {
     );
 
     // Omitting max_tokens: max_files behavior unchanged (byte-identical
-    // to the M1.7-era format).
+    // to the un-truncated format).
     let default_result = weave_repo_map(
         &storage,
         &csr,
@@ -317,8 +317,7 @@ fn max_tokens_replaces_max_files_truncation_when_set() {
     assert_eq!(file_lines, 3);
 }
 
-// ─── RBAC masking (was previously entirely unenforced — see AGENTS.md
-// §1.7's query-layer invariant) ───────────────────────────────────────────
+// ─── RBAC masking (was previously entirely unenforced at the query layer) ───
 
 fn hide_payment_files(n: &Node) -> Node {
     if n.path.starts_with("src/payment/") {

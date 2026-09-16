@@ -5,7 +5,7 @@ use crate::tools::{TraceCallsArgs, TraceCallsResult, resolve_symbol};
 /// Call chain traversal — both outgoing (calls) and incoming (callers).
 /// Visited sets on both BFS walks prevent infinite loops on cyclic graphs.
 ///
-/// `mask` is M3.0's query-layer RBAC hook (`weave_graph_core::rbac`),
+/// `mask` is the query-layer RBAC hook (`weave_graph_core::rbac`),
 /// applied once here to the whole node list — see
 /// `weave-graph-cli::query::run`'s doc comment for why (never drops or
 /// reorders entries, so `csr`'s compact indices stay valid).
@@ -51,7 +51,7 @@ pub fn weave_trace_calls(
     };
 
     let full = render(usize::MAX);
-    // M2.16: no budget → byte-identical to today. Over budget → truncate
+    // No budget → byte-identical to today. Over budget → truncate
     // the chain lines (hops closest to the root survive) with explicit
     // "... and N more" markers — the totals never go silent.
     if crate::tools::under_budget(&full, args.max_tokens) {

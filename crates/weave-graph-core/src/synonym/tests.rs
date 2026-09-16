@@ -2,7 +2,7 @@ use super::{expand_query, split_identifier};
 
 #[test]
 fn expand_query_ors_known_synonyms_and_ands_across_words() {
-    // Matches vector-proposal.md §2.2's own worked example: "token" and
+    // Worked example: "token" and
     // "lifetime" both sit inside a synonym group as members, not just as
     // group keys, so each expands to its whole group.
     let expanded = expand_query("token lifetime");

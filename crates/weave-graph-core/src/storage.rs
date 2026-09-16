@@ -5,7 +5,7 @@ use crate::trace::TraceSpan;
 
 pub const MAX_SEARCH_LIMIT: usize = 100;
 
-/// Backend-agnostic persistence trait (`plan.md` §0.4, §1.1). No core logic
+/// Backend-agnostic persistence trait. No core logic
 /// references a concrete backend — `weave-graph-store-sqlite` is the
 /// default implementation; `weave-graph-store-turso` is an alternative
 /// behind the same interface.
@@ -17,7 +17,7 @@ pub trait Storage {
     fn get_edges(&self, node_id: NodeId) -> Result<Vec<Edge>, StorageError>;
 
     /// Inbound edges only (`target_id == node_id`). Used by `weave_trace_calls`
-    /// for the "who calls this symbol" direction (`plan.md` §1.5).
+    /// for the "who calls this symbol" direction.
     fn get_callers(&self, node_id: NodeId) -> Result<Vec<Edge>, StorageError>;
 
     /// Insert or update by the node's natural key
@@ -34,7 +34,7 @@ pub trait Storage {
 
     fn schema_version(&self) -> Result<u32, StorageError>;
 
-    /// Every node, ordered by id. The CSR graph (M1.3) is rebuilt from
+    /// Every node, ordered by id. The CSR graph is rebuilt from
     /// this on load — the SQL store is authoritative, the CSR a derived
     /// read structure with no sync path back.
     fn all_nodes(&self) -> Result<Vec<Node>, StorageError>;
@@ -71,7 +71,7 @@ pub trait Storage {
     /// Purge all edges where source_id OR target_id belongs to the given file.
     /// Must be called before `purge_file_nodes` — deleting nodes first would
     /// violate the FK constraint and leave inbound edges from other files
-    /// pointing at deleted node ids (`plan.md` §1.2a, Core Invariant 3).
+    /// pointing at deleted node ids (Core Invariant 3).
     fn purge_file_edges(&mut self, repo_id: &str, path: &str) -> Result<u64, StorageError>;
 
     /// Purge all nodes for the given file. Call only after `purge_file_edges`.
@@ -108,7 +108,7 @@ pub trait Storage {
         Ok(Vec::new())
     }
 
-    /// Persist one pinned note (M2.10); returns its id. Writes through
+    /// Persist one pinned note; returns its id. Writes through
     /// `&self` — both backends' connections allow SQL writes on a shared
     /// reference, and the MCP pin tool only holds `&dyn Storage`.
     fn pin_note(&self, note: &Note) -> Result<i64, StorageError>;
@@ -137,7 +137,7 @@ pub trait Storage {
     fn delete_expired_notes(&self, now: i64) -> Result<u64, StorageError>;
 
     /// Persist (or replace, by the `(trace_id, span_id)` natural key) one
-    /// imported span (M3.3). Defaulted to "unsupported" so minimal `Storage`
+    /// imported span. Defaulted to "unsupported" so minimal `Storage`
     /// implementations (test mocks, benches) need no stub rows; the SQLite
     /// and Turso backends override both.
     fn upsert_trace_span(&self, _span: &TraceSpan) -> Result<(), StorageError> {
@@ -190,7 +190,7 @@ pub trait Storage {
 
 /// Factory trait for creating storage backends from a file path.
 /// Allows dependency injection and avoids hard-coding concrete backend types
-/// in CLI/MCP layers (`plan.md` §1.1, Core Invariant 4).
+/// in CLI/MCP layers (Core Invariant 4).
 pub trait StorageBuilder {
     /// Open a read-write database at `path`, migrating if needed.
     fn open(&self, path: &std::path::Path) -> Result<Box<dyn Storage>, StorageError>;

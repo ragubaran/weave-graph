@@ -94,7 +94,7 @@ fn trace_calls_terminates_on_cycle() {
     assert!(result.text.contains("trace_calls: a"));
 }
 
-// ─── impl.md M2.16: token-budgeted chain truncation ─────────────────────────
+// ─── token-budgeted chain truncation ─────────────────────────
 
 #[test]
 fn small_max_tokens_truncates_chains_with_explicit_counts() {

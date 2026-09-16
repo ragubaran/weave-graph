@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-/// `statfs`-based network-filesystem detection (`plan.md` §1.4): WAL mode
+/// `statfs`-based network-filesystem detection: WAL mode
 /// needs POSIX shared memory, which NFS/SMB/AFP mounts don't reliably
 /// provide. Fails open (returns `false`) on any lookup failure or on a
 /// platform without a `statfs`-family syscall — this exists to catch the

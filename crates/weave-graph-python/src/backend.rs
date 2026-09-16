@@ -27,8 +27,15 @@ impl WeaveGraph {
     /// Open an existing graph database built by `weave index`.
     #[new]
     fn new(path: &str) -> PyResult<Self> {
-        let storage = SqliteStorage::open(std::path::Path::new(path))
-            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let db_path = std::path::Path::new(path);
+        if !db_path.exists() {
+            return Err(PyValueError::new_err(format!(
+                "Database not found at {}",
+                path
+            )));
+        }
+        let storage =
+            SqliteStorage::open(db_path).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let csr = CsrGraph::load(&storage).map_err(|e| PyValueError::new_err(e.to_string()))?;
         Ok(Self {
             storage: Mutex::new(storage),

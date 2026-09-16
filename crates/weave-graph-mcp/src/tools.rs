@@ -7,11 +7,11 @@ pub struct RepoMapArgs {
     pub max_files: usize,
     /// `Some(true)` = module-level orientation (one line per Louvain
     /// module: label, file count, symbol count, cross-edges, member
-    /// files); `None`/`Some(false)` = the file-level default. Opt-in
-    /// (M2.9's recorded decision): the default stays byte-identical
+    /// files); `None`/`Some(false)` = the file-level default. Opt-in:
+    /// the default stays byte-identical
     /// until module coverage is proven in real agent use.
     pub module: Option<bool>,
-    /// Token-estimate ceiling (M2.16): when set, `max_files` truncation
+    /// Token-estimate ceiling: when set, `max_files` truncation
     /// is replaced by shedding lines until the output fits. Omitting it
     /// keeps today's exact behavior.
     pub max_tokens: Option<usize>,
@@ -30,7 +30,7 @@ impl Default for RepoMapArgs {
 /// Arguments for `weave_file_api`.
 pub struct FileApiArgs<'a> {
     pub paths: &'a [&'a str],
-    /// Token-estimate ceiling (M2.16): sheds detail in tiers (full wiring
+    /// Token-estimate ceiling: sheds detail in tiers (full wiring
     /// cards → per-file symbol names → per-file counts) instead of
     /// returning an unbounded blob. `None` = today's behavior.
     pub max_tokens: Option<usize>,
@@ -41,7 +41,7 @@ pub struct TraceCallsArgs<'a> {
     pub symbol: &'a str,
     /// Max hop depth for both incoming and outgoing traversal.
     pub depth: u32,
-    /// Token-estimate ceiling (M2.16): truncates the chains with explicit
+    /// Token-estimate ceiling: truncates the chains with explicit
     /// "... and N more" markers when the full trace would exceed it.
     pub max_tokens: Option<usize>,
 }
@@ -49,7 +49,7 @@ pub struct TraceCallsArgs<'a> {
 /// Arguments for `weave_impact_radius`.
 pub struct ImpactRadiusArgs<'a> {
     pub symbol: &'a str,
-    /// Token-estimate ceiling (M2.16): sheds to a file-level, then
+    /// Token-estimate ceiling: sheds to a file-level, then
     /// module-level summary on a synthetic hub's large blast radius.
     pub max_tokens: Option<usize>,
 }
@@ -61,7 +61,7 @@ pub struct SemanticSearchArgs<'a> {
     pub limit: usize,
 }
 
-/// Word-count token estimate (M2.16): a whitespace-split count — the same
+/// Word-count token estimate: a whitespace-split count — the same
 /// class of estimate the project's own token-reduction claims already
 /// rely on elsewhere. Deliberately NOT a real tokenizer and never claimed
 /// to be one; it only needs to bound output size roughly.

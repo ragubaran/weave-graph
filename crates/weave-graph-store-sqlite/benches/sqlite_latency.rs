@@ -1,7 +1,6 @@
-//! `impl.md` M1.9's required bench: point lookup, 3-hop traversal, and
-//! batch-insert throughput on `rusqlite` alone (`performance_compare.md`
-//! §5.2.3) — the `libSQL` comparison waits for the `turso` feature (M2.7)
-//! to exist, per `impl.md` §0a fix step 2.
+//! Point lookup, 3-hop traversal, and
+//! batch-insert throughput on `rusqlite` alone — the `libSQL` comparison
+//! lives in the `turso` feature's own bench.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use weave_graph_core::{Edge, Node, Storage};
@@ -74,9 +73,9 @@ fn batch_insert(c: &mut Criterion) {
                         let mut storage =
                             SqliteStorage::open(&dir.path().join("bench.db")).unwrap();
                         // One transaction for the whole batch, matching
-                        // `weave index`'s own write path post-M1.9 fix —
-                        // per-statement autocommit was the measured root
-                        // cause of the Core Invariant 4 violation.
+                        // `weave index`'s own write path — per-statement
+                        // autocommit was the measured root cause of the
+                        // Core Invariant 4 violation.
                         storage.begin_bulk_write().unwrap();
                         for i in 0..size {
                             storage.upsert_node(&node(i)).unwrap();

@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  weave-python-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ../..:/workspace
+    working_dir: /workspace
+    environment:
+      - PYTHONPATH=/workspace/target/wheels
+    command: bash -c "
+      cd crates/weave-graph-python &&
+      cargo test --features python --lib &&
+      python3 -c 'import sys; print(sys.version)'
+      "

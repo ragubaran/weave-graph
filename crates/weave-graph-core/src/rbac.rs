@@ -1,14 +1,14 @@
-//! Query-layer RBAC (`impl.md` M3.0, `plan.md` §3.1): one masking guard
+//! Query-layer RBAC: one masking guard
 //! shared by every consumer — CLI `query`/`report`/`export` and the MCP
 //! server — so none of them can drift from the others. Building masking
 //! into the export path alone, even "temporarily", is the specific
-//! mistake `design-proposals.md` §Gap 2 already caught; every consumer
+//! mistake a prior design review already caught; every consumer
 //! routes through [`RbacGuard`] instead.
 //!
 //! [`AuthProvider`] is the only identity-resolution seam. No vendor
 //! (Okta/Azure AD/SAML/OIDC) is named here — those are pluggable
-//! implementations a deployment supplies; real SSO wiring is M3.4's job,
-//! not this milestone's.
+//! implementations a deployment supplies; real SSO wiring is future work,
+//! not implemented yet.
 
 use std::collections::HashMap;
 
@@ -47,7 +47,7 @@ impl Identity {
         self.roles.iter().any(|r| r == "internal")
     }
 
-    /// `impl.md` M3.10: permission to invoke a `weave check-contracts`/
+    /// Permission to invoke a `weave check-contracts`/
     /// `weave blast` waiver (`--allow-drift`, `--allow-drift-for`,
     /// `--skip`, or their `WEAVE_*` env-var equivalents). Independent of
     /// `is_internal` — an identity that can see every symbol isn't
@@ -57,9 +57,9 @@ impl Identity {
     }
 }
 
-/// Pluggable identity resolution (`plan.md` §3.1: "`AuthProvider`
+/// Pluggable identity resolution: `AuthProvider`
 /// implementations (Okta / Azure AD / SAML / OIDC) supply identity; no
-/// named vendor appears in the core"). `credential` is opaque to this
+/// named vendor appears in the core. `credential` is opaque to this
 /// trait — a bearer token, a config-file subject name, whatever the
 /// concrete implementation expects.
 pub trait AuthProvider {
@@ -93,14 +93,14 @@ impl AuthProvider for StaticAuthProvider {
     }
 }
 
-/// Opaque contract-boundary stand-in (`plan.md` §3.1): a hidden node's
+/// Opaque contract-boundary stand-in: a hidden node's
 /// `id` survives (edges still resolve to *something*), everything that
 /// would leak internals — signature, exact path, line numbers — is
 /// replaced by a fixed marker rather than merely annotated.
 const HIDDEN_MARKER: &str = "<rbac: hidden>";
 
 /// One masking guard, constructed once per request/session and shared by
-/// every consumer (`plan.md` §3.1). `is_public` is supplied by the
+/// every consumer. `is_public` is supplied by the
 /// caller rather than hard-coded here: "public API surface" is a
 /// language-aware heuristic (`weave-graph-parse::contract`) this crate
 /// has no dependency on — `weave-graph-parse` depends on
@@ -130,7 +130,7 @@ impl RbacGuard {
         self.identity.is_internal() || (self.is_public)(node)
     }
 
-    /// `impl.md` M3.10: does this identity carry the `allow-drift` role
+    /// Does this identity carry the `allow-drift` role
     /// (see [`Identity::can_waive`])? A guard-level passthrough so
     /// callers checking waiver permission don't need to reach into
     /// `Identity` directly.

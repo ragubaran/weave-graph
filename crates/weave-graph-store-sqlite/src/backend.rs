@@ -8,7 +8,7 @@ use weave_graph_core::{
 
 use crate::schema::{ensure_not_newer_than_supported, migrate, schema_version};
 
-/// Default `Storage` implementation (`plan.md` §1.1), backed by `rusqlite`.
+/// Default `Storage` implementation, backed by `rusqlite`.
 /// The SQL store is authoritative; nothing here depends on the CSR graph
 /// built later in `weave-graph-core` from this data.
 pub struct SqliteStorage {
@@ -74,7 +74,7 @@ impl SqliteStorage {
         Ok(Self { conn })
     }
 
-    /// Opens `path` read-only — the shared-snapshot mode (`plan.md` §1.4):
+    /// Opens `path` read-only — the shared-snapshot mode:
     /// callers use it on a network-mounted `.weave/`, so it never touches
     /// `journal_mode` (a read-only connection can't rewrite the file header
     /// anyway; the file is expected to already be non-WAL, via
@@ -98,7 +98,7 @@ impl SqliteStorage {
     /// fresh, it never carries WAL over. This is the artifact
     /// `open_read_only` expects: safe to serve from a network filesystem
     /// without the `-wal`/`-shm` sidecar files WAL would need shared memory
-    /// for (`AGENTS.md` §3, `plan.md` §1.4).
+    /// for.
     pub fn export_read_only_snapshot(&self, dest_path: &Path) -> Result<(), StorageError> {
         self.conn
             .execute("VACUUM INTO ?1", params![dest_path.to_string_lossy()])
@@ -106,7 +106,7 @@ impl SqliteStorage {
         Ok(())
     }
 
-    /// Deletes every node of `kind` with zero inbound edges (impl.md M2.0's
+    /// Deletes every node of `kind` with zero inbound edges (the
     /// orphan-`doc_topic` sweep). Inbound-only: an outbound edge is not a
     /// reason to keep a derived node alive.
     pub fn purge_orphaned_nodes_by_kind(&self, kind: &str) -> Result<u64, StorageError> {
@@ -180,7 +180,7 @@ impl SqliteStorage {
 
     /// Opens an explicit transaction around a bulk sequence of
     /// `upsert_node`/`upsert_edge` calls. SQLite autocommits every
-    /// statement by default — one fsync per row is what capped M1.9's
+    /// statement by default — one fsync per row is what capped the
     /// measured insert throughput at ~1,700-3,700 rows/sec and drove the
     /// Core Invariant 4 RAM/wall-clock violation at 500k symbols. Caller
     /// must pair this with `commit_bulk_write`; an error in between leaves
@@ -466,9 +466,8 @@ impl SqliteStorage {
         Ok(())
     }
 
-    /// Rebuilds the FTS5 symbol index from every current `nodes` row
-    /// (`impl.md` M3.7 Tier 1) — call after writing nodes, inside the same
-    /// bulk-write transaction.
+    /// Rebuilds the FTS5 symbol index from every current `nodes` row —
+    /// call after writing nodes, inside the same bulk-write transaction.
     #[cfg(feature = "fts")]
     pub fn rebuild_fts_index(&self) -> Result<(), StorageError> {
         crate::fts::rebuild(&self.conn)
@@ -513,7 +512,7 @@ impl SqliteStorage {
         }
     }
 
-    /// Rebuilds the `vec_chunks` semantic index (`impl.md` M3.7 Tier 2)
+    /// Rebuilds the `vec_chunks` semantic index
     /// from `chunks` — `(node_id, chunk_text)` pairs the caller already
     /// built from source file spans; this crate owns no file I/O.
     #[cfg(feature = "vector")]
@@ -597,7 +596,7 @@ impl SqliteStorage {
     }
 
     /// Records (or replaces) one doc link, optionally carrying a
-    /// provider-signed `Provenance` record (`impl.md` M2.3). The CLI
+    /// provider-signed `Provenance` record. The CLI
     /// never calls this with a record — a host application wires the
     /// real `ProvenanceProvider`; unsigned links stay renderable as
     /// plain edges without provenance.
@@ -846,7 +845,7 @@ impl Storage for SqliteStorage {
     }
 
     fn purge_file_edges(&mut self, repo_id: &str, path: &str) -> Result<u64, StorageError> {
-        // Bidirectional purge required by plan.md §1.2a and Core Invariant 3.
+        // Bidirectional purge required by Core Invariant 3.
         // Outbound-only delete leaves orphaned inbound edges from other files.
         let rows = self
             .conn
@@ -963,7 +962,7 @@ impl Storage for SqliteStorage {
     }
 
     fn recall_notes(&self, now: i64) -> Result<Vec<Note>, StorageError> {
-        // Read-time TTL filter, not a background sweep (impl.md M2.10).
+        // Read-time TTL filter, not a background sweep.
         // Orphaned notes are included — reported, never silently dropped.
         let mut stmt = self
             .conn

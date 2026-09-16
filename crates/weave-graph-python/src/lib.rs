@@ -1,5 +1,5 @@
 #![deny(unsafe_code)]
-//! PyO3 bindings (`impl.md` M2.8): expose `weave-graph-core`'s query
+//! PyO3 bindings: expose `weave-graph-core`'s query
 //! surface — `get_node`, `get_edges`, `query_path`, `impact_radius`,
 //! `trace_calls` — to Python, packaged as a separate wheel via maturin.
 //! The native `weave` binary never links this crate.

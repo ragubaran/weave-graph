@@ -1,7 +1,6 @@
-//! Distributed trace spans overlaid onto the static graph (`impl.md`
-//! M3.3, `plan.md` §3.3). The struct and its aggregation are unconditional
-//! here (the `trace_spans` table exists in every schema, M2.10's
-//! precedent); the `otel` Cargo feature gates only the CLI surface
+//! Distributed trace spans overlaid onto the static graph. The struct and
+//! its aggregation are unconditional here (the `trace_spans` table exists
+//! in every schema); the `otel` Cargo feature gates only the CLI surface
 //! (`traces import`, the `latency()` query), never the data model.
 //!
 //! Spans are keyed by `(trace_id, span_id)` and matched to nodes by

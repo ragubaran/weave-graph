@@ -1,4 +1,4 @@
-//! `provenance` feature (`impl.md` M2.3): persistence for
+//! `provenance` feature: persistence for
 //! Merkle-signed note links. A host application wires a real
 //! `ProvenanceProvider`, calls `attach`, and writes the record here;
 //! `weave report`/`weave export` only render what these reads return.

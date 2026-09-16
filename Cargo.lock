@@ -2804,6 +2804,7 @@ version = "1.0.1"
 dependencies = [
  "criterion 0.5.1",
  "futures",
+ "libc",
  "libsql",
  "tempfile",
  "weave-graph-core",

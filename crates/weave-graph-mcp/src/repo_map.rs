@@ -8,10 +8,10 @@ use crate::tools::{RepoMapArgs, RepoMapResult};
 /// Progressive architectural orientation (~200 tokens).
 /// File-level mode groups nodes by file and ranks files by outbound
 /// degree; module-level mode (`args.module == Some(true)`) folds the
-/// file-dependency graph into Louvain modules first (M2.9) — one line
+/// file-dependency graph into Louvain modules first — one line
 /// per module, drill-down into files via `weave_file_api` unchanged.
 ///
-/// `mask` is M3.0's query-layer RBAC hook, applied once to the whole node
+/// `mask` is the query-layer RBAC hook, applied once to the whole node
 /// list before any grouping — same pattern `weave_impact_radius` uses.
 /// Masked nodes all carry the same `<rbac: hidden>` path, so every masked
 /// file collapses into one aggregate bucket rather than leaking per-file
@@ -55,9 +55,9 @@ pub fn weave_repo_map(
     // Sort descending by degree (hub nodes first), then by path for stability.
     files.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
 
-    // M2.16: with `max_tokens` set, truncation is token-estimate-based —
+    // With `max_tokens` set, truncation is token-estimate-based —
     // lines are added while the running estimate fits. Without it,
-    // `max_files` truncation is byte-identical to today.
+    // `max_files` truncation stays byte-identical.
     let mut lines = Vec::with_capacity(files.len() + 1);
     lines.push(format!(
         "repo map ({} files, {} total):",

@@ -78,6 +78,6 @@ vector = ["fts", "weave-graph-core/vector", "weave-graph-store-sqlite/vector", "
 # variants (docs/deploy.md §1): no new code, just a named shorthand for the
 # feature list a `weave`/`weave-custom` build actually needs.
 viz = []
-team = ["docs", "federation"]
+team = ["docs", "federation", "fts", "vector"]
 custom = ["team", "hub", "hub-provenance", "provenance", "rbac", "otel", "policy-lint", "fts", "vector"]
 watch = ["dep:notify"]

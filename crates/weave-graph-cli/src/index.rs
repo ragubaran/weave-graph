@@ -267,35 +267,50 @@ fn upsert_all_edges(
     Ok(())
 }
 
-/// AST-bounded chunk text per node: the node's own
-/// `line_start..=line_end` source span, reusing spans the parser already
-/// computed rather than a second span-finder. Falls back to the bare
-/// symbol name if the source file can't be read or the span is empty —
+/// Shared chunk-streaming body for `rebuild_vector_index`/`update_vector_index`:
+/// per-node AST-bounded source span (the node's own `line_start..=line_end`,
+/// reusing spans the parser already computed), skipping excluded paths and
+/// re-reading the source file only when the path changes. Falls back to the
+/// bare symbol name if the source file can't be read or the span is empty —
 /// never fails the reindex over a missing chunk.
+#[cfg(feature = "vector")]
+fn stream_vector_chunks(
+    root: &Path,
+    excluded_paths: &[String],
+    insert: &mut dyn FnMut(NodeId, &str) -> Result<(), StorageError>,
+    for_each_node: impl FnOnce(
+        &mut dyn FnMut(Node) -> Result<(), StorageError>,
+    ) -> Result<(), StorageError>,
+) -> Result<(), StorageError> {
+    let mut current_path = None;
+    let mut source = String::new();
+    let mut line_starts = Vec::new();
+    for_each_node(&mut |node| {
+        if excluded_paths
+            .iter()
+            .any(|prefix| path_is_excluded(&node.path, prefix))
+        {
+            return Ok(());
+        }
+        if current_path.as_deref() != Some(node.path.as_str()) {
+            current_path = Some(node.path.clone());
+            source = fs::read_to_string(root.join(&node.path)).unwrap_or_default();
+            line_starts = source_line_starts(&source);
+        }
+        let text = source_span(&source, &line_starts, node.line_start, node.line_end)
+            .unwrap_or(&node.symbol);
+        insert(node.id, text)
+    })
+}
+
 #[cfg(feature = "vector")]
 fn rebuild_vector_index(root: &Path, storage: &SqliteStorage) -> Result<(), StorageError> {
     let config_path = root.join(".weave").join("config.toml");
     let excluded_paths = crate::config::read_vector_exclude(&config_path);
     let embedder = weave_graph_core::embedding::MockEmbeddingProvider::new();
-    let mut current_path = None;
-    let mut source = String::new();
-    let mut line_starts = Vec::new();
     storage.rebuild_vector_index_streaming(&embedder, |insert| {
-        storage.for_each_node_by_path(&mut |node| {
-            if excluded_paths
-                .iter()
-                .any(|prefix| path_is_excluded(&node.path, prefix))
-            {
-                return Ok(());
-            }
-            if current_path.as_deref() != Some(node.path.as_str()) {
-                current_path = Some(node.path.clone());
-                source = fs::read_to_string(root.join(&node.path)).unwrap_or_default();
-                line_starts = source_line_starts(&source);
-            }
-            let text = source_span(&source, &line_starts, node.line_start, node.line_end)
-                .unwrap_or(&node.symbol);
-            insert(node.id, text)
+        stream_vector_chunks(root, &excluded_paths, insert, |f| {
+            storage.for_each_node_by_path(f)
         })
     })
 }
@@ -309,25 +324,9 @@ fn update_vector_index(
     let config_path = root.join(".weave").join("config.toml");
     let excluded_paths = crate::config::read_vector_exclude(&config_path);
     let embedder = weave_graph_core::embedding::MockEmbeddingProvider::new();
-    let mut current_path = None;
-    let mut source = String::new();
-    let mut line_starts = Vec::new();
     storage.upsert_vector_index_streaming(&embedder, |insert| {
-        storage.for_each_node_in_paths(paths, &mut |node| {
-            if excluded_paths
-                .iter()
-                .any(|prefix| path_is_excluded(&node.path, prefix))
-            {
-                return Ok(());
-            }
-            if current_path.as_deref() != Some(node.path.as_str()) {
-                current_path = Some(node.path.clone());
-                source = fs::read_to_string(root.join(&node.path)).unwrap_or_default();
-                line_starts = source_line_starts(&source);
-            }
-            let text = source_span(&source, &line_starts, node.line_start, node.line_end)
-                .unwrap_or(&node.symbol);
-            insert(node.id, text)
+        stream_vector_chunks(root, &excluded_paths, insert, |f| {
+            storage.for_each_node_in_paths(paths, f)
         })
     })
 }

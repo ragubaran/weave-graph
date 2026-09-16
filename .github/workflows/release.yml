@@ -88,6 +88,13 @@ jobs:
 
       - name: Run Workspace Tests
         run: cargo test --workspace --all-features --exclude weave-graph-python
+      
+      # Run Python bindings tests separately for better coverage tracking
+      - name: Run Python Bindings Tests
+        run: |
+          cd crates/weave-graph-python
+          cargo test --features python --lib
+          python3 -c "import sys; print('Python version:', sys.version)"
 
       - name: Verify Coverage (>= 90%)
         run: cargo llvm-cov --workspace --all-targets --fail-under-lines 90
@@ -103,9 +110,9 @@ jobs:
       fail-fast: false
       matrix:
         # Two release variants (docs/deploy.md §1) built across every
-        # platform target: `weave` (team = docs+federation; single and
-        # multiple mode) and `weave-custom` (custom = team+hub+rbac+otel+
-        # policy-lint; adds custom mode on top).
+        # platform target: `weave` (team = docs+federation+fts+vector;
+        # single and multiple mode) and `weave-custom` (custom =
+        # team+hub+rbac+otel+policy-lint+fts+vector; adds custom mode).
         include:
           # Linux x86_64 (GLIBC)
           - os: ubuntu-latest

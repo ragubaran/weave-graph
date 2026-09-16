@@ -7,6 +7,7 @@
 For a version-pinned Homebrew or release-archive smoke test, use [Test-install 1.0.1](install-1.0.1-testing.md).
 
 ### Package Managers
+
 ```bash
 # Homebrew (macOS & Linux)
 brew tap weave-graph/tap && brew install weave
@@ -26,6 +27,7 @@ pip install weave-graph
 ```
 
 ### Build from Source
+
 Requires a Rust 2024-edition toolchain (`rustc 1.93+`):
 
 ```bash
@@ -35,10 +37,10 @@ cargo build --release -p weave-graph-cli --features team
 cp target/release/weave ~/.local/bin/
 ```
 
-- `--features team` (`docs` + `federation`) is an optional developer/team
+- `--features team` (`docs` + `federation` + `fts` + `vector`) is an optional developer/team
   profile, not required for a single repository.
 - The core-size target applies to `cargo build --release -p
-  weave-graph-cli --no-default-features`; the current macOS build is
+weave-graph-cli --no-default-features`; the current macOS build is
   10,128,832 bytes (9.66 MiB). Cargo-default extended-language artifacts are
   larger and must be measured separately.
 - `--features custom` builds the full self-hosted enterprise suite. See [Self-Hosted](self-hosted.md) and [Features](features.md).
@@ -61,6 +63,7 @@ weave serve --mcp              # starts local MCP server for AI coding agents
 `.weave/` is where `weave` keeps its index — `weave init` configures `.weave/*` and `!.weave/config.toml` in `.gitignore` and/or `.ignore` so that `.weave/config.toml` can be tracked in version control while derived cache databases are ignored. In addition, `weave init` automatically provisions `.mcp.json` with the `weave` MCP server configuration, enabling seamless zero-config setup for AI coding assistants (Claude Code, Cursor, Windsurf, Antigravity, Gemini, etc.) while non-destructively preserving existing servers like `graft`.
 
 ### Querying the Graph
+
 `weave query` provides deterministic traversal expressions:
 
 ```bash
@@ -71,6 +74,7 @@ weave query "path(main, AuthService.verify)"  # Shortest call chain between two 
 ```
 
 ### Keeping the Index Current
+
 ```bash
 weave index --incremental     # Reindexes only changed files
 weave status                  # Summary: files, symbols, edges, and pending markers
@@ -85,7 +89,9 @@ Every `weave index` run takes an advisory file lock (`.weave/index.lock`). If tw
 Requires `--features team` (or `federation`). Composes separate repository graphs **locally without a centralized server or network traffic**.
 
 ### Initializing Multi-Repo Workspaces
+
 In each repository of your ecosystem:
+
 ```bash
 cd services/auth-service
 weave init --mode multiple
@@ -97,6 +103,7 @@ weave index
 ```
 
 `--mode multiple` configures the `[federation]` section in `.weave/config.toml`:
+
 ```toml
 # services/payment-service/.weave/config.toml
 mode = "multiple"
@@ -107,43 +114,57 @@ staleness_policy = "strict"   # warn | strict | ignore
 ```
 
 ### Linking Repositories
+
 Link repositories to compose their graphs and establish cryptographic contract baselines:
+
 ```bash
 weave link services/payment-service services/auth-service
 ```
+
 - Discovers cross-repo call edges and API dependencies.
 - Runs Tarjan's Strongly Connected Components (SCC) to detect multi-repo circular dependencies.
 - Computes SHA-256 contract hashes of each repository's exported public API and records them as mutual expectations.
 
 ### Cross-Repository Queries
+
 Query across the combined multi-repo boundary:
+
 ```bash
 weave query-federated services/payment-service services/auth-service "callers(AuthService.verify)"
 ```
+
 Traces call paths starting in `auth-service` that are triggered by handlers in `payment-service`.
 
 ### Unified Multi-Repo Architecture Canvas
+
 Render an Obsidian JSON Canvas covering all linked repositories:
+
 ```bash
 weave report-federated services/payment-service services/auth-service --out FEDERATED_MAP.canvas
 ```
 
 ### Automated CI Contract Gates
+
 Enforce contract compatibility in CI pull requests before merging breaking changes:
+
 ```bash
 cd services/payment-service
 weave check-contracts --diff --scoped
 ```
+
 - `--diff`: Displays symbol-level added, changed, and removed API declarations.
 - `--scoped`: Validates only the exact subset of symbols imported by the consuming repository, avoiding false alarms on unrelated changes.
 - Exits non-zero on violations when `staleness_policy = "strict"`.
 
 ### Cross-Repo Deprecation Migration Planning
+
 Before deprecating an API in a shared library or service, generate an impact and migration plan:
+
 ```bash
 cd services/auth-service
 weave plan-migration --symbol "TokenValidator.verify_v1"
 ```
+
 Outputs every file, line number, and consuming symbol across all linked repositories that must be updated.
 
 ---

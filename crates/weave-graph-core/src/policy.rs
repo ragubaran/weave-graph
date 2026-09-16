@@ -1,4 +1,4 @@
-//! Graph policy linting (`impl.md` M3.2, `plan.md` §3.2): declared
+//! Graph policy linting: declared
 //! architectural boundaries evaluated against the indexed symbol graph,
 //! plus the drift checks (cycles, orphans) that flag architecture rot
 //! before deployment. Pure graph math — YAML parsing stays in the CLI
@@ -6,7 +6,7 @@
 //!
 //! Hidden nodes are never passed in: an `rbac`-masked view's edges to
 //! hidden endpoints cannot be classified, so the caller drops them
-//! upstream and reports the skip count itself (M3.0's one-guard rule).
+//! upstream and reports the skip count itself.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -101,7 +101,7 @@ pub fn lint(nodes: &[Node], edges: &[Edge], rules: &[BoundaryRule]) -> Vec<Viola
     violations
 }
 
-/// File-level dependency cycles (`plan.md` §3.2's drift check). Returns
+/// File-level dependency cycles (the drift check). Returns
 /// each distinct cycle's file paths, rotated to start at its
 /// lexicographically smallest file so the same ring found from different
 /// entry points dedupes to one report.

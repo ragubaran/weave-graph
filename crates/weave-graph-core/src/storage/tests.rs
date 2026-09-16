@@ -1,7 +1,7 @@
 use super::*;
 
 /// A mock that exercises the trait's default method bodies: trace-span
-/// support is opt-in per backend (M3.3) — the defaults refuse writes and
+/// support is opt-in per backend — the defaults refuse writes and
 /// report an empty read rather than forcing minimal `Storage`
 /// implementations (test mocks, benches) to stub rows.
 #[derive(Default)]

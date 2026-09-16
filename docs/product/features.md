@@ -4,31 +4,31 @@ Everything beyond the deterministic core is an off-by-default Cargo feature.
 The pages below describe implemented interfaces; package, memory, latency,
 and semantic-quality targets remain subject to the gates in the internal audit.
 
-| Tier / Profile | Feature | Flag | Description |
-| :--- | :--- | :--- | :--- |
-| **Base Tier (Core)** | Core Engine | `--no-default-features` | Core-language Tree-sitter indexing, CSR graph, incremental reindex, loopback MCP server, `weave query`, `weave blast` |
-| **Team Profile** | [`docs`](#docs) | `--features docs` | Markdown/Obsidian ingestion, wikilinks, backtick code rationales, JSON Canvas export |
-| | [`federation`](#federation) | `--features federation` | Multi-repo graph composition, cross-repo cycles, contract hashing & CI verification |
-| **Knowledge & DX Tier** | [`notes`](#notes) | `--features notes` | Pinned symbol notes, ephemeral (24h TTL) and crystallized tiers, moniker reattachment |
-| | [`watch`](#watch) | `--features watch` | Auto-sync file watcher, debounce queue, blast-radius safety ceiling |
-| | [`viz`](#viz) | `--features viz` | Offline standalone HTML viewer, loopback static report server |
-| **Custom / Self-Hosted Tier** | [`rbac`](#rbac) | `--features rbac` | Query-layer role-based masking, SCIM 2.0 provisioning server, IdP directory sync |
-| **GitHub token identity (optional)** | [`github-auth`](#github-token-identity) | `--features github-auth` | GitHub API identity lookup from `WEAVE_GITHUB_TOKEN` |
-| | [`policy-lint`](#policy-lint) | `--features policy-lint` | YAML architectural boundaries, dependency linting, architectural drift analytics |
-| | [`otel`](#otel) | `--features otel` | OTLP JSON trace import, node-level latency percentiles and error metrics |
-| | [`hub`](#hub) | `--features hub` | Centralized snapshot registry, `weave sync pull/push`, delta sync, CI hydration |
-| | [`fts`](#fts) | `--features fts` | BM25 full-text symbol search with AST synonym expansion (`weave search`) |
-| | [`vector`](#vector) | `--features vector` | Vector embeddings with `sqlite-vec` virtual tables for semantic symbol retrieval |
-| | [`slm`](#slm) | `--features slm` | Natural-language terminal query router (`weave ask`), model management, ADR review |
-| | [`provenance`](#provenance) | `--features provenance` | Optional note and document provenance primitives |
-| **Extensibility & Runtimes** | [`turso`](#turso) | Library feature only | Embedded libSQL `Storage` implementation; not available through `weave` commands |
-| | [`python`](#python) | `--features python` | PyO3 Python bindings wheel (`weave-graph-python`) for offline graph analytics |
+| Tier / Profile                       | Feature                                 | Flag                     | Description                                                                                                           |
+| :----------------------------------- | :-------------------------------------- | :----------------------- | :-------------------------------------------------------------------------------------------------------------------- |
+| **Base Tier (Core)**                 | Core Engine                             | `--no-default-features`  | Core-language Tree-sitter indexing, CSR graph, incremental reindex, loopback MCP server, `weave query`, `weave blast` |
+| **Team Profile**                     | [`docs`](#docs)                         | `--features docs`        | Markdown/Obsidian ingestion, wikilinks, backtick code rationales, JSON Canvas export                                  |
+|                                      | [`federation`](#federation)             | `--features federation`  | Multi-repo graph composition, cross-repo cycles, contract hashing & CI verification                                   |
+| **Knowledge & DX Tier**              | [`notes`](#notes)                       | `--features notes`       | Pinned symbol notes, ephemeral (24h TTL) and crystallized tiers, moniker reattachment                                 |
+|                                      | [`watch`](#watch)                       | `--features watch`       | Auto-sync file watcher, debounce queue, blast-radius safety ceiling                                                   |
+|                                      | [`viz`](#viz)                           | `--features viz`         | Offline standalone HTML viewer, loopback static report server                                                         |
+| **Custom / Self-Hosted Tier**        | [`rbac`](#rbac)                         | `--features rbac`        | Query-layer role-based masking, SCIM 2.0 provisioning server, IdP directory sync                                      |
+| **GitHub token identity (optional)** | [`github-auth`](#github-token-identity) | `--features github-auth` | GitHub API identity lookup from `WEAVE_GITHUB_TOKEN`                                                                  |
+|                                      | [`policy-lint`](#policy-lint)           | `--features policy-lint` | YAML architectural boundaries, dependency linting, architectural drift analytics                                      |
+|                                      | [`otel`](#otel)                         | `--features otel`        | OTLP JSON trace import, node-level latency percentiles and error metrics                                              |
+|                                      | [`hub`](#hub)                           | `--features hub`         | Centralized snapshot registry, `weave sync pull/push`, delta sync, CI hydration                                       |
+|                                      | [`fts`](#fts)                           | `--features fts`         | BM25 full-text symbol search with AST synonym expansion (`weave search`)                                              |
+|                                      | [`vector`](#vector)                     | `--features vector`      | Vector embeddings with `sqlite-vec` virtual tables for semantic symbol retrieval                                      |
+|                                      | [`slm`](#slm)                           | `--features slm`         | Natural-language terminal query router (`weave ask`), model management, ADR review                                    |
+|                                      | [`provenance`](#provenance)             | `--features provenance`  | Optional note and document provenance primitives                                                                      |
+| **Extensibility & Runtimes**         | [`turso`](#turso)                       | Library feature only     | Embedded libSQL `Storage` implementation; not available through `weave` commands                                      |
+|                                      | [`python`](#python)                     | `--features python`      | PyO3 Python bindings wheel (`weave-graph-python`) for offline graph analytics                                         |
 
 ### Feature Profiles (Cargo Bundles)
-- **Core artifact**: The current macOS `--no-default-features` build is 10,128,832 bytes (9.66 MiB). The vector profile is 10,241,872 bytes (9.77 MiB); the <15 MB target applies to the explicitly built core artifact. The complete 500k-symbol indexing RSS gate remains open.
-- **Team Profile (`--features team`)**: `docs` + `federation`. Multi-repo linking, contract checking, and Markdown knowledge integration.
-- **Custom Mode / Self-Hosted Profile (`--features custom`)**: Enables the compiled enterprise feature set. Review each capability's authentication and verification status before deployment; this profile is not a certification of every enterprise control.
 
+- **Core artifact**: The current macOS `--no-default-features` build is 10,141,152 bytes (9.67 MiB) — verified via `scripts/verify_envelope.sh`. The vector profile is 10,254,208 bytes (9.77 MiB); the <15 MB target applies to the explicitly built core artifact. The 500k-symbol indexing RSS passes on macOS (24 MiB peak); a Linux rerun remains open.
+- **Team Profile (`--features team`)**: `docs` + `federation` + `fts` (BM25 search) + `vector` (semantic search). Multi-repo linking, contract checking, Markdown knowledge integration, and code search.
+- **Custom Mode / Self-Hosted Profile (`--features custom`)**: `team` + `hub` + `hub-provenance` + `provenance` + `rbac` + `otel` + `policy-lint` + `fts` + `vector`. Enables the compiled enterprise feature set. Review each capability's authentication and verification status before deployment; this profile is not a certification of every enterprise control.
 
 ---
 
@@ -160,7 +160,6 @@ and the lightweight `weave-registry` standalone server daemon.
 - **Transport Authentication**: `weave-registry --auth-token <token>` requires a matching `Authorization: Bearer` header on every request; unset by default (loopback-trust only). Client-side: `[hub] token` in `.weave/config.toml`.
 - **Snapshot Verification (`hub-provenance`)**: `weave-registry --provenance-key <secret>` rejects a push whose `X-Weave-Signature` doesn't verify against that shared secret — never the bundled verifier's public default key. Unset by default (pushes unverified, as before this existed).
 
-
 ## `slm`
 
 The local-model feature is intentionally not described as a production
@@ -211,21 +210,22 @@ Semantic code retrieval over AST-bounded chunks:
 - **Deterministic hybrid ranking**: Semantic CLI/MCP results fuse lexical and vector candidate ranks with stable tie-breaking; this does not certify learned-model quality.
 - **MCP tool (`weave_search_semantic`)**: exposes the same search to AI agents over MCP; a masked top hit is filtered out before the result is truncated to `limit`, never after, so it can't starve a visible runner-up out of a size-capped response — see [MCP Integration](mcp-integration.md).
 
-## `turso` (library-only, not a CLI capability)
+## `turso` (library-only, not available in any CLI build)
 
 An alternate `Storage` backend on embedded libSQL, implementing the exact
 same trait as the default `rusqlite` backend (same schema, same
 migrations, same transaction discipline) — real, tested code
-(`crates/weave-graph-store-turso`), but not wired into anything yet.
+(`crates/weave-graph-store-turso`), but not wired into any CLI build.
 
-- **Not yet reachable from any `weave` command**: `weave-graph-cli` always
-  opens `SqliteStorage` regardless of which storage features are compiled
-  in; `--features turso` *adds* the backend as an optional dependency, it
-  does not replace or exclude `weave-graph-store-sqlite` (a plain,
-  non-optional dependency of `weave-graph-cli` either way). There is no
-  `[storage.turso]` config table and no CLI flag to select a backend.
+- **Not available in any `weave` command**: `weave-graph-cli` does not
+  depend on `weave-graph-store-turso` and has no `turso` feature. Every
+  CLI build — default, `--features custom`, `--features vector` — uses
+  `SqliteStorage` exclusively. `TursoStorage` is usable only as a library
+  from external Rust code that depends on `weave-graph-store-turso` directly.
+  There is no `[storage.turso]` config table and no CLI flag to select a backend.
 - **Integration status**: a future CLI selector requires a deliberate build
-  and distribution design, plus compatibility, performance, and recovery
+  and distribution design (separate binary or build-matrix change), plus
+  compatibility, performance, and recovery
   tests. It is not a supported runtime configuration today.
 
 ## `python`
@@ -265,7 +265,7 @@ print(g.impact_radius("AuthService.verify"))
 
 ## MCP live reload (base MCP tier, no feature flag)
 
-`weave serve --mcp` detects when a *different* process (a manual
+`weave serve --mcp` detects when a _different_ process (a manual
 `weave index`, or the `watch` background thread) has rewritten the active
 database out from under it, and transparently closes and reopens its
 connection before answering the next request — bounded to a cheap `stat()`

@@ -1,4 +1,4 @@
-//! MCP notes tools (`impl.md` M2.10): `weave_pin_note` writes through
+//! MCP notes tools: `weave_pin_note` writes through
 //! `&dyn Storage` (both backends allow SQL writes on a shared reference);
 //! `weave_recall_notes` is a pure DB read with the TTL filter applied at
 //! read time — no filesystem access, no background sweep.
