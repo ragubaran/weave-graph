@@ -1,17 +1,12 @@
-//! Core Invariant 4's "500k symbols < 80MB peak RSS" check: builds 500k
-//! real nodes + edges through a real SQLite DB, then loads a `CsrGraph`
-//! from it — the full path an actual `weave index` takes, not just the
-//! CSR's own analytical byte layout (see `csr_memory.rs`).
-//!
-//! Self-measures peak RSS via `getrusage(RUSAGE_SELF)` and exits non-zero
-//! above the 80 MB ceiling, so CI can gate on it directly:
-//!   cargo run --release -p weave-graph-store-sqlite --example mem_500k
+//! Builds 500k real nodes and edges through SQLite, then loads `CsrGraph`.
+//! Staged write checkpoints match the bounded rebuild publication path.
+//! Peak RSS covers every phase and fails above the 80 MiB envelope.
 
-use weave_graph_core::{CsrGraph, Edge, Node, Storage};
+use weave_graph_core::{CsrGraph, Edge, Node};
 use weave_graph_store_sqlite::SqliteStorage;
 
 const SYMBOL_COUNT: u32 = 500_000;
-/// Core Invariant 4's ceiling, in bytes.
+const WRITE_BATCH_ROWS: usize = 50_000;
 const PEAK_RSS_BUDGET: u64 = 80 * 1024 * 1024;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -40,39 +35,63 @@ fn peak_rss_bytes() -> u64 {
     0
 }
 
+fn report_peak(phase: &str) -> u64 {
+    let peak = peak_rss_bytes();
+    eprintln!("phase={phase} peak_rss_mib={}", peak / (1024 * 1024));
+    peak
+}
+
 fn main() {
     let dir = tempfile::tempdir().expect("temp dir");
     let mut storage = SqliteStorage::open(&dir.path().join("mem_500k.db")).expect("open db");
 
     let mut ids = Vec::with_capacity(SYMBOL_COUNT as usize);
-    storage.begin_bulk_write().expect("begin bulk write");
-    for i in 0..SYMBOL_COUNT {
-        let node = Node {
-            id: 0,
-            repo_id: "r".into(),
-            path: format!("f{}.rs", i / 20),
-            symbol: format!("s{i}"),
-            kind: "function".into(),
-            line_start: 1,
-            line_end: 2,
-            signature: format!("fn s{i}()"),
-        };
-        ids.push(storage.upsert_node(&node).expect("upsert node"));
+    for start in (0..SYMBOL_COUNT).step_by(WRITE_BATCH_ROWS) {
+        let end = (start + WRITE_BATCH_ROWS as u32).min(SYMBOL_COUNT);
+        let nodes = (start..end)
+            .map(|i| Node {
+                id: 0,
+                repo_id: "r".into(),
+                path: format!("f{}.rs", i / 20),
+                symbol: format!("s{i}"),
+                kind: "function".into(),
+                line_start: 1,
+                line_end: 2,
+                signature: format!("fn s{i}()"),
+            })
+            .collect::<Vec<_>>();
+        storage.begin_bulk_write().expect("begin node batch");
+        ids.extend(
+            storage
+                .insert_fresh_nodes(&nodes)
+                .expect("insert node batch"),
+        );
+        storage.commit_bulk_write().expect("commit node batch");
+        storage.checkpoint_wal().expect("checkpoint node batch");
     }
-    for w in ids.windows(2) {
-        let edge = Edge {
-            id: 0,
-            source_id: w[0],
-            target_id: w[1],
-            kind: "CALLS_EXACT".into(),
-            weight: 1.0,
-        };
-        storage.upsert_edge(&edge).expect("upsert edge");
+    report_peak("nodes");
+
+    for start in (0..ids.len().saturating_sub(1)).step_by(WRITE_BATCH_ROWS) {
+        let end = (start + WRITE_BATCH_ROWS + 1).min(ids.len());
+        let edges = ids[start..end]
+            .windows(2)
+            .map(|pair| Edge {
+                id: 0,
+                source_id: pair[0],
+                target_id: pair[1],
+                kind: "CALLS_EXACT".into(),
+                weight: 1.0,
+            })
+            .collect::<Vec<_>>();
+        storage.begin_bulk_write().expect("begin edge batch");
+        storage.upsert_edges(&edges).expect("upsert edge batch");
+        storage.commit_bulk_write().expect("commit edge batch");
+        storage.checkpoint_wal().expect("checkpoint edge batch");
     }
-    storage.commit_bulk_write().expect("commit bulk write");
+    report_peak("edges");
 
     let csr = CsrGraph::load(&storage).expect("load csr");
-    let peak = peak_rss_bytes();
+    let peak = report_peak("csr");
     let peak_mib = peak / (1024 * 1024);
     println!(
         "loaded {} nodes, {} edges into CsrGraph; peak RSS {peak_mib} MiB (budget {} MiB)",

@@ -35,9 +35,7 @@ jobs:
 
       # weave-graph-python is excluded: PyO3's `extension-module` build needs
       # maturin's own linker setup, not a plain `cargo` invocation — every
-      # --all-features sweep across the workspace fails to link it otherwise,
-      # regardless of whether a Python interpreter is present. Built and
-      # tested by a dedicated maturin-based step, not this blanket sweep.
+      # --all-features fails to link it otherwise, Built tested by a dedicated `python-bindings` step.
       - name: Run Clippy Linter
         run: cargo clippy --workspace --all-targets --all-features --exclude weave-graph-python -- -D warnings
 
@@ -147,7 +145,7 @@ jobs:
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      # weave-graph-python excluded here too — see the lint job's comment.
+      # weave-graph-python excluded see `pyhton-bindings` job.
       - name: Build Test Binaries
         run: cargo build --workspace --tests --all-features --exclude weave-graph-python
 
@@ -173,7 +171,7 @@ jobs:
       - name: Setup Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      # weave-graph-python excluded here too — see the lint job's comment.
+      # weave-graph-python excluded see `pyhton-bindings` job.
       - name: Test Against N+1 Compiler
         run: cargo check --workspace --all-targets --all-features --exclude weave-graph-python
 
@@ -295,3 +293,34 @@ jobs:
           --bench vector_recall --bench turso_latency --bench slm_routing
           --bench slm_accuracy --bench indexing_throughput
           -- --baseline main || true
+
+  # ---------------------------------------------------------------------------
+  # 8. Python Bindings (maturin)
+  # ---------------------------------------------------------------------------          
+  python-bindings:
+    name: Python Bindings (maturin)
+    runs-on: ubuntu-latest
+    needs: [lint]
+    steps:  
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"       
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install maturin
+        run: pip install maturin
+        
+      - name: Build and install python wheel
+        run: maturin develop --manifest-path crates/weave-graph-python/Cargo.toml -features python
+        
+      - name: Smoke-test python import
+        run: python -c "import weave-graph; print(weave_graph import OK)"    

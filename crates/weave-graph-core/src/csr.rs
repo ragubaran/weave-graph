@@ -39,6 +39,7 @@ impl CompactCsr {
     }
 
     pub fn from_sorted_edges(edges: &[(u32, u32)], node_count: usize) -> Self {
+        assert!(node_count <= u32::MAX as usize, "node_count overflows u32");
         let mut row_offsets = vec![0; node_count + 1];
         let mut column_indices = Vec::with_capacity(edges.len());
 
@@ -282,7 +283,9 @@ impl CsrGraph {
     }
 
     /// Every node that reaches `from` within `max_hops` inbound steps.
-    /// The reverse adjacency is temporary to keep idle graph memory bounded.
+    /// `build_reverse_csr` allocates a full transient reverse csr - peak rss
+    /// spikes to ~2x the forward csr for this calll's duration. Avoid calling 
+    /// in a tight loop: cache the reverse externally if needed.
     pub fn callers_within(&self, from: NodeId, max_hops: u32) -> RoaringBitmap {
         let Ok(from_index) = self.index_to_id.binary_search(&from) else {
             return RoaringBitmap::new();

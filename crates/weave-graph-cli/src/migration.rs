@@ -195,7 +195,10 @@ fn render_plan(
             ));
             continue;
         }
-        let repo = affected.iter().find(|r| &r.label == label).unwrap();
+        let Some(repo) = affected.iter().find(|r| &r.label == label) else {
+            plan.push_str("- Caller inventory was unavailable; re-run the migration survey.\n");
+            continue;
+        };
         plan.push_str(&format!(
             "- Update callers of `{symbol}` (provided by {provider}) in:\n"
         ));

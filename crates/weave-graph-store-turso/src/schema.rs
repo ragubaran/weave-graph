@@ -1,5 +1,5 @@
 use weave_graph_core::StorageError;
-use weave_graph_core::schema::{LATEST_SCHEMA_VERSION, MIGRATIONS};
+use weave_graph_core::schema::{LATEST_SCHEMA_VERSION, migrations_after};
 
 fn backend_err(e: libsql::Error) -> StorageError {
     StorageError::Backend(e.to_string())
@@ -48,7 +48,7 @@ pub(crate) fn migrate(conn: &libsql::Connection) -> Result<(), StorageError> {
             max: LATEST_SCHEMA_VERSION,
         });
     }
-    for (version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v > current) {
+    for (version, sql) in migrations_after(current) {
         let batch = format!(
             "BEGIN;\n{sql}\nINSERT INTO schema_version (version, applied_at) VALUES ({version}, strftime('%s', 'now'));\nCOMMIT;"
         );

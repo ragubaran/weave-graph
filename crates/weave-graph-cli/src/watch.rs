@@ -77,8 +77,7 @@ pub(crate) fn write_pending_marker(
     weave_dir: &Path,
     marker: &PendingMarker,
 ) -> std::io::Result<()> {
-    let content =
-        serde_json::to_string_pretty(marker).expect("PendingMarker serialization cannot fail");
+    let content = serde_json::to_string_pretty(marker).map_err(std::io::Error::other)?;
     std::fs::write(marker_path(weave_dir), content)
 }
 

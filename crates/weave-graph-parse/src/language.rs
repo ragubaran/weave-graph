@@ -13,46 +13,84 @@ pub enum Language {
     Java,
     C,
     Cpp,
+    #[cfg(feature = "lang-extended")]
     CSharp,
+    #[cfg(feature = "lang-extended")]
     Kotlin,
+    #[cfg(feature = "lang-extended")]
     Swift,
+    #[cfg(feature = "lang-extended")]
     Scala,
+    #[cfg(feature = "lang-extended")]
     Zig,
+    #[cfg(feature = "lang-extended")]
     Ruby,
+    #[cfg(feature = "lang-extended")]
     Php,
+    #[cfg(feature = "lang-extended")]
     Bash,
+    #[cfg(feature = "lang-extended")]
     PowerShell,
+    #[cfg(feature = "lang-extended")]
     Lua,
+    #[cfg(feature = "lang-extended")]
     Yaml,
+    #[cfg(feature = "lang-extended")]
     Toml,
+    #[cfg(feature = "lang-extended")]
     Json,
+    #[cfg(feature = "lang-extended")]
     Properties,
     /// Any language with a grammar but no hand-written `extract/<lang>.rs`
     /// — routed through `query_vm`'s generic, kind-name-heuristic
     /// extractor instead of bespoke Rust per language.
+    #[cfg(feature = "lang-extended")]
     Elixir,
+    #[cfg(feature = "lang-extended")]
     Haskell,
+    #[cfg(feature = "lang-extended")]
     Dart,
+    #[cfg(feature = "lang-extended")]
     Sql,
+    #[cfg(feature = "lang-extended")]
     Html,
+    #[cfg(feature = "lang-extended")]
     Css,
+    #[cfg(feature = "lang-extended")]
     R,
+    #[cfg(feature = "lang-extended")]
     ArkTs,
+    #[cfg(feature = "lang-extended")]
     ObjC,
+    #[cfg(feature = "lang-extended")]
     Metal,
+    #[cfg(feature = "lang-extended")]
     Cuda,
+    #[cfg(feature = "lang-extended")]
     Svelte,
+    #[cfg(feature = "lang-extended")]
     Vue,
+    #[cfg(feature = "lang-extended")]
     Astro,
+    #[cfg(feature = "lang-extended")]
     Liquid,
+    #[cfg(feature = "lang-extended")]
     Pascal,
+    #[cfg(feature = "lang-extended")]
     Luau,
+    #[cfg(feature = "lang-extended")]
     Cfml,
+    #[cfg(feature = "lang-extended")]
     Cobol,
+    #[cfg(feature = "lang-extended")]
     VisualBasic,
+    #[cfg(feature = "lang-extended")]
     Erlang,
+    #[cfg(feature = "lang-extended")]
     Solidity,
+    #[cfg(feature = "lang-extended")]
     Terraform,
+    #[cfg(feature = "lang-extended")]
     Nix,
 }
 
@@ -240,50 +278,6 @@ impl Language {
             Language::Terraform => tree_sitter_ruby::LANGUAGE.into(),
             #[cfg(feature = "lang-extended")]
             Language::Nix => tree_sitter_elixir::LANGUAGE.into(),
-            // Unreachable without `lang-extended`: `from_path` never
-            // returns one of these variants in that build, so `grammar`
-            // never needs to build a `tree_sitter::Language` for it.
-            #[cfg(not(feature = "lang-extended"))]
-            Language::CSharp
-            | Language::Kotlin
-            | Language::Swift
-            | Language::Scala
-            | Language::Zig
-            | Language::Ruby
-            | Language::Php
-            | Language::Bash
-            | Language::PowerShell
-            | Language::Lua
-            | Language::Yaml
-            | Language::Toml
-            | Language::Json
-            | Language::Properties
-            | Language::Elixir
-            | Language::Haskell
-            | Language::Dart
-            | Language::Sql
-            | Language::Html
-            | Language::Css
-            | Language::R
-            | Language::ArkTs
-            | Language::ObjC
-            | Language::Metal
-            | Language::Cuda
-            | Language::Svelte
-            | Language::Vue
-            | Language::Astro
-            | Language::Liquid
-            | Language::Pascal
-            | Language::Luau
-            | Language::Cfml
-            | Language::Cobol
-            | Language::VisualBasic
-            | Language::Erlang
-            | Language::Solidity
-            | Language::Terraform
-            | Language::Nix => unreachable!(
-                "extended language grammar requested without `lang-extended` compiled in"
-            ),
         }
     }
 }

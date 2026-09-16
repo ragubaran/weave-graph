@@ -26,7 +26,7 @@ pub(crate) fn set_key(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let existing = fs::read_to_string(config_path).unwrap_or_default();
     let mut table: toml::Table = existing.parse().unwrap_or_default();
-    set_dotted(&mut table, key, parse_value(value));
+    set_dotted(&mut table, key, parse_value(value))?;
     let rendered = toml::to_string_pretty(&table)?;
     fs::write(config_path, rendered)?;
     Ok(())
@@ -295,12 +295,17 @@ fn parse_value(raw: &str) -> toml::Value {
         .unwrap_or_else(|_| toml::Value::String(raw.to_string()))
 }
 
-fn set_dotted(table: &mut toml::Table, key: &str, value: toml::Value) {
+fn set_dotted(
+    table: &mut toml::Table,
+    key: &str,
+    value: toml::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut parts = key.splitn(2, '.');
     let head = parts.next().unwrap_or(key).to_string();
     match parts.next() {
         None => {
             table.insert(head, value);
+            Ok(())
         }
         Some(rest) => {
             let entry = table
@@ -309,8 +314,10 @@ fn set_dotted(table: &mut toml::Table, key: &str, value: toml::Value) {
             if !entry.is_table() {
                 *entry = toml::Value::Table(toml::Table::new());
             }
-            // entry is a Table on every path above, so this never panics.
-            set_dotted(entry.as_table_mut().unwrap(), rest, value);
+            let nested = entry
+                .as_table_mut()
+                .ok_or("config entry could not be converted to a table")?;
+            set_dotted(nested, rest, value)
         }
     }
 }

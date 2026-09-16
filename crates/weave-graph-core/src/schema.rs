@@ -146,18 +146,15 @@ CREATE INDEX idx_unresolved_refs_name ON unresolved_refs(short_name);
 CREATE INDEX idx_unresolved_refs_path ON unresolved_refs(repo_id, path);
 ";
 
-/// Overload-safe node identity: a persisted `path|symbol|kind|signature`
-/// key survives span-only edits that move line numbers, so two same-name
-/// overloads keep distinct identities across reindexes. Nullable — rows
-/// written before this migration read back NULL and are repopulated by
-/// the next upsert.
+/// The composite index persists overload-safe identity across span changes.
+/// The nullable compatibility column is not populated because duplicating
+/// the indexed identity text increases database and WAL size without value.
 pub const V8_NODE_SEMANTIC_KEY: &str = "
 ALTER TABLE nodes ADD COLUMN semantic_key TEXT;
 CREATE INDEX idx_nodes_semantic_key ON nodes(repo_id, path, symbol, kind, signature);
 ";
 
-/// Ordered migration history. Each backend replays every `(version, sql)`
-/// newer than the database's recorded version, in its own transaction.
+/// Versioned migration history shared by every storage backend.
 pub const MIGRATIONS: &[(u32, &str)] = &[
     (1, V1_CREATE_TABLES),
     (2, V2_TRAVERSAL_INDICES),
@@ -168,3 +165,36 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (7, V7_RESOLVER_INPUTS),
     (8, V8_NODE_SEMANTIC_KEY),
 ];
+
+/// Returns unapplied migrations in version order, independent of declaration order.
+pub fn migrations_after(current: u32) -> Vec<(u32, &'static str)> {
+    migrations_after_from(MIGRATIONS, current)
+}
+
+fn migrations_after_from(
+    migrations: &[(u32, &'static str)],
+    current: u32,
+) -> Vec<(u32, &'static str)> {
+    let mut pending = migrations
+        .iter()
+        .copied()
+        .filter(|(version, _)| *version > current)
+        .collect::<Vec<_>>();
+    pending.sort_unstable_by_key(|(version, _)| *version);
+    pending
+}
+
+#[cfg(test)]
+mod tests {
+    use super::migrations_after_from;
+
+    #[test]
+    fn pending_migrations_are_sorted_by_version_not_declaration_order() {
+        let migrations = [(3, "third"), (1, "first"), (2, "second")];
+        let versions = migrations_after_from(&migrations, 0)
+            .into_iter()
+            .map(|(version, _)| version)
+            .collect::<Vec<_>>();
+        assert_eq!(versions, [1, 2, 3]);
+    }
+}

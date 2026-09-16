@@ -21,6 +21,7 @@
 .gemini
 .agents/
 .roo
+.cline
 opencode.json
 
 # published product documentation for end users (docs/product/).

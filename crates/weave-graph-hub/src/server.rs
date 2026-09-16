@@ -610,7 +610,16 @@ fn handle_connection(
                         return Ok(());
                     }
                     #[cfg(feature = "hub-provenance")]
-                    PushDecision::SignatureInvalid => unreachable!("not returned before upload"),
+                    PushDecision::SignatureInvalid => {
+                        write_response(
+                            &mut stream,
+                            403,
+                            "Forbidden",
+                            &[],
+                            b"snapshot signature is invalid",
+                        );
+                        return Ok(());
+                    }
                 }
             }
 

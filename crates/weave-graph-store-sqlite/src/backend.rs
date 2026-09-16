@@ -181,18 +181,7 @@ impl SqliteStorage {
         self.conn.execute_batch("BEGIN").map_err(backend_err)
     }
 
-    /// The persisted overload-safe identity: `repo_id|path|symbol|kind|
-    /// signature`. Unlike the natural key it excludes `line_start`, so a
-    /// span-only edit keeps the same identity and two same-name overloads
-    /// stay distinguishable across reindexes.
-    fn semantic_key(node: &Node) -> String {
-        format!(
-            "{}|{}|{}|{}|{}",
-            node.repo_id, node.path, node.symbol, node.kind, node.signature
-        )
-    }
-
-    /// Resolves a node by its persisted overload-safe semantic key.
+    /// Resolves overload-safe identity from the indexed persisted columns.
     pub fn node_id_by_semantic_key(
         &self,
         repo_id: &str,
@@ -212,6 +201,49 @@ impl SqliteStorage {
             .map_err(backend_err)
     }
 
+    /// Inserts a batch into a fresh staged database without identity lookups.
+    /// Full rebuilds assign new IDs, so semantic preservation adds no value.
+    pub fn insert_fresh_nodes(&mut self, nodes: &[Node]) -> Result<Vec<NodeId>, StorageError> {
+        let mut insert = self
+            .conn
+            .prepare_cached(
+                "INSERT INTO nodes (repo_id, path, symbol, kind, line_start, line_end, signature)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(repo_id, path, symbol, line_start) DO UPDATE SET
+                    kind = excluded.kind,
+                    line_end = excluded.line_end,
+                    signature = excluded.signature
+                 RETURNING id",
+            )
+            .map_err(backend_err)?;
+        let ids = nodes
+            .iter()
+            .map(|node| {
+                insert
+                    .query_row(
+                        params![
+                            node.repo_id,
+                            node.path,
+                            node.symbol,
+                            node.kind,
+                            node.line_start,
+                            node.line_end,
+                            node.signature
+                        ],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map(|id| id as NodeId)
+                    .map_err(backend_err)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        #[cfg(feature = "fts")]
+        for (node, id) in nodes.iter().zip(&ids) {
+            crate::fts::replace_row(&self.conn, i64::from(*id), &node.symbol, &node.signature)?;
+        }
+        Ok(ids)
+    }
+
     /// Upserts a parsed batch while reusing the lookup and write statements.
     pub fn upsert_nodes(&mut self, nodes: &[Node]) -> Result<Vec<NodeId>, StorageError> {
         let ids = {
@@ -225,16 +257,16 @@ impl SqliteStorage {
             let mut update = self
                 .conn
                 .prepare_cached(
-                    "UPDATE nodes SET line_start = ?1, line_end = ?2, signature = ?3, \
-                     semantic_key = ?4 WHERE id = ?5",
+                    "UPDATE nodes SET line_start = ?1, line_end = ?2, signature = ?3 \
+                     WHERE id = ?4",
                 )
                 .map_err(backend_err)?;
             let mut insert = self
                 .conn
                 .prepare_cached(
                     "INSERT INTO nodes (repo_id, path, symbol, kind, line_start, line_end, \
-                     signature, semantic_key)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) RETURNING id",
+                     signature)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) RETURNING id",
                 )
                 .map_err(backend_err)?;
 
@@ -264,13 +296,7 @@ impl SqliteStorage {
                         });
                     if let Some((id, _, _)) = existing {
                         update
-                            .execute(params![
-                                node.line_start,
-                                node.line_end,
-                                node.signature,
-                                Self::semantic_key(node),
-                                id
-                            ])
+                            .execute(params![node.line_start, node.line_end, node.signature, id])
                             .map_err(backend_err)?;
                         Ok(*id)
                     } else {
@@ -283,8 +309,7 @@ impl SqliteStorage {
                                     node.kind,
                                     node.line_start,
                                     node.line_end,
-                                    node.signature,
-                                    Self::semantic_key(node)
+                                    node.signature
                                 ],
                                 |row| row.get::<_, i64>(0),
                             )

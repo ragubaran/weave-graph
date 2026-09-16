@@ -36,11 +36,6 @@ pub struct StringInterner {
 }
 
 impl StringInterner {
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn intern(&mut self, s: &str) -> u32 {
         if let Some(&id) = self.indices.get(s) {
             id

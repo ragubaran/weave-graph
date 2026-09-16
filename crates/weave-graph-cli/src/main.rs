@@ -756,13 +756,18 @@ fn slm_cmd_doctor() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// A command gated behind a feature not compiled into this binary: fail
-/// clearly and immediately, never a silent no-op and never a bare clap
-/// "unrecognized subcommand" — the command is real, just not compiled in.
-/// Every call site is `#[cfg(not(feature = "..."))]`-gated, so `--all-features`
-/// (which compiles every one of those features in) leaves this genuinely
-/// unreferenced — a build config no real release variant uses.
-#[allow(dead_code)]
+/// A partial build retains this user-facing error for every omitted command feature.
+#[cfg(not(all(
+    feature = "watch",
+    feature = "fts",
+    feature = "federation",
+    feature = "hub",
+    feature = "slm",
+    feature = "notes",
+    feature = "otel",
+    feature = "policy-lint",
+    feature = "rbac",
+)))]
 fn feature_not_compiled(command: &str, feature: &str) -> ! {
     eprintln!(
         "Error: `{command}` requires the `{feature}` feature, which is not compiled into this binary.\n\
@@ -972,9 +977,10 @@ fn ensure_mcp_configured(root: &Path) -> std::io::Result<()> {
         root_val = serde_json::json!({});
     }
 
-    let servers = root_val
+    let root_map = root_val
         .as_object_mut()
-        .unwrap()
+        .ok_or_else(|| std::io::Error::other("MCP configuration root is not an object"))?;
+    let servers = root_map
         .entry("mcpServers")
         .or_insert_with(|| serde_json::json!({}));
 
@@ -982,7 +988,9 @@ fn ensure_mcp_configured(root: &Path) -> std::io::Result<()> {
         *servers = serde_json::json!({});
     }
 
-    let servers_map = servers.as_object_mut().unwrap();
+    let servers_map = servers
+        .as_object_mut()
+        .ok_or_else(|| std::io::Error::other("MCP server configuration is not an object"))?;
     if !servers_map.contains_key("weave") {
         servers_map.insert(
             "weave".to_string(),

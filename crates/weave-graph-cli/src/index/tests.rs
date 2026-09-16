@@ -43,6 +43,19 @@ impl Fixture {
     }
 }
 
+fn staged_node(path: &str, symbol: &str) -> Node {
+    Node {
+        id: 0,
+        repo_id: "local".into(),
+        path: path.into(),
+        symbol: symbol.into(),
+        kind: "function".into(),
+        line_start: 1,
+        line_end: 1,
+        signature: format!("fn {symbol}()"),
+    }
+}
+
 #[test]
 fn full_reindex_indexes_symbols_and_cross_file_edges() {
     let fx = Fixture::new();
@@ -77,6 +90,27 @@ fn bounded_parser_folds_files_in_order_across_parse_batches() {
     assert_eq!(folded.len(), files.len());
     assert_eq!(folded.first().map(String::as_str), Some("f000.rs"));
     assert_eq!(folded.last().map(String::as_str), Some("f064.rs"));
+}
+
+#[test]
+fn staged_write_rotation_checkpoints_and_keeps_the_next_transaction_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("staged.db");
+    let mut storage = SqliteStorage::open(&db).unwrap();
+    storage.begin_bulk_write().unwrap();
+    storage
+        .insert_fresh_nodes(&[staged_node("a.rs", "a")])
+        .unwrap();
+    let mut pending_rows = STAGED_WRITE_ROWS - 1;
+    rotate_staged_write(&storage, &mut pending_rows, 1).unwrap();
+    assert_eq!(pending_rows, 0);
+
+    storage
+        .insert_fresh_nodes(&[staged_node("b.rs", "b")])
+        .unwrap();
+    storage.commit_bulk_write().unwrap();
+    storage.checkpoint_wal().unwrap();
+    assert_eq!(storage.all_nodes().unwrap().len(), 2);
 }
 
 #[test]

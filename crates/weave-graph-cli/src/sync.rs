@@ -360,7 +360,7 @@ fn push_with_backoff(
             std::time::Duration::from_secs(backoff) + std::time::Duration::from_millis(jitter_ms),
         );
     }
-    unreachable!("loop always returns by the last attempt")
+    Err("push retry loop ended without a result".into())
 }
 
 /// `git merge-base <ref> HEAD` — the merge-base anchor `weave sync pull`

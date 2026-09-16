@@ -214,9 +214,12 @@ fn main() {
         eprintln!("{msg}");
         exit(1);
     });
+    let address = server.local_addr().unwrap_or_else(|error| {
+        eprintln!("Could not determine registry listener address: {error}");
+        exit(1);
+    });
     println!(
-        "weave-registry listening on {} (data: {}, auth: {}{})",
-        server.local_addr().unwrap(),
+        "weave-registry listening on {address} (data: {}, auth: {}{})",
         args.data_dir.display(),
         if args.auth_token.is_some() {
             "bearer token required"

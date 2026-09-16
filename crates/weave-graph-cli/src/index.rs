@@ -88,6 +88,34 @@ pub(crate) fn build_project_index_from_storage(
 /// magnitude under Invariant 4's 80 MB ceiling: a streaming property
 /// kept by construction, not by hope.
 const PARSE_CHUNK: usize = 32;
+const STAGED_WRITE_ROWS: usize = 50_000;
+
+fn rotate_staged_write(
+    storage: &SqliteStorage,
+    pending_rows: &mut usize,
+    written_rows: usize,
+) -> Result<(), StorageError> {
+    *pending_rows += written_rows;
+    if *pending_rows < STAGED_WRITE_ROWS {
+        return Ok(());
+    }
+    storage.commit_bulk_write()?;
+    storage.checkpoint_wal()?;
+    storage.begin_bulk_write()?;
+    *pending_rows = 0;
+    Ok(())
+}
+
+fn restart_staged_write(
+    storage: &SqliteStorage,
+    pending_rows: &mut usize,
+) -> Result<(), StorageError> {
+    storage.commit_bulk_write()?;
+    storage.checkpoint_wal()?;
+    storage.begin_bulk_write()?;
+    *pending_rows = 0;
+    Ok(())
+}
 
 /// The parse stage is the *only* parallel stage: chunks of files are
 /// parsed across the rayon pool, then folded strictly serially into the
@@ -163,6 +191,7 @@ fn upsert_all_nodes(
     storage: &mut SqliteStorage,
     root: &Path,
     files: &[PathBuf],
+    pending_rows: &mut usize,
 ) -> Result<Vec<(String, NodeId)>, StorageError> {
     let mut ids = Vec::new();
     parse_files_bounded(root, files, |rel, parsed| {
@@ -180,12 +209,10 @@ fn upsert_all_nodes(
                 signature: symbol.signature.clone(),
             })
             .collect::<Vec<_>>();
-        ids.extend(
-            storage
-                .upsert_nodes(&nodes)?
-                .into_iter()
-                .map(|id| (rel.to_string(), id)),
-        );
+        let node_ids = storage.upsert_nodes(&nodes)?;
+        let written_rows = node_ids.len();
+        ids.extend(node_ids.into_iter().map(|id| (rel.to_string(), id)));
+        rotate_staged_write(storage, pending_rows, written_rows)?;
         Ok(())
     })?;
     Ok(ids)
@@ -197,6 +224,7 @@ fn upsert_all_edges(
     project_index: &ProjectIndex,
     files: &[PathBuf],
     moniker_id_to_node: &HashMap<u32, NodeId>,
+    pending_rows: &mut usize,
 ) -> Result<(), StorageError> {
     parse_files_bounded(root, files, |rel, parsed| {
         let (edges, unresolved) = project_index.resolve_ids(parsed);
@@ -214,10 +242,12 @@ fn upsert_all_edges(
                 })
             })
             .collect::<Vec<_>>();
+        let written_rows = resolved.len() + unresolved.len();
         storage.upsert_edges(&resolved)?;
         use weave_graph_core::Storage;
         storage.purge_file_unresolved_refs("local", rel)?;
         storage.upsert_unresolved_refs("local", rel, &unresolved)?;
+        rotate_staged_write(storage, pending_rows, written_rows)?;
         Ok(())
     })?;
     Ok(())
@@ -348,6 +378,7 @@ pub(crate) fn full_reindex(
     // `PARSE_CHUNK` instead of one-at-a-time).
     let mut project_index = ProjectIndex::new();
     let mut total_symbols = 0usize;
+    let mut pending_rows = 0usize;
     parse_files_bounded(root, files, |rel, parsed| {
         project_index.add_file(parsed);
         let nodes = parsed
@@ -364,9 +395,12 @@ pub(crate) fn full_reindex(
                 signature: symbol.signature.clone(),
             })
             .collect::<Vec<_>>();
-        total_symbols += storage.upsert_nodes(&nodes)?.len();
+        let written_rows = storage.insert_fresh_nodes(&nodes)?.len();
+        total_symbols += written_rows;
+        rotate_staged_write(&storage, &mut pending_rows, written_rows)?;
         Ok(())
     })?;
+    restart_staged_write(&storage, &mut pending_rows)?;
 
     let (project_index, moniker_id_to_node) = build_project_index_from_storage(&storage)?;
     upsert_all_edges(
@@ -375,6 +409,7 @@ pub(crate) fn full_reindex(
         &project_index,
         files,
         &moniker_id_to_node,
+        &mut pending_rows,
     )?;
     let total_edges = storage.edge_count()?;
     #[cfg(feature = "docs")]
@@ -502,6 +537,7 @@ pub(crate) fn incremental_reindex(
 
     // --- 2. Purge Changed Edges and Resolver Inputs ---
     storage.begin_bulk_write()?;
+    let mut pending_rows = 0usize;
     for rel in changed {
         storage.purge_file_edges("local", rel)?;
         #[cfg(feature = "vector")]
@@ -510,7 +546,7 @@ pub(crate) fn incremental_reindex(
     }
 
     // --- 3. Upsert New Nodes for Changed Files ---
-    let changed_nodes = upsert_all_nodes(&mut storage, root, &changed_pathbufs)?;
+    let changed_nodes = upsert_all_nodes(&mut storage, root, &changed_pathbufs, &mut pending_rows)?;
     for rel in changed {
         let retained = changed_nodes
             .iter()
@@ -536,6 +572,7 @@ pub(crate) fn incremental_reindex(
         &project_index,
         &affected_pathbufs,
         &moniker_id_to_node,
+        &mut pending_rows,
     )?;
     let total_edges = storage.edge_count()?;
     #[cfg(feature = "docs")]
@@ -565,6 +602,7 @@ pub(crate) fn incremental_reindex(
         )?;
     }
     storage.commit_bulk_write()?;
+    storage.checkpoint_wal()?;
     let total_symbols = storage.all_nodes()?.len();
     drop(storage);
     promote_rebuild(&rebuild_db, active_db)?;

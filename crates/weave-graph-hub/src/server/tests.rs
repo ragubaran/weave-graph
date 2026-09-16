@@ -14,14 +14,13 @@ fn spawn_server(config: RegistryConfig) -> (String, PathBufGuard) {
     thread::spawn(move || {
         let _ = server.run(None);
     });
-    (format!("http://{addr}"), PathBufGuard(dir))
+    (format!("http://{addr}"), PathBufGuard { _dir: dir })
 }
 
-/// Keeps the tempdir alive for the server thread's lifetime (the server
-/// thread is detached — the guard just controls when cleanup runs). The
-/// field is never read, only held for its `Drop` impl.
-#[allow(dead_code)]
-struct PathBufGuard(tempfile::TempDir);
+/// Keeps the tempdir alive while the detached server still uses its files.
+struct PathBufGuard {
+    _dir: tempfile::TempDir,
+}
 
 fn generous_config() -> RegistryConfig {
     RegistryConfig {
@@ -346,7 +345,7 @@ fn spawn_server_with_verifier(
     thread::spawn(move || {
         let _ = server.run(None);
     });
-    (format!("http://{addr}"), PathBufGuard(dir))
+    (format!("http://{addr}"), PathBufGuard { _dir: dir })
 }
 
 #[cfg(feature = "hub-provenance")]

@@ -60,6 +60,31 @@ fn upsert_node_on_same_natural_key_updates_in_place() {
 }
 
 #[test]
+fn fresh_batch_insert_reuses_the_natural_key_without_semantic_payload() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let first = node("r", "src/lib.rs", "foo", 1);
+    let mut changed = first.clone();
+    changed.signature = "fn foo() -> i32".into();
+
+    let first_id = storage.insert_fresh_nodes(&[first]).unwrap()[0];
+    let changed_id = storage.insert_fresh_nodes(&[changed]).unwrap()[0];
+    assert_eq!(first_id, changed_id);
+    assert_eq!(
+        storage.get_node(first_id).unwrap().unwrap().signature,
+        "fn foo() -> i32"
+    );
+    let duplicate: Option<String> = storage
+        .conn
+        .query_row(
+            "SELECT semantic_key FROM nodes WHERE id = ?1",
+            [first_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(duplicate, None);
+}
+
+#[test]
 fn upsert_node_preserves_identity_when_only_its_span_moves() {
     let mut storage = SqliteStorage::open_in_memory().unwrap();
     let first = node("r", "src/lib.rs", "foo", 10);
@@ -72,14 +97,21 @@ fn upsert_node_preserves_identity_when_only_its_span_moves() {
     assert_eq!(storage.get_node(id).unwrap().unwrap().line_start, 50);
 }
 
-/// The persisted semantic key must survive a span-only edit (the node
-/// keeps its id) and stay resolvable through `node_id_by_semantic_key` —
-/// the overload-safe identity the line-number natural key can't give.
+/// Indexed identity columns preserve IDs without duplicating their text.
 #[test]
 fn semantic_key_preserves_identity_across_span_moves_and_resolves_overloads() {
     let mut storage = SqliteStorage::open_in_memory().unwrap();
     let first = node("r", "a.rs", "foo", 1);
     let id = storage.upsert_node(&first).unwrap();
+    let duplicate: Option<String> = storage
+        .conn
+        .query_row(
+            "SELECT semantic_key FROM nodes WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(duplicate, None);
 
     // Line span moves, signature unchanged: same semantic identity.
     let mut shifted = first.clone();
