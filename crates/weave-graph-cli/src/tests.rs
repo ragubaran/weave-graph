@@ -207,6 +207,70 @@ fn should_skip_dir_excludes_known_noise_directories() {
     assert!(!should_skip_dir("src"));
 }
 
+#[test]
+fn discover_files_honors_gitignore_and_nested_ignore_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(".gitignore"), "generated.rs\nvendor/\n").unwrap();
+    fs::write(dir.path().join("kept.rs"), "fn kept() {}").unwrap();
+    fs::write(dir.path().join("generated.rs"), "fn generated() {}").unwrap();
+    let vendor_dir = dir.path().join("vendor");
+    fs::create_dir_all(&vendor_dir).unwrap();
+    fs::write(vendor_dir.join("lib.rs"), "fn vendored() {}").unwrap();
+    let nested_dir = dir.path().join("nested");
+    fs::create_dir_all(&nested_dir).unwrap();
+    fs::write(nested_dir.join(".gitignore"), "local_only.rs\n").unwrap();
+    fs::write(nested_dir.join("local_only.rs"), "fn local() {}").unwrap();
+    fs::write(nested_dir.join("kept_too.rs"), "fn kept_too() {}").unwrap();
+
+    let files: Vec<String> = discover_files(dir.path())
+        .iter()
+        .map(|p| {
+            p.strip_prefix(dir.path())
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+
+    assert!(files.contains(&"kept.rs".to_string()));
+    assert!(files.contains(&format!("nested{}kept_too.rs", std::path::MAIN_SEPARATOR)));
+    assert!(!files.contains(&"generated.rs".to_string()));
+    assert!(!files.iter().any(|f| f.starts_with("vendor")));
+    assert!(!files.iter().any(|f| f.contains("local_only.rs")));
+}
+
+#[test]
+fn discover_files_excludes_a_renamed_virtualenv_via_marker_file() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("kept.rs"), "fn kept() {}").unwrap();
+    // Not named "venv"/".venv" — should_skip_dir's name list can't catch
+    // this; only the pyvenv.cfg marker file inside it can.
+    let renamed_venv = dir.path().join("my_env_2");
+    fs::create_dir_all(&renamed_venv).unwrap();
+    fs::write(renamed_venv.join("pyvenv.cfg"), "home = /usr/bin\n").unwrap();
+    // A `.rs` file (always indexable, unlike `.py` under default features)
+    // proves the directory itself was skipped, not that the file type
+    // happened to be unsupported.
+    fs::write(renamed_venv.join("vendored.rs"), "fn vendored() {}").unwrap();
+    let plain_dir = dir.path().join("plain");
+    fs::create_dir_all(&plain_dir).unwrap();
+    fs::write(plain_dir.join("mod.rs"), "fn plain() {}").unwrap();
+
+    let files: Vec<String> = discover_files(dir.path())
+        .iter()
+        .map(|p| {
+            p.strip_prefix(dir.path())
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+
+    assert!(files.contains(&"kept.rs".to_string()));
+    assert!(files.contains(&format!("plain{}mod.rs", std::path::MAIN_SEPARATOR)));
+    assert!(!files.iter().any(|f| f.starts_with("my_env_2")));
+}
+
 fn snippet_cache_key() -> String {
     ci_cache_snippet()
         .lines()

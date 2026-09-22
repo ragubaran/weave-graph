@@ -1,6 +1,6 @@
 use std::fs;
 
-use super::{bounded_limit, cmd_search, run};
+use super::{bounded_limit, cmd_search, run, run_with_fallback};
 use weave_graph_core::MAX_SEARCH_LIMIT;
 use weave_graph_store_sqlite::SqliteStorage;
 
@@ -31,6 +31,55 @@ fn search_finds_a_symbol_via_synonym_expansion() {
 
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].symbol, "checkJwtTtl");
+}
+
+#[test]
+fn fallback_finds_a_substring_crossing_an_identifier_word_boundary() {
+    let repo = init_repo();
+    let storage = SqliteStorage::open(&repo.path().join(".weave").join("graph.db")).unwrap();
+
+    // FTS indexes `checkJwtTtl` as the split words "check"/"jwt"/"ttl" —
+    // "ckJwt" crosses that split boundary and can never `MATCH`, but it
+    // is a literal substring of the original identifier.
+    assert!(run(&storage, "ckJwt", 10, None).unwrap().is_empty());
+
+    let (hits, is_fallback) = run_with_fallback(&storage, "ckJwt", 10, None).unwrap();
+    assert!(is_fallback);
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].symbol, "checkJwtTtl");
+}
+
+#[test]
+fn fallback_never_fires_when_fts_already_found_something() {
+    let repo = init_repo();
+    let storage = SqliteStorage::open(&repo.path().join(".weave").join("graph.db")).unwrap();
+
+    let (hits, is_fallback) = run_with_fallback(&storage, "token lifetime", 10, None).unwrap();
+    assert!(!is_fallback, "FTS already answered via synonym expansion");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].symbol, "checkJwtTtl");
+}
+
+#[test]
+fn fallback_result_count_stays_bounded_at_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let weave_dir = dir.path().join(".weave");
+    fs::create_dir_all(&weave_dir).unwrap();
+    let active_db = weave_dir.join("graph.db");
+    let source = dir.path().join("many.rs");
+    let body: String = (0..10)
+        .map(|i| format!("pub fn xyzMarkerFn{i}() {{}}\n"))
+        .collect();
+    fs::write(&source, body).unwrap();
+    crate::index::full_reindex(dir.path(), &weave_dir, &active_db, &[source]).unwrap();
+    let storage = SqliteStorage::open(&active_db).unwrap();
+
+    // "zMarker" crosses the split-word boundary the same way — every
+    // one of the 10 symbols matches the literal substring, but the
+    // fallback must still respect `limit`, never dump every candidate.
+    let (hits, is_fallback) = run_with_fallback(&storage, "zMarker", 2, None).unwrap();
+    assert!(is_fallback);
+    assert_eq!(hits.len(), 2, "fallback must stay bounded at limit");
 }
 
 #[test]

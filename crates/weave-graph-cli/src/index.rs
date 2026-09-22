@@ -331,7 +331,105 @@ fn update_vector_index(
     })
 }
 
-#[cfg(feature = "vector")]
+/// Common single-line comment markers across the languages this project
+/// already extracts — a plain prefix scan (AGENTS.md §3's zero-regex
+/// rule), not per-`Language` dispatch. Cheap/approximate by design: wrong
+/// for a comment separated from its symbol by a blank line or an
+/// attribute/decorator, correct otherwise.
+#[cfg(feature = "fts")]
+const COMMENT_MARKERS: &[&str] = &["///", "//!", "//", "#", "/*", "*", "--"];
+
+/// The byte range of line `idx` (0-indexed) — same offset technique
+/// `source_span` uses, kept separate since it addresses one line rather
+/// than a `line_start..=line_end` node span.
+#[cfg(feature = "fts")]
+fn nth_line<'a>(source: &'a str, line_starts: &[usize], idx: usize) -> Option<&'a str> {
+    let start = *line_starts.get(idx)?;
+    let end = line_starts.get(idx + 1).copied().unwrap_or(source.len());
+    Some(source[start..end].trim_end_matches(['\n', '\r']))
+}
+
+/// Scans the lines immediately above `line_start` (1-indexed, matching
+/// `Node.line_start`) for a contiguous run of comment-marker-prefixed
+/// lines, stopping at the first blank or non-comment line. Returns them
+/// joined with spaces, oldest first.
+#[cfg(feature = "fts")]
+fn doc_comment_above(source: &str, line_starts: &[usize], line_start: u32) -> String {
+    let start_idx = line_start.saturating_sub(1) as usize;
+    let mut collected = Vec::new();
+    let mut idx = start_idx;
+    while idx > 0 {
+        idx -= 1;
+        let Some(line) = nth_line(source, line_starts, idx).map(str::trim) else {
+            break;
+        };
+        if line.is_empty() || !COMMENT_MARKERS.iter().any(|m| line.starts_with(m)) {
+            break;
+        }
+        collected.push(line);
+    }
+    collected.reverse();
+    collected.join(" ")
+}
+
+/// Backfills `body`/`doc_comment` FTS text for every node in `for_each_node`,
+/// re-reading a file's source only when the path changes — same shape as
+/// `stream_vector_chunks`, kept separate rather than generalized because
+/// this one yields two texts per node instead of one.
+#[cfg(feature = "fts")]
+fn stream_fts_text(
+    root: &Path,
+    excluded_paths: &[String],
+    storage: &SqliteStorage,
+    for_each_node: impl FnOnce(
+        &mut dyn FnMut(Node) -> Result<(), StorageError>,
+    ) -> Result<(), StorageError>,
+) -> Result<(), StorageError> {
+    let mut current_path = None;
+    let mut source = String::new();
+    let mut line_starts = Vec::new();
+    for_each_node(&mut |node| {
+        if excluded_paths
+            .iter()
+            .any(|prefix| path_is_excluded(&node.path, prefix))
+        {
+            return Ok(());
+        }
+        if current_path.as_deref() != Some(node.path.as_str()) {
+            current_path = Some(node.path.clone());
+            source = fs::read_to_string(root.join(&node.path)).unwrap_or_default();
+            line_starts = source_line_starts(&source);
+        }
+        let body = source_span(&source, &line_starts, node.line_start, node.line_end)
+            .unwrap_or(&node.symbol);
+        let doc_comment = doc_comment_above(&source, &line_starts, node.line_start);
+        storage.upsert_fts_text(node.id, body, &doc_comment)
+    })
+}
+
+#[cfg(feature = "fts")]
+fn rebuild_fts_text(root: &Path, storage: &SqliteStorage) -> Result<(), StorageError> {
+    let config_path = root.join(".weave").join("config.toml");
+    let excluded_paths = crate::config::read_vector_exclude(&config_path);
+    stream_fts_text(root, &excluded_paths, storage, |f| {
+        storage.for_each_node_by_path(f)
+    })
+}
+
+#[cfg(feature = "fts")]
+fn update_fts_text(
+    root: &Path,
+    storage: &SqliteStorage,
+    paths: &[String],
+) -> Result<(), StorageError> {
+    let config_path = root.join(".weave").join("config.toml");
+    let excluded_paths = crate::config::read_vector_exclude(&config_path);
+    stream_fts_text(root, &excluded_paths, storage, |f| {
+        storage.for_each_node_in_paths(paths, f)
+    })
+}
+
+#[cfg(any(feature = "vector", feature = "fts"))]
 fn source_line_starts(source: &str) -> Vec<usize> {
     std::iter::once(0)
         .chain(
@@ -342,7 +440,7 @@ fn source_line_starts(source: &str) -> Vec<usize> {
         .collect()
 }
 
-#[cfg(feature = "vector")]
+#[cfg(any(feature = "vector", feature = "fts"))]
 fn source_span<'a>(
     source: &'a str,
     line_starts: &[usize],
@@ -356,7 +454,7 @@ fn source_span<'a>(
     (start < end).then_some(&source[start..end])
 }
 
-#[cfg(feature = "vector")]
+#[cfg(any(feature = "vector", feature = "fts"))]
 fn path_is_excluded(path: &str, prefix: &str) -> bool {
     prefix.is_empty()
         || path == prefix
@@ -382,18 +480,17 @@ pub(crate) fn full_reindex(
     let mut storage = SqliteStorage::open(&rebuild_db)?;
     storage.begin_bulk_write()?;
 
-    // Fused pass (was two passes): parse each file once, feeding both the
-    // `ProjectIndex` (edge resolution's symbol table) and the node upserts.
-    // The edges pass still needs its own parse — edge resolution needs the
-    // *complete* index, which only exists after every file is seen — so the
-    // floor is 2 parses/file, not 1. The `ParsedFile` is dropped per chunk;
-    // nothing accumulates (PERF-06's streaming constraint, now bounded by
+    // One parse pass writes nodes only — edge resolution needs its own
+    // separate pass regardless (the *complete* index only exists after
+    // every file is seen), so building a `ProjectIndex` here too would be
+    // pure waste: `build_project_index_from_storage` below builds the one
+    // that's actually used, from the now-written `nodes` table, cheaper
+    // than a second parse. The `ParsedFile` is dropped per chunk; nothing
+    // accumulates (PERF-06's streaming constraint, bounded by
     // `PARSE_CHUNK` instead of one-at-a-time).
-    let mut project_index = ProjectIndex::new();
     let mut total_symbols = 0usize;
     let mut pending_rows = 0usize;
     parse_files_bounded(root, files, |rel, parsed| {
-        project_index.add_file(parsed);
         let nodes = parsed
             .symbols
             .iter()
@@ -456,6 +553,10 @@ pub(crate) fn full_reindex(
     #[cfg(feature = "vector")]
     {
         rebuild_vector_index(root, &storage)?;
+    }
+    #[cfg(feature = "fts")]
+    {
+        rebuild_fts_text(root, &storage)?;
     }
     storage.commit_bulk_write()?;
     storage.checkpoint_wal()?;
@@ -570,6 +671,8 @@ pub(crate) fn incremental_reindex(
     }
     #[cfg(feature = "vector")]
     update_vector_index(root, &storage, changed)?;
+    #[cfg(feature = "fts")]
+    update_fts_text(root, &storage, changed)?;
 
     // Core Invariant 3/4: We rebuild the project index from the database AFTER
     // upserting the changed nodes. This avoids parsing the entire repository just

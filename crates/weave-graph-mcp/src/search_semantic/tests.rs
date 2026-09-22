@@ -46,7 +46,36 @@ fn finds_the_closest_chunk_by_shared_vocabulary() {
     .unwrap();
 
     assert!(!hits.is_empty());
-    assert_eq!(hits[0].symbol, "check_jwt_expiry");
+    assert_eq!(hits[0].node.symbol, "check_jwt_expiry");
+    assert!(
+        !hits[0].direct,
+        "matched via shared vocabulary, not a literal substring"
+    );
+}
+
+#[test]
+fn a_literal_substring_query_is_labeled_direct() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let embedder = MockEmbeddingProvider::new();
+    let id = storage
+        .upsert_node(&node("check_jwt_expiry", "auth.rs"))
+        .unwrap();
+    storage
+        .rebuild_vector_index(&embedder, &[(id, "verify auth token expiry".to_string())])
+        .unwrap();
+
+    let hits = weave_search_semantic(
+        &storage,
+        SemanticSearchArgs {
+            query: "jwt_expiry",
+            limit: 5,
+        },
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(hits[0].node.symbol, "check_jwt_expiry");
+    assert!(hits[0].direct, "query is a literal substring of the symbol");
 }
 
 /// SEC-01 through the MCP layer: a masked top hit must not shrink a
@@ -85,5 +114,5 @@ fn a_masked_top_hit_does_not_starve_a_visible_runner_up() {
     .unwrap();
 
     assert_eq!(hits.len(), 1, "a visible match must still surface");
-    assert_eq!(hits[0].symbol, "render_page_layout");
+    assert_eq!(hits[0].node.symbol, "render_page_layout");
 }

@@ -21,9 +21,12 @@ fn resolve_symbol_finds_first_match() {
         fake_node(2, "bar"),
         fake_node(3, "foo"),
     ];
-    assert_eq!(resolve_symbol(&nodes, "foo"), Some(1));
-    assert_eq!(resolve_symbol(&nodes, "bar"), Some(2));
-    assert_eq!(resolve_symbol(&nodes, "baz"), None);
+    assert_eq!(resolve_symbol(&nodes, "foo"), Ok(1));
+    assert_eq!(resolve_symbol(&nodes, "bar"), Ok(2));
+    assert!(
+        resolve_symbol(&nodes, "baz").is_err(),
+        "no exact/fallback match exists"
+    );
 }
 
 #[test]

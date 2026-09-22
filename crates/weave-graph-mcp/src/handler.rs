@@ -744,7 +744,13 @@ impl McpHandler {
         }
         let text = hits
             .iter()
-            .map(|n| format!("{} ({}:{})", n.symbol, n.path, n.line_start))
+            .map(|h| {
+                let tier = if h.direct { "direct" } else { "metadata" };
+                format!(
+                    "{} ({}:{}) [{tier}]",
+                    h.node.symbol, h.node.path, h.node.line_start
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
         CallToolResult::ok(text)

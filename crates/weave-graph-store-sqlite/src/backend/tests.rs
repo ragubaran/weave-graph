@@ -541,3 +541,149 @@ fn query_path_avoids_cycles_and_redundant_paths() {
 
     assert_eq!(storage.query_path(a, c).unwrap(), Some(vec![a, c]));
 }
+
+#[test]
+fn checkpoint_wal_if_needed_is_safe_on_a_fresh_database() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    // No growth to react to yet — must not error just because there's
+    // little or nothing for PASSIVE to checkpoint.
+    storage.checkpoint_wal_if_needed().unwrap();
+}
+
+fn wal_size_after_writes(dir: &std::path::Path, name: &str, checkpoint_each_write: bool) -> u64 {
+    let db_path = dir.join(name);
+    let wal_path = dir.join(format!("{name}-wal"));
+    let mut storage = SqliteStorage::open(&db_path).unwrap();
+    for i in 0..500 {
+        storage
+            .upsert_node(&node("r", "a.rs", &format!("fn_{i}"), i))
+            .unwrap();
+        if checkpoint_each_write {
+            storage.checkpoint_wal_if_needed().unwrap();
+        }
+    }
+    std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0)
+}
+
+#[test]
+fn checkpoint_wal_if_needed_keeps_the_wal_file_meaningfully_smaller() {
+    let dir = tempfile::tempdir().unwrap();
+    let with_valve = wal_size_after_writes(dir.path(), "with_valve.db", true);
+    let without_valve = wal_size_after_writes(dir.path(), "without_valve.db", false);
+
+    // PASSIVE checkpoints content (letting SQLite reuse WAL pages) but
+    // doesn't shrink the file itself, so this isn't "near zero" — it's
+    // "meaningfully bounded relative to never checkpointing at all",
+    // which is the actual property the valve provides.
+    assert!(
+        with_valve < without_valve,
+        "checkpointing every write ({with_valve} bytes) should leave a \
+         smaller WAL than never checkpointing ({without_valve} bytes)"
+    );
+}
+
+#[test]
+fn get_callers_returns_edges_targeting_the_node() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    let b = storage.upsert_node(&node("r", "b.rs", "b", 1)).unwrap();
+    let c = storage.upsert_node(&node("r", "c.rs", "c", 1)).unwrap();
+    storage.upsert_edge(&edge(a, c, "CALLS")).unwrap();
+    storage.upsert_edge(&edge(b, c, "CALLS")).unwrap();
+
+    let callers = storage.get_callers(c).unwrap();
+
+    assert_eq!(callers.len(), 2);
+    assert!(callers.iter().all(|e| e.target_id == c));
+    let sources: Vec<NodeId> = callers.iter().map(|e| e.source_id).collect();
+    assert!(sources.contains(&a));
+    assert!(sources.contains(&b));
+}
+
+#[test]
+fn get_callers_returns_empty_for_a_node_with_no_incoming_edges() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+
+    assert!(storage.get_callers(a).unwrap().is_empty());
+}
+
+#[test]
+fn edge_count_reflects_upserts_and_purges() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let a = storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    let b = storage.upsert_node(&node("r", "b.rs", "b", 1)).unwrap();
+    assert_eq!(storage.edge_count().unwrap(), 0);
+
+    storage.upsert_edge(&edge(a, b, "CALLS")).unwrap();
+    assert_eq!(storage.edge_count().unwrap(), 1);
+
+    storage.purge_file_edges("r", "a.rs").unwrap();
+    assert_eq!(storage.edge_count().unwrap(), 0);
+}
+
+#[test]
+fn upsert_and_purge_unresolved_refs_round_trip() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    storage
+        .upsert_unresolved_refs("r", "a.rs", &["helper".to_string()])
+        .unwrap();
+
+    let files = storage
+        .get_files_with_unresolved_refs("r", "helper")
+        .unwrap();
+    assert_eq!(files, vec!["a.rs".to_string()]);
+
+    let purged = storage.purge_file_unresolved_refs("r", "a.rs").unwrap();
+    assert_eq!(purged, 1);
+    assert!(
+        storage
+            .get_files_with_unresolved_refs("r", "helper")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn get_files_with_unresolved_refs_only_matches_the_given_short_name() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    storage
+        .upsert_unresolved_refs("r", "a.rs", &["helper".to_string()])
+        .unwrap();
+    storage
+        .upsert_unresolved_refs("r", "b.rs", &["other".to_string()])
+        .unwrap();
+
+    assert_eq!(
+        storage
+            .get_files_with_unresolved_refs("r", "helper")
+            .unwrap(),
+        vec!["a.rs".to_string()]
+    );
+    assert_eq!(
+        storage
+            .get_files_with_unresolved_refs("r", "other")
+            .unwrap(),
+        vec!["b.rs".to_string()]
+    );
+}
+
+#[test]
+fn get_node_by_symbol_finds_an_exact_match() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+    let b_id = storage.upsert_node(&node("r", "b.rs", "b", 1)).unwrap();
+
+    let found = storage.get_node_by_symbol("b").unwrap().unwrap();
+    assert_eq!(found.id, b_id);
+    assert_eq!(found.path, "b.rs");
+}
+
+#[test]
+fn get_node_by_symbol_returns_none_for_an_unknown_symbol() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    storage.upsert_node(&node("r", "a.rs", "a", 1)).unwrap();
+
+    assert!(storage.get_node_by_symbol("ghost").unwrap().is_none());
+}

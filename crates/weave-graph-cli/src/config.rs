@@ -260,7 +260,7 @@ pub(crate) fn read_github_team_roles(
         .unwrap_or_default()
 }
 
-#[cfg(feature = "vector")]
+#[cfg(any(feature = "vector", feature = "fts"))]
 pub(crate) fn read_vector_exclude(config_path: &Path) -> Vec<String> {
     let content = match fs::read_to_string(config_path) {
         Ok(content) => content,

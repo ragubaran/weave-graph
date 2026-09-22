@@ -172,9 +172,13 @@ fn scim_server_binds_loopback_and_serves_real_tcp() {
         stream.read_to_string(&mut buf).unwrap();
         buf
     }
+    let carol_body = "{\"userName\":\"carol\",\"roles\":[\"internal\"]}";
     let created = request(
         port,
-        "POST /Users HTTP/1.0\r\nContent-Type: application/scim+json\r\n\r\n{\"userName\":\"carol\",\"roles\":[\"internal\"]}\r\n",
+        &format!(
+            "POST /Users HTTP/1.0\r\nContent-Type: application/scim+json\r\nContent-Length: {}\r\n\r\n{carol_body}",
+            carol_body.len()
+        ),
     );
     assert!(created.starts_with("HTTP/1.0 201"), "{created}");
     // Sync, then the GET reflects the provisioned user.
@@ -422,10 +426,15 @@ fn cmd_serve_scim_runs_a_real_server_on_a_real_port() {
     }
     assert!(connected, "the SCIM server must bind the requested port");
 
+    let frank_body = "{\"userName\":\"frank\",\"roles\":[\"internal\"]}";
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream
         .write_all(
-            b"POST /Users HTTP/1.0\r\n\r\n{\"userName\":\"frank\",\"roles\":[\"internal\"]}\r\n",
+            format!(
+                "POST /Users HTTP/1.0\r\nContent-Length: {}\r\n\r\n{frank_body}",
+                frank_body.len()
+            )
+            .as_bytes(),
         )
         .unwrap();
     let mut response = String::new();

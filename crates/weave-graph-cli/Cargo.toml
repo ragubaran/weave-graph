@@ -33,6 +33,7 @@ weave-graph-mcp = { path = "../weave-graph-mcp" }
 weave-graph-hub = { path = "../weave-graph-hub", optional = true }
 clap = { version = "=4.5.55", features = ["derive"] }
 walkdir = "2.5"
+ignore = "0.4"
 fslock = "0.2.1"
 toml = "1.1.5"
 rayon = "1.10"

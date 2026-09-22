@@ -1,25 +1,69 @@
 //! FTS5 symbol search (feature `fts`). The index is derived from `nodes`
 //! and updated in the transaction that changes a node, so failed reindexes
 //! cannot publish divergent FTS rows.
+//!
+//! `body`/`doc_comment` are a second, independently-managed pair of
+//! columns: the automatic per-node write path below only ever populates
+//! `symbol_name`/`signature` (it has no source-file access), leaving them
+//! empty. The CLI's indexing pass (which does have file access) backfills
+//! them afterward via [`upsert_text`] — same "populate now, backfill body
+//! text via a separate pass" relationship `vector.rs`'s streaming chunk
+//! producer already has to the same node-write path.
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use weave_graph_core::synonym::split_identifier;
 use weave_graph_core::{Node, NodeId, StorageError};
+
+/// Not contentless: verified live that FTS5 refuses a plain `DELETE FROM
+/// tbl WHERE rowid = ?` against a `content=''` table ("cannot DELETE from
+/// contentless fts5 table") — every delete needs the original column
+/// values re-supplied via `INSERT INTO tbl(tbl, rowid, ...) VALUES
+/// ('delete', ...)` instead, which `purge_path`/`purge_missing_nodes`
+/// can't cheaply provide (they delete by rowid/path, not by known prior
+/// content). Contentless mode was proposed and dropped for this reason —
+/// see `analysis_im.md` §10 / `proposal_im.md` §5's own follow-up note.
+const SYMBOL_FTS_DDL: &str = "CREATE VIRTUAL TABLE symbol_fts USING fts5(
+    symbol_name, signature, body, doc_comment,
+    tokenize = 'porter unicode61'
+)";
 
 fn backend_err(e: rusqlite::Error) -> StorageError {
     StorageError::Backend(e.to_string())
 }
 
+fn existing_symbol_fts_sql(conn: &Connection) -> Result<Option<String>, StorageError> {
+    conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'symbol_fts'",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(backend_err)
+}
+
 /// Idempotent: safe to call on every open, whether or not the table
 /// already exists. `porter unicode61` gives English stemming for free —
-/// no hand-rolled Snowball implementation needed.
+/// no hand-rolled Snowball implementation needed. An existing table whose
+/// schema predates the current column set (`body`/`doc_comment`, or the
+/// pre-contentless shape) is dropped and rebuilt from `nodes` in place —
+/// FTS5 columns are fixed at creation, so a shape change has no `ALTER
+/// TABLE` path, only drop-and-rebuild.
 pub(crate) fn ensure_fts_table(conn: &Connection) -> Result<(), StorageError> {
-    conn.execute_batch(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS symbol_fts USING fts5(
-            symbol_name, signature, tokenize = 'porter unicode61'
-        );",
-    )
-    .map_err(backend_err)
+    match existing_symbol_fts_sql(conn)? {
+        Some(sql) if sql == SYMBOL_FTS_DDL => return Ok(()),
+        Some(_) => {
+            conn.execute_batch("DROP TABLE symbol_fts;")
+                .map_err(backend_err)?;
+            conn.execute_batch(&format!("{SYMBOL_FTS_DDL};"))
+                .map_err(backend_err)?;
+            rebuild(conn)?;
+        }
+        None => {
+            conn.execute_batch(&format!("{SYMBOL_FTS_DDL};"))
+                .map_err(backend_err)?;
+        }
+    }
+    Ok(())
 }
 
 fn insert_row(
@@ -27,10 +71,13 @@ fn insert_row(
     id: i64,
     symbol: &str,
     signature: &str,
+    body: &str,
+    doc_comment: &str,
 ) -> Result<(), StorageError> {
     conn.execute(
-        "INSERT INTO symbol_fts(rowid, symbol_name, signature) VALUES (?1, ?2, ?3)",
-        params![id, split_identifier(symbol), signature],
+        "INSERT INTO symbol_fts(rowid, symbol_name, signature, body, doc_comment) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![id, split_identifier(symbol), signature, body, doc_comment],
     )
     .map_err(backend_err)?;
     Ok(())
@@ -46,7 +93,27 @@ pub(crate) fn replace_row(
         .prepare_cached("DELETE FROM symbol_fts WHERE rowid = ?1")
         .map_err(backend_err)?;
     delete.execute(params![id]).map_err(backend_err)?;
-    insert_row(conn, id, symbol, signature)
+    insert_row(conn, id, symbol, signature, "", "")
+}
+
+/// Backfills `body`/`doc_comment` for a node whose `symbol_name`/
+/// `signature` row already exists (written by [`replace_row`] on the
+/// same node earlier in the same reindex). A regular (non-contentless)
+/// FTS5 table supports a partial-column `UPDATE` directly — verified
+/// live — so this touches only the two new columns, no need to know or
+/// re-pass `symbol`/`signature`.
+pub(crate) fn upsert_text(
+    conn: &Connection,
+    id: i64,
+    body: &str,
+    doc_comment: &str,
+) -> Result<(), StorageError> {
+    conn.execute(
+        "UPDATE symbol_fts SET body = ?2, doc_comment = ?3 WHERE rowid = ?1",
+        params![id, body, doc_comment],
+    )
+    .map_err(backend_err)?;
+    Ok(())
 }
 
 pub(crate) fn delete_row(conn: &Connection, id: i64) -> Result<(), StorageError> {
@@ -80,6 +147,8 @@ pub(crate) fn purge_missing_nodes(conn: &Connection) -> Result<(), StorageError>
 }
 
 /// Reconstructs the derived index for repair or schema migration.
+/// Runs FTS5's `optimize` afterward — a bulk operation meant to run
+/// rarely, never per-incremental-write, so it belongs only here.
 pub(crate) fn rebuild(conn: &Connection) -> Result<(), StorageError> {
     conn.execute("DELETE FROM symbol_fts", [])
         .map_err(backend_err)?;
@@ -97,8 +166,10 @@ pub(crate) fn rebuild(conn: &Connection) -> Result<(), StorageError> {
         .map_err(backend_err)?;
     for row in rows {
         let (id, symbol, signature) = row.map_err(backend_err)?;
-        insert_row(conn, id, &symbol, &signature)?;
+        insert_row(conn, id, &symbol, &signature, "", "")?;
     }
+    conn.execute("INSERT INTO symbol_fts(symbol_fts) VALUES('optimize')", [])
+        .map_err(backend_err)?;
     Ok(())
 }
 
@@ -113,7 +184,7 @@ pub(crate) fn search_nodes(
              FROM symbol_fts
              JOIN nodes AS n ON n.id = symbol_fts.rowid
              WHERE symbol_fts MATCH ?1
-             ORDER BY bm25(symbol_fts, 10.0, 5.0) LIMIT ?2",
+             ORDER BY bm25(symbol_fts, 10.0, 5.0, 1.0, 2.0) LIMIT ?2",
         )
         .map_err(backend_err)?;
     stmt.query_map(params![match_expr, limit as i64], |row| {

@@ -8,6 +8,13 @@ use weave_graph_core::{
 
 use crate::schema::{ensure_not_newer_than_supported, migrate, schema_version};
 
+/// Threshold for `checkpoint_wal_if_needed`'s escalation from a
+/// non-blocking `PASSIVE` checkpoint to a blocking `TRUNCATE` — SQLite's
+/// own default autocheckpoint fires at 1,000 pages, so this is set well
+/// above that to only catch sustained growth `PASSIVE` alone can't keep
+/// up with, not routine autocheckpoint activity.
+const WAL_HARD_CHECKPOINT_FRAMES: i64 = 4_000;
+
 /// Default `Storage` implementation, backed by `rusqlite`.
 /// The SQL store is authoritative; nothing here depends on the CSR graph
 /// built later in `weave-graph-core` from this data.
@@ -453,6 +460,26 @@ impl SqliteStorage {
             .map_err(backend_err)
     }
 
+    /// Growth-aware checkpoint valve, not yet wired into the bulk-write
+    /// path: a non-blocking `PASSIVE` checkpoint on every call, escalating
+    /// to a blocking `TRUNCATE` only if `PASSIVE` is falling behind by more
+    /// than [`WAL_HARD_CHECKPOINT_FRAMES`] frames — `PASSIVE` never blocks,
+    /// so a sustained bulk write can outpace it; this is the pressure-relief
+    /// valve for that case, checked in frames (`wal_checkpoint`'s own `log`/
+    /// `checkpointed` columns) rather than a raw file-size stat.
+    pub fn checkpoint_wal_if_needed(&self) -> Result<(), StorageError> {
+        let (_busy, log_frames, checkpointed_frames): (i64, i64, i64) = self
+            .conn
+            .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .map_err(backend_err)?;
+        if log_frames - checkpointed_frames > WAL_HARD_CHECKPOINT_FRAMES {
+            self.checkpoint_wal()?;
+        }
+        Ok(())
+    }
+
     /// Stages a crash-safe copy of this database at `dest_path` via SQLite's
     /// online backup API. Unlike a raw file copy this includes un-checkpointed
     /// WAL content, and it copies page-by-page so peak memory stays bounded
@@ -471,6 +498,20 @@ impl SqliteStorage {
     #[cfg(feature = "fts")]
     pub fn rebuild_fts_index(&self) -> Result<(), StorageError> {
         crate::fts::rebuild(&self.conn)
+    }
+
+    /// Backfills a node's `body`/`doc_comment` FTS columns — call after
+    /// the node's own `symbol_name`/`signature` row already exists
+    /// (written automatically by `upsert_node`), with source-derived
+    /// text this crate has no file access to compute itself.
+    #[cfg(feature = "fts")]
+    pub fn upsert_fts_text(
+        &self,
+        id: NodeId,
+        body: &str,
+        doc_comment: &str,
+    ) -> Result<(), StorageError> {
+        crate::fts::upsert_text(&self.conn, i64::from(id), body, doc_comment)
     }
 
     pub fn search_symbol_nodes(
@@ -554,7 +595,7 @@ impl SqliteStorage {
     }
 
     /// Visits nodes grouped by path so a caller can retain one source file.
-    #[cfg(feature = "vector")]
+    #[cfg(any(feature = "vector", feature = "fts"))]
     pub fn for_each_node_by_path(
         &self,
         f: &mut dyn FnMut(Node) -> Result<(), StorageError>,
@@ -573,7 +614,7 @@ impl SqliteStorage {
         Ok(())
     }
 
-    #[cfg(feature = "vector")]
+    #[cfg(any(feature = "vector", feature = "fts"))]
     pub fn for_each_node_in_paths(
         &self,
         paths: &[String],
@@ -738,6 +779,26 @@ impl Storage for SqliteStorage {
             .map_err(backend_err)?;
         let rows = stmt.query_map([], row_to_node).map_err(backend_err)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend_err)
+    }
+
+    /// A direct indexed-scan-free `LIMIT 1` lookup — no `symbol`-only
+    /// index exists yet (the natural-key index has `symbol` third, not
+    /// leading, so it doesn't serve this query), but this still avoids
+    /// the Rust-side `Vec<Node>` allocation `all_nodes()` needs for every
+    /// non-matching row, which is what actually drove the measured
+    /// PERF-G16 RSS cost. A dedicated `symbol` index would additionally
+    /// help latency at very large graphs — not added here, tracked as a
+    /// follow-up rather than bundled into this fix.
+    fn get_node_by_symbol(&self, symbol: &str) -> Result<Option<Node>, StorageError> {
+        self.conn
+            .query_row(
+                "SELECT id, repo_id, path, symbol, kind, line_start, line_end, signature \
+                 FROM nodes WHERE symbol = ?1 LIMIT 1",
+                params![symbol],
+                row_to_node,
+            )
+            .optional()
             .map_err(backend_err)
     }
 

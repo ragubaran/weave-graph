@@ -52,7 +52,6 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::{Parser, Subcommand};
-use walkdir::WalkDir;
 use weave_graph_core::{Node, ReindexConfig, Storage, should_bail_out};
 use weave_graph_mcp::{
     HttpTransport, McpHandler, McpTransport, StdioTransport, validate_loopback_bind,
@@ -1024,6 +1023,18 @@ fn should_skip_dir(entry_name: &str) -> bool {
     )
 }
 
+/// Marks a directory as a dependency-tree root regardless of its own name
+/// (a renamed or nested virtualenv/conda env, for example) — catches what
+/// `should_skip_dir`'s fixed name list and `.gitignore` support both miss
+/// when the directory was never actually gitignored.
+const DEPENDENCY_MARKERS: &[&str] = &["pyvenv.cfg", "conda-meta"];
+
+fn has_dependency_marker(dir: &Path) -> bool {
+    DEPENDENCY_MARKERS
+        .iter()
+        .any(|marker| dir.join(marker).exists())
+}
+
 #[cfg(feature = "docs")]
 fn is_docs_indexable(path: &Path) -> bool {
     docs::is_markdown(path)
@@ -1046,18 +1057,28 @@ fn is_indexable(path: &Path) -> bool {
     Language::from_path(path).is_some() || is_docs_indexable(path)
 }
 
+/// Walks `root` honoring `.gitignore`/`.ignore`/`.git/info/exclude` (via the
+/// `ignore` crate — same walker ripgrep uses, nested per-directory rules
+/// included), on top of the hardcoded build-artifact denylist below.
+/// `require_git(false)` so `.gitignore` still applies when `root` isn't
+/// itself a git checkout (e.g. a vendored subdirectory being indexed).
 pub(crate) fn discover_files(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    let walker = WalkDir::new(root).into_iter().filter_entry(|e| {
-        if e.file_type().is_dir() {
-            !should_skip_dir(e.file_name().to_str().unwrap_or_default())
-        } else {
-            true
-        }
-    });
+    let walker = ignore::WalkBuilder::new(root)
+        .require_git(false)
+        .filter_entry(|e| {
+            e.file_type()
+                .map(|t| {
+                    !t.is_dir()
+                        || (!should_skip_dir(e.file_name().to_str().unwrap_or_default())
+                            && !has_dependency_marker(e.path()))
+                })
+                .unwrap_or(true)
+        })
+        .build();
 
     for entry in walker.flatten() {
-        if entry.file_type().is_file() && is_indexable(entry.path()) {
+        if entry.file_type().is_some_and(|t| t.is_file()) && is_indexable(entry.path()) {
             files.push(entry.into_path());
         }
     }

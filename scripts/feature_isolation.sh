@@ -34,7 +34,11 @@ esac
 # (its isolation is asserted by its own suite). The pure read/query
 # features are the ones L8's "no change to default-build latency/RSS"
 # claim covers.
-FEATURES=(${@:-docs federation provenance notes watch viz rbac fts vector slm})
+if [ "$#" -eq 0 ]; then
+    FEATURES=(docs federation provenance notes watch viz rbac fts vector slm)
+else
+    FEATURES=("$@")
+fi
 
 build() {
     local cargo_profile=()
@@ -122,12 +126,12 @@ latency_us() { # in-process query latency: ONE MCP session, 200 impact
 # min-of-7 sessions — the minimum approaches the true unloaded cost.
 baseline_rss=""
 baseline_us=""
-ALL_FEATURES="default ${FEATURES[@]}"
-for feature in $ALL_FEATURES; do
+ALL_FEATURES=(default "${FEATURES[@]}")
+for feature in "${ALL_FEATURES[@]}"; do
     build "$feature"
     cp "$ABS_BIN" "$WORK/bin-$feature"
 done
-for feature in $ALL_FEATURES; do
+for feature in "${ALL_FEATURES[@]}"; do
     ABS_BIN="$WORK/bin-$feature"
     rss=$(rss_kb)
     us=$(latency_us)

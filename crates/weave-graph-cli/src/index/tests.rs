@@ -457,3 +457,86 @@ fn incremental_reindex_removes_vectors_for_replaced_nodes() {
         .unwrap();
     assert!(!hits.contains(&old_id));
 }
+
+#[cfg(feature = "fts")]
+#[test]
+fn full_reindex_makes_body_and_doc_comment_findable() {
+    let fx = Fixture::new();
+    fx.write(
+        "a.rs",
+        "/// Reads application settings from disk on startup.\n\
+         pub fn load_config() { read_file_from_disk(); }\n",
+    );
+    let files = fx.discovered_files(&["a.rs"]);
+    full_reindex(fx.root(), &fx.weave_dir, &fx.active_db, &files).unwrap();
+
+    let storage = fx.storage();
+    let body_hits = storage
+        .search_symbols("\"read_file_from_disk\"", 10, None)
+        .unwrap();
+    assert_eq!(body_hits.len(), 1);
+    let doc_hits = storage.search_symbols("\"startup\"", 10, None).unwrap();
+    assert_eq!(doc_hits, body_hits, "same node, found via either column");
+}
+
+#[cfg(feature = "fts")]
+#[test]
+fn full_reindex_does_not_leak_a_doc_comment_onto_the_next_symbol() {
+    let fx = Fixture::new();
+    fx.write(
+        "a.rs",
+        "/// Reads application settings from disk on startup.\n\
+         pub fn load_config() {}\n\
+         pub fn unrelated_helper() {}\n",
+    );
+    let files = fx.discovered_files(&["a.rs"]);
+    full_reindex(fx.root(), &fx.weave_dir, &fx.active_db, &files).unwrap();
+
+    let storage = fx.storage();
+    let hits = storage.search_symbols("\"startup\"", 10, None).unwrap();
+    let matched = storage.get_node(hits[0]).unwrap().unwrap();
+    assert_eq!(hits.len(), 1, "only the documented symbol may match");
+    assert_eq!(matched.symbol, "load_config");
+}
+
+#[cfg(feature = "fts")]
+#[test]
+fn incremental_reindex_updates_body_text_for_a_changed_node() {
+    let fx = Fixture::new();
+    fx.write("a.rs", "pub fn handler() { old_marker_text(); }\n");
+    let files = fx.discovered_files(&["a.rs"]);
+    full_reindex(fx.root(), &fx.weave_dir, &fx.active_db, &files).unwrap();
+    assert_eq!(
+        fx.storage()
+            .search_symbols("\"old_marker_text\"", 10, None)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    fx.write("a.rs", "pub fn handler() { new_marker_text(); }\n");
+    incremental_reindex(
+        fx.root(),
+        &fx.weave_dir,
+        &fx.active_db,
+        &files,
+        &["a.rs".to_string()],
+    )
+    .unwrap();
+
+    let storage = fx.storage();
+    assert!(
+        storage
+            .search_symbols("\"old_marker_text\"", 10, None)
+            .unwrap()
+            .is_empty(),
+        "stale body text must not survive an incremental reindex"
+    );
+    assert_eq!(
+        storage
+            .search_symbols("\"new_marker_text\"", 10, None)
+            .unwrap()
+            .len(),
+        1
+    );
+}

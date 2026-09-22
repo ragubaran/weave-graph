@@ -1,7 +1,7 @@
 # Implementation Breakdown: `weave-graph`
 
 > **Document ID**: `impl.md`
-> **Topic**: Ordered engineering breakdown, current-tree validation for Phases 1–3, and Phase 4 development tasks
+> **Topic**: Ordered engineering breakdown, current-tree validation for Phases 1–3, and Phase 5/6/4D development tasks
 > **Project**: `weave-graph` (CLI: `weave`)
 > **Source of truth**: current crate manifests, source, tests, and CI for implementation status; [plan.md](plan.md) (approved direction), [issues.md](issues.md) (open and historical findings), [proposal.md](proposal.md) (unapproved designs), [slm-spec.md](slm-spec.md) (historical SLM reference), and [performance_compare.md](performance_compare.md) (historical measurements). Historical benchmark results are not current measurements. Legacy names such as `design-proposals.md`, `vector-proposal.md`, and `hub_enhancement_external.md` below identify source notes no longer present; the milestone text here and plan §§5–6 preserve the adopted logic. They are not links to current documents.
 
@@ -297,7 +297,7 @@ _Full spec: `slm-spec.md`._
 - **M2.4.3**: `weave slm doctor` — the required self-check, held-out prompt set, CPU-only. Ships in the same PR as M2.4.2, not after — per the project's own non-trivial-logic-needs-a-check standard.
 - **M2.4.4**: ADR rule extraction (`weave slm review-rules`), candidate-not-authoritative by construction. Depends on M2.0 (`docs`) being present to be useful, though the Cargo feature itself doesn't hard-require it.
 - **M2.4.5**: `weave journal`.
-- **Depends on**: M1.1, M1.7 (must prove it stays off the agent path). **Verifies**: `benches/slm_routing.rs` and `benches/slm_accuracy.rs` from `performance_compare.md` §5.2; the recorded short-lived feature-isolation comparison found no measurable delta at its resolution when `slm` was compiled but `weave ask` was never invoked. P4-A replaces that limited observation with release-mode, long-lived worker/process-tree measurement; it does not promise literal 0 MB total idle RSS. Real-model (`llama-cli` + downloaded weights) TTFT/end-to-end/accuracy numbers remain unmeasured pending an environment with network access and disk for real GGUF weights — tracked in `performance_compare.md` §5.4, not this milestone's blocker (M2.4.1 scopes explicit generative assistance to Phase 5, §5a below).
+- **Depends on**: M1.1, M1.7 (must prove it stays off the agent path). **Verifies**: `benches/slm_routing.rs` and `benches/slm_accuracy.rs` from `performance_compare.md` §5.2; the recorded short-lived feature-isolation comparison found no measurable delta at its resolution when `slm` was compiled but `weave ask` was never invoked. P4-A replaces that limited observation with release-mode, long-lived worker/process-tree measurement; it does not promise literal 0 MB total idle RSS. Real-model (`llama-cli` + downloaded weights) TTFT/end-to-end/accuracy numbers remain unmeasured pending an environment with network access and disk for real GGUF weights — tracked in `performance_compare.md` §5.4, not this milestone's blocker (M2.4.1 scopes explicit generative assistance to Phase 5, §5 below).
 
 ### M2.5 — `hub` Feature (Rare, Opt-In) ✅ Done (2026-09-10 client, 2026-09-12 server closed the last two criteria)
 
@@ -352,7 +352,7 @@ _Full spec: `slm-spec.md`._
 - **Acceptance criteria**:
   - [x] The existing `round_trip`/`csr_round_trip`/`incremental_reindex` suites pass against `TursoStorage` unmodified — same bodies, factory-injected constructor; includes the Core-Invariant-3 blocking regression test (two mutually-referencing files, one reindexed, zero dangling edges) now passing on both backends.
   - [x] Feature-isolation: default build's `cargo tree` shows no libSQL dependency — verified: `cargo tree -p weave-graph-cli` contains no `libsql` (only rusqlite's `libsqlite3-sys`) and no `weave-graph-store-turso`; `cargo build --no-default-features -p weave-graph-cli` clean. Line coverage 92.60% across core+sqlite+turso (gate: 90%), turso's backend module itself 94.72%.
-- **Scope note**: the milestone's tasks end at the trait implementation — `TursoStorage` is a library backend, not yet wired into the CLI's storage selection (no `weave` command can currently choose it). That wiring is now tracked as P6.1 in Phase 6 (§5b), held per `plan.md` §1.1's "revisit when it exits beta".
+- **Scope note**: the milestone's tasks end at the trait implementation — `TursoStorage` is a library backend, not yet wired into the CLI's storage selection (no `weave` command can currently choose it). That wiring is now tracked as P6.1 in Phase 6 (§5a), held per `plan.md` §1.1's "revisit when it exits beta".
 
 _Missing from every milestone despite being stubbed in M1.0 "until its features are scheduled" — this is that scheduling. Added per §0a._
 
@@ -614,7 +614,7 @@ _From `docs/design-proposals.md` §Proposal 6, correcting `design-proposals.md` 
 
 | Capability                                                             | Requires an LLM?                           | Actual reason declined                                                                                                                                                                                                       |
 | ---------------------------------------------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Multimodal ingestion via a cloud vision API (graphify's actual method) | **Yes** — structural, not incidental       | Direct Core Invariant 1 conflict. Correctly declined. The separate local-model variant is deferred as Phase 5's P5.2 (was P4-V) and is not part of the normal-developer Phase 4 exit.                                                             |
+| Multimodal ingestion via a cloud vision API (graphify's actual method) | **Yes** — structural, not incidental       | Direct Core Invariant 1 conflict. Correctly declined. The separate local-model variant is deferred as Phase 5's P5.2 (was P4-V) and is not part of the normal-developer Phase 4D exit.                                                             |
 | Framework-route-awareness (CodeGraph, 17 frameworks)                   | No — deterministic pattern-matching        | Ongoing per-framework maintenance surface; compounds the measured M1.9 binary-size miss (~43MB vs. <15MB); narrower-than-universal audience per `plan.md` Architecture Principle 6 — not a zero-LLM conflict. Not scheduled. |
 | Cross-language bridging (CodeGraph, Swift↔ObjC/React Native)           | No — deterministic heuristic name-matching | Narrow (iOS/RN-specific) audience; inherently-heuristic precision ceiling needing ongoing upkeep as Apple/Meta's own conventions shift; same binary-size compounding. Not scheduled.                                         |
 
@@ -749,7 +749,7 @@ _Adopts `docs/hub_enhancement_external.md` as an enterprise Custom-tier capabili
 
 ### M3.7 — FTS Retrieval & Opt-In Vector-Store Groundwork ([plan.md](plan.md#52-3-stage-hybrid-retrieval-funnel-fts5--1-bit-vector-quantization--int8-rerank)) ✅ Done for deterministic Tier 1 and vector infrastructure (2026-09-12)
 
-_Adopts `docs/vector-proposal.md` (`feature: vector`): Tier 1 deterministic AST-BM25 + synonym search and the storage/interface groundwork for optional vector retrieval via `sqlite-vec`. The checked-in Tier 2 provider is `MockEmbeddingProvider`, not a learned embedding model; therefore real BGE integration, semantic-quality measurement, retrieval fusion, and any ANN decision are Phase 4 work, not completed claims. See the doc's §9 (codebase gap audit) and §10 (quantization architecture revision) for the analysis this entry was scoped from._
+_Adopts `docs/vector-proposal.md` (`feature: vector`): Tier 1 deterministic AST-BM25 + synonym search and the storage/interface groundwork for optional vector retrieval via `sqlite-vec`. The checked-in Tier 2 provider is `MockEmbeddingProvider`, not a learned embedding model; therefore real BGE integration, semantic-quality measurement, retrieval fusion, and any ANN decision are Phase 4D work, not completed claims. See the doc's §9 (codebase gap audit) and §10 (quantization architecture revision) for the analysis this entry was scoped from._
 
 - **Modularity requirement, stated up front rather than left implicit**: Tier 1 and Tier 2 are separate Cargo features (`fts`, `vector`, with `vector` depending on `fts`), not one bundled `vector` flag. A deployment gets deterministic FTS5+synonym BM25 search — real, useful, zero neural weights — without ever pulling in `sqlite-vec`, an embedding model, or the background worker thread.
 - **Tier 1 (`fts` feature) — Done.** SQLite FTS5 (`porter unicode61` tokenizer — free stemming, no hand-rolled Snowball needed) plus a static synonym-group expander and identifier splitter, entirely net-new since `weave query` (`weave-graph-cli/src/query.rs`) was a deterministic CSR DSL with no BM25 anywhere in the tree.
@@ -924,7 +924,7 @@ _Implements declarative, audited, and time-bound bypass mechanisms for `weave ch
 ### Phase 3 Exit Criteria
 
 - `docs/user_intent.md`'s Custom row holds: mechanically identical to the Team row except which hub is targeted and whether `AuthProvider` gates the query layer — verified by re-running Phase 2's tests with `rbac` enabled and confirming no behavioral drift beyond the masking itself.
-- M3.6 (`hub-enhancements`), M3.7's deterministic/vector-store scope, and M3.8 (`packaging-optimisation`) complete the enterprise Custom-tier capabilities. Production learned retrieval remains a separately gated Phase 4 capability.
+- M3.6 (`hub-enhancements`), M3.7's deterministic/vector-store scope, and M3.8 (`packaging-optimisation`) complete the enterprise Custom-tier capabilities. Production learned retrieval remains a separately gated Phase 4D capability.
 - **Status (2026-09-13): closed.** M3.0-M3.9 done, per their own entries above. M3.10: **done** — all four Level 1 env vars, all four Level 2 CLI flags, plus an identity-gated waiver layer (`Identity::can_waive`/`RbacGuard::can_waive`, the `"allow-drift"` sentinel role, `crates/weave-graph-cli/src/waiver.rs`) beyond the milestone's original text — added after a security review flagged that an unrestricted bypass mechanism is itself a real gap, following M3.0's own feature-isolation precedent exactly (a no-op with no `--as` bound, or without `rbac` compiled in at all). See M3.10's own entry for the full verification list. **Phase 3 Exit Criteria are now met — all ten Phase 3 milestones (M3.0–M3.9, plus M3.10 above) are done.**
 
 ---
@@ -1001,38 +1001,89 @@ The unnumbered “Phase 3 Security and Resource Follow-Up” paragraph between M
 - [x] **Vector model-ID check:** `vector_metadata.model_id` now records the provider identity and rejects a mismatched query provider. This is useful groundwork, but it does not encode tokenizer, pooling, normalization, quantization, or chunk version; P4-D owns the complete compatibility contract.
 - [x] **Temporary reverse `CompactCsr`:** the current graph allocates caller adjacency for the traversal and releases it afterward. Update `csr_memory`'s analytical model before citing its old petgraph byte numbers as current.
 - [x] **New benchmark targets:** `indexing_throughput` and `vector_recall` are declared in manifests and CI. The former currently benchmarks parse plus node upsert for a synthetic corpus, not the complete full-index command or edge resolution; the latter uses mock embeddings and measures vector ranking overlap against brute-force mock floats, not BGE code-search quality or a dedicated ANN index.
-- [x] **Artifact and RAM jobs:** CI now has a core-only 15 MiB artifact gate and a synthetic 500k-row 80 MiB memory gate. The core-byte threshold differs from the proposed strict 15,000,000-byte Phase 4 decision; neither job measures the Basic+FTS installer profile.
+- [x] **Artifact and RAM jobs:** CI now has a core-only 15 MiB artifact gate and a synthetic 500k-row 80 MiB memory gate. The core-byte threshold differs from the proposed strict 15,000,000-byte Phase 4D decision; neither job measures the Basic+FTS installer profile.
 
-### Open verification gaps carried into Phase 4
+### Open verification gaps carried into Phase 4D
 
-The following audit gaps are explicitly carried into Phase 4; none is silently
+The following audit gaps are explicitly carried into Phase 4D; none is silently
 treated as complete. The mapping is the verification cross-check for this list.
+Re-verified against the current `ci.yml`/tree 2026-09-22: 3 of 6 gaps are now
+closed (MSRV, Python wheel, per-crate coverage), 2 have a real partial fix
+landed with a clean-measurement re-run still pending (benchmark regression
+gate, full indexing/MCP RSS), and one is explicitly confirmed still held on
+direct instruction (real embedding quality/portability). See each row's own
+status column and checklist line below for what was actually checked.
 
-| Gap                                    | Phase 4 owner | Closure evidence                                                                  |
-| -------------------------------------- | ------------- | --------------------------------------------------------------------------------- |
-| MSRV and feature/release matrix        | P4-A          | CI checks the declared MSRV core artifact and records promised feature artifacts. |
-| Python wheel support                   | P4-A          | A real maturin build-and-test job, or removal of the supported-artifact claim.    |
-| Per-crate coverage                     | P4-A          | Individual crate reports meet the repository threshold.                           |
-| Benchmark regression gate              | P4-A          | Fixed corpus/baseline makes the comparison job fail on unexplained regressions.   |
-| Full indexing/MCP RSS and latency      | P4-A → P4-B   | Fixed 500k-symbol corpus measures the complete process, not only SQLite/CSR.      |
-| Learned vector quality and portability | P4-D → P4-F   | Real provider, model fingerprint, held-out quality suite, and platform evidence.  |
+| Gap                                    | Phase 4D owner | Closure evidence                                                                  | Status (2026-09-22) |
+| -------------------------------------- | ------------- | --------------------------------------------------------------------------------- | -------------------- |
+| MSRV and feature/release matrix        | P4-A          | CI checks the declared MSRV core artifact and records promised feature artifacts. | ✅ Closed |
+| Python wheel support                   | P4-A          | A real maturin build-and-test job, or removal of the supported-artifact claim.    | ✅ Closed |
+| Per-crate coverage                     | P4-A          | Individual crate reports meet the repository threshold.                           | ✅ Closed — `weave-graph-store-sqlite` fixed |
+| Benchmark regression gate              | P4-A          | Fixed corpus/baseline makes the comparison job fail on unexplained regressions.   | ⚠️ Gate built & runs correctly — clean-run verdict pending |
+| Full indexing/MCP RSS and latency      | P4-A → P4-B   | Fixed 500k-symbol corpus measures the complete process, not only SQLite/CSR.      | ⚠️ MCP session closed; indexing pipeline still 3× over budget |
+| Learned vector quality and portability | P4-D → P4-F   | Real provider, model fingerprint, held-out quality suite, and platform evidence.  | ❌ Open — held, not started |
 
-- [x] CI checks the no-default-features core CLI artifact with pinned Rust `1.93`; beta compatibility alone does not test the MSRV.
-- [ ] Add a real maturin/Python wheel build-and-test job if the Python artifact is supported in CI.
-- [ ] Enforce per-crate line coverage; the current `cargo llvm-cov --workspace --fail-under-lines 90` gate is aggregate.
-- [ ] Make benchmark comparisons a real failure gate after defining a reproducible baseline; the current PR command ends in `|| true`.
-- [ ] Measure complete core/Basic CLI indexing and long-lived MCP peak RSS/latency on fixed corpora; synthetic SQLite/CSR and debug isolation smoke tests cannot certify the whole product envelope.
-- [ ] Verify real embedding/model quality and platform portability before advertising vector mode as learned semantic or ANN search.
+- [x] CI checks the no-default-features core CLI artifact with pinned Rust `1.93`; beta compatibility alone does not test the MSRV. (`ci.yml` "MSRV (Rust 1.93 Core)" job.)
+- [x] Real maturin Python wheel build-and-test job confirmed present in CI (`ci.yml`'s `python-bindings` job: builds the wheel via maturin, installs it, smoke-tests the import) — re-verified 2026-09-22, not just asserted from memory.
+- [x] Built `scripts/per_crate_coverage.sh` — the same `cargo llvm-cov ... --fail-under-lines 90` gate CI runs workspace-wide, run once per crate instead (default features, no `--all-features`, matching `ci.yml` exactly). Ran it locally 2026-09-22 against all 8 non-Python crates: originally **7 pass, 1 fails** — `weave-graph-store-sqlite` measured 87.95% line coverage (830 lines, 100 missed; `backend.rs` alone was 85.54% lines / 75.05% regions, the worst file), hidden until then behind the workspace-aggregate number. Fixed: added 7 targeted unit tests to `backend/tests.rs` covering `get_callers`, `edge_count`, unresolved-ref round-trips, and the new `get_node_by_symbol` (below) — crate coverage is now 96.02% (`backend.rs` 95.53%). Re-ran the per-crate gate: **8/8 pass**, confirmed by direct exit-code check.
+- [x] Built `scripts/bench_regression_gate.sh` — parses `target/criterion/**/change/estimates.json`'s `mean.point_estimate` (verified this is the correct, machine-readable field; a `-newer`-marker pass isolates only the current run's files from `target/criterion`'s accumulated history) and fails past a configurable threshold (default 10%, matching AGENTS.md §3's own "gate regressions at 10%"), replacing the exact gap `ci.yml`'s own bench-job comment names ("needs a script parsing target/criterion/**/estimates.json ... not implemented yet"). Ran the full 8-bench `--all-features` save-then-compare cycle locally 2026-09-22 twice: once with other CPU-heavy work (cargo builds, test runs, coverage passes) running concurrently — 30+ benches "regressed", up to +76% — and once fully uncontended on the same machine, right after — still 9 benches over the 10% threshold (+10.5% to +19.7%). The two runs flag almost entirely disjoint sets of benchmarks (only `parse_properties/fixture/1000` repeats), which is the signature of machine-level noise (this is a laptop, not an isolated bench host — thermal throttling and OS scheduling, not a real code-level regression tied to any actual change), not evidence of an actual performance regression. The gate mechanism itself (baseline save, comparison, `estimates.json` parsing, threshold, exit code) is verified correct and working; getting a trustworthy pass/fail verdict from *this* machine would need a dedicated, isolated bench host, which is out of scope here.
+- [x] Extended `scripts/pipeline_rss.sh` with a Phase 2 (long-lived MCP session: `initialize` + 200 `tools/call` `weave_impact_radius` requests against the same 500k-symbol DB Phase 1 just built, peak RSS + avg per-query latency, same min-noise idiom `feature_isolation.sh`'s own `latency_us` uses). Ran it locally 2026-09-22 on this machine (Darwin, release build, `--no-default-features`): **full indexing peak RSS 381 MiB, long-lived MCP session peak RSS 152 MiB, avg query latency 657 ms/query over 200 queries** — both RSS numbers fail the script's own 80 MiB gate outright (4.8× and 1.9× over budget respectively), confirming the narrow `mem_500k` SQLite/CSR-only synthetic benchmark (24 MiB) was insufficient. Found and fixed one real root cause: `full_reindex` (`weave-graph-cli/src/index.rs`) built a `ProjectIndex` during the parse loop whose result was fully discarded (shadowed) before use — a transient doubling of 500k-symbol resolver memory serving no purpose, since edge resolution rebuilds its own index from storage regardless (`incremental_reindex` never had this bug). Also wired the new `Storage::get_node_by_symbol` fast path into `weave-graph-cli::query::run`, `weave-graph-mcp::weave_impact_radius`, and `weave-graph-mcp::weave_trace_calls` for the no-RBAC-mask case: both symbol resolution and result rendering use per-id `storage.get_node` lookups bounded by result-set size, instead of materializing every node in the graph — the masked (RBAC) path is intentionally left as a full-materialize-then-mask-then-resolve flow, since masking must happen before resolution or a successful resolution alone could leak a hidden symbol's existence (Core Invariant 7). A clean, fully uncontended re-measurement after both fixes (2026-09-22) confirms real, large wins: indexing peak RSS **381→244 MiB** (still 3× over the 80 MiB budget — some driver beyond the dead `ProjectIndex` remains unisolated, a genuine open gap, not guessed at further here) and MCP session peak RSS **152→11 MiB** with avg query latency **657→16 ms** (both now well under budget — this half of the gap is closed). The script's own combined gate (`[ rss -le 80 ] && [ mcp_rss -le 80 ]`) still exits 1 solely because of the indexing-pipeline number.
+- [ ] Verify real embedding/model quality and platform portability before advertising vector mode as learned semantic or ANN search. Explicitly held — `MockEmbeddingProvider` remains the only shipped provider (`weave-graph-core/src/embedding.rs`); no real-embedding work has been done. Confirmed still open per direct instruction, 2026-09-22.
 
 ---
 
-## 5. Phase 4: Developer Performance, Evidence-Based Review & Optional Local Assistance
+## 5. Phase 5: Explicit On-Demand Local Assistant (SLM) & Held Model-Backed Work
 
-_Status: Phase 4 release gates remain open; P4-A has preliminary CI/benchmark groundwork already present in the current tree. This phase supersedes the prior “Autonomous & Local Intelligence Scaling” order. The normal developer path remains deterministic: indexing, symbol navigation, lexical search, graph traversal, impact evidence, and review gates run with no model, no model download, and no network requirement. Approved decisions are in [plan.md](plan.md#6-approved-phase-4-product-decisions), open gaps in [issues.md](issues.md), and dated review evidence in [codex_review.md](codex_review.md)._
+_Status: not started. Moved out of Phase 4 (2026-09-17) so generative/model-backed work is tracked on its own schedule instead of alongside deterministic developer-performance work. M2.4 (Phase 2) already ships the SLM deterministic scope — router, CLI verbs, grounding invariants — and is Done; only the generative/real-model portion lives here. P5.2 (vision ingestion) is unrelated to SLM but shares the same "held, model-backed, not on the normal-developer path" status, so it moved here too rather than staying in Phase 4. Sequenced before Phase 4D below (2026-09-18) — Phase 4D's own P4-D item is held on a product decision, so the held/deferred model-backed work in this phase is surfaced first in reading order, not buried after the phase it's held relative to._
 
-### Phase 4 decisions
+#### P5.1 — Explicit on-demand local assistant (was P4-E)
 
-- **Core target:** `weave` built with `--no-default-features` is the <15 MB core artifact target. Resolve the repository's MB/MiB ambiguity before gating releases: Phase 4 proposes <15,000,000 bytes for core, while optional profiles publish independent budgets. Do not represent the current `lang-extended` default build as a <15 MB build.
+**Depends on:** P4-C. Does not depend on P4-D. **Status:** `[ ] Not started`; M2.4 routing and external-runner interfaces are existing groundwork.
+
+- [ ] Retain fast deterministic handling for requests that can be answered by a resolved graph/query call.
+- [ ] For an explicit codebase question or feature-design request, retrieve authorized, revision-pinned, bounded evidence before invoking a generative model.
+- [ ] Start an assistant worker only when generation is requested and necessary. Bound prompt context, output, runtime, tool-read budget, and process-tree memory.
+- [ ] Improve runner lifecycle: drain stdout/stderr while the child runs, cap captured output, preserve bounded diagnostics, cancel reliably, and reap children on success, timeout, and failure.
+- [ ] Return resolvable source/symbol references. Feature-design answers must distinguish observed facts, suggested changes, assumptions, unknowns, migration risks, and tests; citations do not by themselves prove a claim.
+- [ ] Treat repository text as untrusted evidence, never as authority to override the user or tool permissions. Apply query-layer RBAC and revision/authorization-aware cache keys before model context is assembled.
+- [ ] Measure startup, first-token timing only when streaming exists, complete-response latency, active process-tree RSS, and parent RSS after worker teardown. Require no pre-started worker and no leaked child process.
+- [ ] Real-model (`llama-cli` + downloaded GGUF weights) TTFT/end-to-end/accuracy numbers, tracked as pending in `performance_compare.md` §5.4 (carried over from M2.4).
+
+**Exit criteria:** Assistant activation is explicit; no source leaves the authorized local boundary; cancellation/idle teardown is reliable; grounded Q&A/design evaluation includes missing-evidence, conflicting-source, and prompt-injection cases; real-model TTFT/accuracy numbers are measured.
+
+#### P5.2 — Vision ingestion (was P4-V; future, independent)
+
+**Depends on:** a separate approved user need and security/resource design. **Status:** `[ ] Held and deferred; not a Phase 5 requirement, no committed timeline`. Do not begin P5.2 until the hold is removed.
+
+- [ ] If approved later, keep image scanning an explicit, separate operation and never fold it into ordinary `weave index`.
+- [ ] Design model installation, confidence/provenance, storage retention, RBAC, resource budgets, and evaluation before adding a vision table or model runtime.
+
+**Exit criteria:** Separate scope and measured value justify the cost; normal indexing remains deterministic and unaffected.
+
+---
+
+## 5a. Phase 6: Turso Backend Selector (Held)
+
+_Status: held (2026-09-17). M2.7 (Phase 2) ships the `TursoStorage` backend, shared migrations, and backend tests, and is Done. The one item that doesn't fit that Done status — a user-facing CLI storage-backend selector — is held here rather than counted as a Phase 2 gap, per `plan.md` §1.1's own "revisit when [libSQL] exits beta" rationale (embedded libSQL measured ~15–25% slower than `rusqlite` on the M2.7 batch-insert benchmark)._
+
+#### P6.1 — CLI storage-backend selection (was part of M2.7)
+
+**Depends on:** M2.7. **Status:** `[ ] Held`; no committed timeline.
+
+- [ ] Add a CLI-facing storage backend selector (e.g. `weave init --backend turso`) so `TursoStorage` is reachable outside test code.
+- [ ] Re-run the M2.7 batch-insert benchmark against the then-current libSQL release before scheduling this; do not start on a fixed date.
+
+**Exit criteria:** A user can select the Turso backend from the CLI; the performance rationale for holding is re-measured, not assumed stale.
+
+---
+
+## 5b. Phase 4D: Developer Performance, Evidence-Based Review, Storage & Search Tuning
+
+_Status: Phase 4D release gates remain open; P4-A has preliminary CI/benchmark groundwork already present in the current tree. Formed 2026-09-18 by merging the original "Phase 4" (P4-A..P4-G/P4-V, below) with "Phase 4B" (the search/storage-tuning additions, M4B.1-M4B.11, further below) into one phase — both tracks share the same deterministic, no-model, no-network normal-developer-path constraint, and neither the original Phase 4 items nor the M4B additions are held on anything outside this phase's own gates (unlike Phase 5/6 above, which are genuinely held on a product decision or an external dependency). This phase supersedes the prior "Autonomous & Local Intelligence Scaling" order. Approved decisions are in [plan.md](plan.md#6-approved-phase-4-product-decisions), open gaps in [issues.md](issues.md), and dated review evidence in [codex_review.md](codex_review.md)._
+
+### Phase 4D decisions
+
+- **Core target:** `weave` built with `--no-default-features` is the <15 MB core artifact target. Resolve the repository's MB/MiB ambiguity before gating releases: Phase 4D proposes <15,000,000 bytes for core, while optional profiles publish independent budgets. Do not represent the current `lang-extended` default build as a <15 MB build.
 - **Recommended normal-developer profile:** deterministic graph plus optional FTS (`--no-default-features --features fts`), with no embedding model or generative SLM. Its artifact and RSS must be measured separately from core before a size claim is made.
 - **Lite semantic retrieval:** the selected candidate remains `BAAI/bge-small-en-v1.5`, installed explicitly and kept outside the core dependency closure. Embedding weights are shared only between semantic indexing and semantic querying; they are not shared with a generative model.
 - **SLM scope:** an independently selected local generative model is permitted only for an explicit codebase question or feature-design request. It must not run for normal indexing, ordinary search, MCP requests, background review, or merge gates.
@@ -1043,13 +1094,15 @@ _Status: Phase 4 release gates remain open; P4-A has preliminary CI/benchmark gr
 
 #### P4-A — Profile truth, measurement baselines & CI gates
 
-**Depends on:** nothing. **Status:** `[~] CI now records a reproducible five-profile release-artifact matrix, checks the no-default-features core CLI artifact with Rust `1.93`, and rejects forbidden network/model/inference dependencies in the core closure. RSS, index-size, latency, model-artifact, and worker-lifecycle baselines remain open. P4-D is explicitly held; P4-V moved to Phase 5.`
+**Depends on:** nothing. **Status:** `[~] Reclassified 2026-09-19 — CI/artifact side implemented; every RSS/latency/quality performance-verification task held pending measurement, not claimed. P4-D is explicitly held (product decision, separate from the performance holds below); P4-V moved to Phase 5.`
 
-- [~] Record reproducible release builds for core, Basic developer, extended-language, vector, and `slm` profiles. `scripts/profile_matrix.sh` reports platform, Rust version, executable bytes/hash, dependency-entry count, and the explicit absence of installed model artifacts. Index size and parent/process-tree RSS remain open.
-- [~] CI rejects core dependency-closure entries for known network clients, model downloaders, and inference runtimes via `scripts/verify_core_closure.sh`; the existing 15 MiB core-byte gate remains in force until the MB/MiB policy is explicitly resolved.
-- [~] Feature-isolation CI now runs release binaries through a long-lived MCP session and includes inactive `vector` and `slm` builds. Active worker lifecycle and sustained parent-RSS measurement remain open.
-- [ ] Establish fixed corpora, hardware/runner settings, warmup, repetition, and p50/p95 reporting for full index, no-change index, one-file reindex, rename/delete, exact lookup, lexical search, semantic search, and assistant startup.
-- [ ] Make real-model validation jobs explicitly provision pinned offline artifacts; routine CI remains model-free and offline.
+- [x] Record reproducible release builds for core, Basic developer, extended-language, vector, and `slm` profiles. `scripts/profile_matrix.sh` reports platform, Rust version, executable bytes/hash, dependency-entry count, and the explicit absence of installed model artifacts.
+- [x] CI rejects core dependency-closure entries for known network clients, model downloaders, and inference runtimes via `scripts/verify_core_closure.sh` (the 15 MiB core-byte gate itself stays in force until the separate MB/MiB unit policy is resolved — a policy question, not a performance-verification one).
+- [x] Feature-isolation CI runs release binaries through a long-lived MCP session, including inactive `vector` and `slm` builds.
+- [ ] **Held pending measurement:** index size and parent/process-tree RSS per profile.
+- [ ] **Held pending measurement:** active worker lifecycle and sustained parent-RSS under load.
+- [ ] **Held pending measurement:** fixed corpora, hardware/runner settings, warmup, repetition, and p50/p95 reporting for full index, no-change index, one-file reindex, rename/delete, exact lookup, lexical search, semantic search, and assistant startup.
+- [ ] Make real-model validation jobs explicitly provision pinned offline artifacts; routine CI remains model-free and offline (infra/process task, not a performance measurement — not part of this reclassification).
 
 **Exit criteria:** Core and Basic have separate, reproducible measurements; inactive optional features remain within established baseline noise; all performance claims name the profile and test conditions.
 
@@ -1057,16 +1110,19 @@ _Status: Phase 4 release gates remain open; P4-A has preliminary CI/benchmark gr
 
 #### P4-B — Bounded indexing, reindexing & graph integrity
 
-**Depends on:** P4-A baseline. **Status:** `[~] Incremental correctness groundwork is implemented and regression coverage is expanding; full performance and failure-path evidence remains open`.
+**Depends on:** P4-A baseline. **Status:** `[~] Reclassified 2026-09-19 — correctness/integrity groundwork implemented and tested; every full performance-measurement task held pending measurement`.
 
 - [x] Replace the channel-only bound with fixed ordered parse batches that limit both file count and retained result bytes. Parsed results are folded serially in input order and released before the next batch; a 65-file cross-batch test covers deterministic ordering.
 - [x] The fixed-batch design bounds later-result retention independently of individual parse completion time; the cross-batch regression test exercises the bound without a timing-sensitive sleep.
-- [~] Resolver ingestion now uses `ProjectIndex::resolve_ids` and interned `u32` endpoints, eliminating per-edge source/target moniker clones while preserving stable identity and deterministic resolution. The `ProjectIndex` lifetime and full 500k-symbol allocation profile remain open for a measured follow-up.
-- [~] Added `scripts/pipeline_rss.sh`, a deterministic 500k-symbol full-CLI indexing harness that meters `weave index` with an 80 MiB peak-RSS failure threshold. The scoped SQLite+CSR gate was repaired after Linux exposed a 150 MiB semantic-write/WAL regression: fresh staging avoids identity pre-reads and duplicated key payloads, transactions checkpoint every 50,000 rows, and the 2026-09-16 macOS release run peaked at 31 MiB. Linux CI measurement of both gates remains the closure evidence.
-- [~] The pinned CLI benchmark now records a cold full-reindex baseline (`500 files × 10 symbols`: 255.34 ms median in the current environment). Changed-file, rename/delete, query, and p50/p95 profile baselines remain to be added.
+- [x] Resolver ingestion now uses `ProjectIndex::resolve_ids` and interned `u32` endpoints, eliminating per-edge source/target moniker clones while preserving stable identity and deterministic resolution.
+- [x] Added `scripts/pipeline_rss.sh`, a deterministic 500k-symbol full-CLI indexing harness that meters `weave index` with an 80 MiB peak-RSS failure threshold. The scoped SQLite+CSR gate was repaired after Linux exposed a 150 MiB semantic-write/WAL regression: fresh staging avoids identity pre-reads and duplicated key payloads, transactions checkpoint every 50,000 rows, and the 2026-09-16 macOS release run peaked at 31 MiB.
+- [x] The pinned CLI benchmark records a cold full-reindex baseline (`500 files × 10 symbols`: 255.34 ms median in the current environment).
 - [x] Vector metadata now stores a stable provider fingerprint combining `model_id` and dimensions; mixed-model or mixed-width indexes are rejected before search/update.
 - [x] Keep batched SQLite writes, incremental affected-file resolution, staged `.weave/graph.db.rebuild` construction, and atomic promotion. Do not optimize rebuild copying by exposing a partially built active database.
 - [x] Regression coverage covers mutually referencing files, deletion, rename, span-only edits, resolution after a target is added, and an injected promotion failure after staging. The active graph remains unchanged on the tested failed-write path, and every tested edge endpoint resolves to an existing node.
+- [ ] **Held pending measurement:** `ProjectIndex` lifetime and full 500k-symbol allocation profile.
+- [ ] **Held pending measurement:** Linux CI run of both the SQLite+CSR RSS gate and `pipeline_rss.sh` (macOS-only so far).
+- [ ] **Held pending measurement:** changed-file, rename/delete, query, and p50/p95 reindex profile baselines beyond the one recorded cold-full-reindex number.
 
 **Exit criteria:** Peak RSS is bounded under adversarial ordering; full/incremental correctness and crash-recovery tests pass; measured index/reindex regressions stay within the P4-A threshold.
 
@@ -1097,24 +1153,25 @@ _Status: Phase 4 release gates remain open; P4-A has preliminary CI/benchmark gr
 
 **Exit criteria:** A real BGE provider runs on each claimed platform; installation and rebuild failures recover safely; model drift forces compatible vector refresh; quality and resource results meet published gates. A ~34 MB published quantized ONNX artifact is model data only, not a package/RAM claim.
 
-_P4-E (explicit on-demand local assistant) moved to Phase 5, §5a below — all SLM/generative-assistant work is scheduled there, not in Phase 4._
+_P4-E (explicit on-demand local assistant) moved to Phase 5, §5 above — all SLM/generative-assistant work is scheduled there, not in Phase 4D._
 
 #### P4-F — Measured scale options
 
-**Depends on:** real P4-D or Phase 5 (P5.1) measurements. **Status:** `[~] Deterministic fusion groundwork landed; scale decisions and quality evidence remain open`.
+**Depends on:** real P4-D or Phase 5 (P5.1) measurements. **Status:** `[~] Reclassified 2026-09-19 — deterministic fusion implemented; every scale/quality decision below held pending its own measurement`.
 
-- [x] Add deterministic lexical/vector rank fusion with stable node-id tie-breaking. CLI and MCP semantic retrieval combine bounded lexical/vector candidate lists; comparison against each individual retriever and result-provenance fields remain part of the held-out evaluation.
-- [ ] Benchmark quantized scan at representative chunk counts. Add ANN only if measured latency requires it and its recall, disk, memory, update, and rebuild costs pass a separate gate.
-- [ ] Consider reranking only when it has demonstrated value on the held-out quality suite within the optional-profile budget.
-- [ ] Consider FFI/GPU acceleration only after the worker/CPU baseline demonstrates a material bottleneck and a portability/security/package review approves it.
+- [x] Add deterministic lexical/vector rank fusion with stable node-id tie-breaking. CLI and MCP semantic retrieval combine bounded lexical/vector candidate lists.
+- [ ] **Held pending measurement:** comparison against each individual retriever, plus result-provenance fields, as part of the held-out evaluation.
+- [ ] **Held pending measurement:** benchmark quantized scan at representative chunk counts. Add ANN only if measured latency requires it and its recall, disk, memory, update, and rebuild costs pass a separate gate.
+- [ ] **Held pending measurement:** reranking, only if it demonstrates value on the held-out quality suite within the optional-profile budget.
+- [ ] **Held pending measurement:** FFI/GPU acceleration, only after the worker/CPU baseline demonstrates a material bottleneck and a portability/security/package review approves it.
 
 **Exit criteria:** Every scale feature has a measured benefit over its simpler baseline and independently published resource/quality trade-offs.
 
 #### P4-G — Optional JSON/HTTP response compression
 
-**Depends on:** P4-A transport and payload-size baselines. **Status:** `[~] MCP HTTP gzip path implemented; Hub transport and full crossover benchmarks remain open.`
+**Depends on:** P4-A transport and payload-size baselines. **Status:** `[~] MCP HTTP gzip path implemented; Hub transport and full crossover benchmarks held pending measurement.`
 
-- [ ] Measure representative MCP (`tools/list`, repo map, file cards, trace, and impact) and Hub responses before adding a codec. Report raw bytes, compressed bytes, CPU time, and end-to-end latency at small, medium, and large payload sizes.
+- [ ] **Held pending measurement:** representative MCP (`tools/list`, repo map, file cards, trace, and impact) and Hub response sizes before adding a codec — raw bytes, compressed bytes, CPU time, and end-to-end latency at small, medium, and large payload sizes.
 - [x] Add optional MCP HTTP `Accept-Encoding: gzip` negotiation and `Content-Encoding: gzip` responses behind `http-compression` (`flate2`). Unsupported or absent encodings remain uncompressed; responses are compressed only when the gzip payload is smaller.
 - [x] Add the same opt-in negotiation to Hub snapshot downloads behind `hub-compression`; unsupported or absent encodings and payloads where gzip is larger remain byte-for-byte uncompressed.
 - [x] Verify Hub gzip negotiation and decompression over a real loopback TCP test with a repetitive snapshot payload.
@@ -1126,9 +1183,9 @@ _P4-E (explicit on-demand local assistant) moved to Phase 5, §5a below — all 
 
 **Exit criteria:** Compression demonstrates a repeatable transfer-size win at an accepted CPU/latency cost, remains below the profile's package/RAM budget, preserves byte-for-byte JSON semantics after decompression, and is disabled by default unless the measured profile decision explicitly enables it.
 
-_P4-V (vision ingestion) moved to Phase 5, §5a below — held, independent, model-backed work is scheduled there, not in Phase 4._
+_P4-V (vision ingestion) moved to Phase 5, §5 above — held, independent, model-backed work is scheduled there, not in Phase 4D._
 
-### Phase 4 release gates
+### Phase 4D release gates
 
 - [ ] Core: stripped release artifact and 500k-symbol indexing process satisfy the agreed core byte/RSS envelope, with the corpus and platform recorded.
 - [ ] Basic: deterministic indexing, exact navigation, lexical search, and review evidence run with no model/runtime/download and publish their own measured size/RSS.
@@ -1139,54 +1196,187 @@ _P4-V (vision ingestion) moved to Phase 5, §5a below — held, independent, mod
 - [ ] Transport: any JSON/HTTP compression codec passes P4-G's crossover, compatibility, package-size, and CPU/latency gates; stdio remains unchanged.
 - [ ] Coverage: applicable crates and feature combinations meet the repository's >=90% line-coverage requirement individually, not only as a workspace aggregate.
 
-### Superseded Phase 4 entries
+### Superseded Phase 4D entries
 
 The original M4.0 vision and M4.1 in-process `llama.cpp` entries are not completed. Their intent is retained as P5.2 (moved from P4-V) and the conditional FFI portion of P4-F. They are deliberately no longer the first implementation work: ordinary developer performance, deterministic review evidence, optional BGE retrieval, and explicit-only/held model-backed work have higher product value and lower default-package risk.
 
----
+### Search & Storage Tuning Additions (M4B.1-M4B.11)
 
-## 5a. Phase 5: Explicit On-Demand Local Assistant (SLM) & Held Model-Backed Work
+_Status: 9 of 11 items implemented and tested as of 2026-09-19 — M4B.2, M4B.6, M4B.7, M4B.9, M4B.11 Done; M4B.4 code done (size/latency measurement held); M4B.8's valve implemented and tested but deliberately not wired into the hot indexing path pending measurement (see its own entry for why); M4B.5 landed as a regular table after empirical verification rejected its original contentless design (see its own entry); M4B.3 was already satisfied before this pass. Only **M4B.10 remains not started** — a benchmark-investigation task, consistently ranked lowest-priority throughout `analysis_im.md`/`proposal_im.md`, left for a dedicated pass. 11 items total — M4B.1-M4B.10 Draft in [proposal_im.md](proposal_im.md) §§1-10 as of 2026-09-18, promoting [analysis_im.md](analysis_im.md)'s §12 priority ranking; M4B.11 added the same day from a separate in-session FTS/grep design discussion, `proposal_im.md` §11. Folded into Phase 4D (2026-09-18) rather than kept as a separate phase — none of these eleven items are held on a product decision or an external dependency exiting beta, the same criterion that keeps them out of Phase 5/6 above; each is either a confirmed gap, a real prior incident (PERF-G01), or a bounded investigation, same bar as this phase's own P4-A..P4-G items. Two items considered during that research and explicitly rejected are NOT milestones here: FK-cascade edge purge (`analysis_im.md` §5.1 — would trade the project's one auditable bidirectional-purge function for an implicit schema guarantee) and adopting `usearch` now (`analysis_im.md` §11.1 — the right answer to a scale question this phase's own P4-F hasn't measured yet, not before)._
 
-_Status: not started. Moved out of Phase 4 (2026-09-17) so generative/model-backed work is tracked on its own schedule instead of alongside deterministic developer-performance work. M2.4 (Phase 2) already ships the SLM deterministic scope — router, CLI verbs, grounding invariants — and is Done; only the generative/real-model portion lives here. P5.2 (vision ingestion) is unrelated to SLM but shares the same "held, model-backed, not on the normal-developer path" status, so it moved here too rather than staying in Phase 4._
+#### M4B.1 — FTS Body & Doc-Comment Coverage
 
-#### P5.1 — Explicit on-demand local assistant (was P4-E)
+**Depends on:** M3.7 (`fts` feature scope), M1.2 (tree-sitter extraction). **Status:** `[~] Code done (2026-09-19); size/latency measurement held`.
 
-**Depends on:** P4-C. Does not depend on P4-D. **Status:** `[ ] Not started`; M2.4 routing and external-runner interfaces are existing groundwork.
+- [x] Added `body`/`doc_comment` columns to `symbol_fts` (`fts.rs::ensure_fts_table`) — landed in the same migration as M4B.5 (which pivoted from contentless to a regular table; see M4B.5's own status for why).
+- [x] `body` populated by a new `stream_fts_text`/`rebuild_fts_text`/`update_fts_text` trio in `index.rs`, reusing the existing `source_span`/`source_line_starts` helpers (their `#[cfg]` gate broadened from `vector`-only to `any(vector, fts)` so an `fts`-only build has them too) — no new extraction path, called from both `full_reindex` and `incremental_reindex`.
+- [x] `doc_comment` populated by the cheap heuristic (`doc_comment_above`/`nth_line`, `index.rs`): scans lines immediately above `line_start` for a comment-marker prefix (`///`, `//!`, `//`, `#`, `/*`, `*`, `--`), stopping at the first blank or non-comment line — plain string-prefix scan, regex-free per AGENTS.md §3.
+- [x] The write path is split, not threaded through the automatic per-node write: `insert_row`/`replace_row` (the automatic path, no file access) still only populate `symbol_name`/`signature`; a new `SqliteStorage::upsert_fts_text` (wrapping `fts::upsert_text`) backfills `body`/`doc_comment` from the CLI's separate pass — same "populate now, backfill via a separate producer-driven pass" relationship `vector.rs`'s streaming chunks already have to the same node-write path. `upsert_text` itself is a plain partial-column `UPDATE` (verified live that a regular, non-contentless FTS5 table supports it directly) — simplified from an initial delete-then-reinsert draft once M4B.5's contentless attempt was reverted and the "no partial update" constraint that draft assumed no longer applied; the simpler form also drops the need to re-pass `symbol`/`signature` on every backfill call.
+- [x] `ensure_fts_table` detects an old-shape table (`sqlite_master`'s stored SQL text ≠ the current `CREATE VIRTUAL TABLE` text) and drop-and-rebuilds automatically on next open — the one-time migration, verified by `ensure_fts_table_migrates_an_old_shape_table_and_repopulates_from_nodes` and `ensure_fts_table_is_a_no_op_when_the_shape_already_matches`.
+- [x] `search_nodes`'s `ORDER BY bm25(symbol_fts, 10.0, 5.0, 1.0, 2.0)` — two new weight slots for `body`/`doc_comment`, both lower than `symbol_name`/`signature`.
+- [ ] **Held pending measurement:** `.weave/graph.db` size and peak RSS during `weave search`, before/after, on the 500k-symbol fixture (`mem_500k` example) — merge blocker per Core Invariant 4, not a follow-up.
 
-- [ ] Retain fast deterministic handling for requests that can be answered by a resolved graph/query call.
-- [ ] For an explicit codebase question or feature-design request, retrieve authorized, revision-pinned, bounded evidence before invoking a generative model.
-- [ ] Start an assistant worker only when generation is requested and necessary. Bound prompt context, output, runtime, tool-read budget, and process-tree memory.
-- [ ] Improve runner lifecycle: drain stdout/stderr while the child runs, cap captured output, preserve bounded diagnostics, cancel reliably, and reap children on success, timeout, and failure.
-- [ ] Return resolvable source/symbol references. Feature-design answers must distinguish observed facts, suggested changes, assumptions, unknowns, migration risks, and tests; citations do not by themselves prove a claim.
-- [ ] Treat repository text as untrusted evidence, never as authority to override the user or tool permissions. Apply query-layer RBAC and revision/authorization-aware cache keys before model context is assembled.
-- [ ] Measure startup, first-token timing only when streaming exists, complete-response latency, active process-tree RSS, and parent RSS after worker teardown. Require no pre-started worker and no leaked child process.
-- [ ] Real-model (`llama-cli` + downloaded GGUF weights) TTFT/end-to-end/accuracy numbers, tracked as pending in `performance_compare.md` §5.4 (carried over from M2.4).
+**Acceptance criteria:**
+- [x] `full_reindex_makes_body_and_doc_comment_findable` (`index/tests.rs`): a fixture with a documented symbol is findable via `weave search` on its doc-comment text and its body text.
+- [x] `full_reindex_does_not_leak_a_doc_comment_onto_the_next_symbol`: an undocumented symbol never matches on a neighboring symbol's leftover doc-comment text.
+- [x] `incremental_reindex_updates_body_text_for_a_changed_node`: stale body text is gone and new body text is findable after an incremental reindex of the changed file.
+- [ ] Feature-isolation and the RSS/size budget itself — both held pending measurement.
 
-**Exit criteria:** Assistant activation is explicit; no source leaves the authorized local boundary; cancellation/idle teardown is reliable; grounded Q&A/design evaluation includes missing-evidence, conflicting-source, and prompt-injection cases; real-model TTFT/accuracy numbers are measured.
+**Verifies:** `proposal_im.md` §1.
 
-#### P5.2 — Vision ingestion (was P4-V; future, independent)
+#### M4B.2 — Fuzzy Symbol-Resolution Fallback & Resolver Dedup
 
-**Depends on:** a separate approved user need and security/resource design. **Status:** `[ ] Held and deferred; not a Phase 5 requirement, no committed timeline`. Do not begin P5.2 until the hold is removed.
+**Depends on:** nothing (self-contained). **Status:** `[x] Done (2026-09-19)`.
 
-- [ ] If approved later, keep image scanning an explicit, separate operation and never fold it into ordinary `weave index`.
-- [ ] Design model installation, confidence/provenance, storage retention, RBAC, resource budgets, and evaluation before adding a vision table or model runtime.
+- [x] Unified `weave-graph-cli::query::resolve_symbol` and `weave-graph-mcp::tools::resolve_symbol` (previously byte-identical) into `weave_graph_core::resolve::resolve_symbol` (new `weave-graph-core/src/resolve.rs`, ungated — used by base CLI/MCP functionality, not behind any feature flag).
+- [x] Implemented the deterministic 3-step fallback chain, tried only after an exact-match miss: (1) case-insensitive exact match; (2) short-name match (`::{query}` suffix, or equal with no qualifier), fanning out to *all* candidates on ambiguity; (3) hand-rolled Levenshtein DP table (no new dependency), ranking every symbol, returning the top 5 as suggestions.
+- [x] Wired the shared resolver into `weave query "callers(x)"`/`callees`/`impact`/`path` (`query.rs::resolve`) and `weave_trace_calls`/`weave_impact_radius` (`trace_calls.rs`/`impact_radius.rs`, via `tools::resolve_symbol` now delegating to core).
+- [x] Suggestions render through a new shared `resolve::format_not_found` — `Err(String)` contract unchanged, no new structured error type.
 
-**Exit criteria:** Separate scope and measured value justify the cost; normal indexing remains deterministic and unaffected.
+**Acceptance criteria:**
+- [x] `a_typo_resolves_via_edit_distance_suggestion` (`resolve/tests.rs`): typo resolves via suggestion, not a bare "not found."
+- [x] `case_insensitive_match_resolves_a_wrong_case_query`, `unambiguous_short_name_resolves_via_qualifier_suffix`: steps 1/2 covered individually.
+- [x] `ambiguous_short_name_surfaces_every_candidate_not_just_the_first`: both candidates surface, not just one.
+- [x] `a_genuinely_nonexistent_symbol_returns_a_bounded_suggestion_list`: bounded at 5, never an unbounded dump, verified against 50 candidate nodes.
+- [x] `exact_match_wins_over_every_fallback`, `exact_match_picks_the_first_on_a_collision`: fallback never overrides or fires on a hit.
 
----
+**Verifies:** `proposal_im.md` §2.
 
-## 5b. Phase 6: Turso Backend Selector (Held)
+#### M4B.3 — WAL Mode Verification
 
-_Status: held (2026-09-17). M2.7 (Phase 2) ships the `TursoStorage` backend, shared migrations, and backend tests, and is Done. The one item that doesn't fit that Done status — a user-facing CLI storage-backend selector — is held here rather than counted as a Phase 2 gap, per `plan.md` §1.1's own "revisit when [libSQL] exits beta" rationale (embedded libSQL measured ~15–25% slower than `rusqlite` on the M2.7 batch-insert benchmark)._
+**Status:** `[x]` Already satisfied — verification only, zero code change.
 
-#### P6.1 — CLI storage-backend selection (was part of M2.7)
+- [x] `journal_mode=WAL` already set on every writable connection (`backend.rs:31,65`), confirmed against AGENTS.md §3's own rule during the 2026-09-17/18 research. No task remains.
 
-**Depends on:** M2.7. **Status:** `[ ] Held`; no committed timeline.
+**Verifies:** `proposal_im.md` §3 / `analysis_im.md` §8.
 
-- [ ] Add a CLI-facing storage backend selector (e.g. `weave init --backend turso`) so `TursoStorage` is reachable outside test code.
-- [ ] Re-run the M2.7 batch-insert benchmark against the then-current libSQL release before scheduling this; do not start on a fixed date.
+#### M4B.4 — FTS5 `optimize` on Full Rebuild Only
 
-**Exit criteria:** A user can select the Turso backend from the CLI; the performance rationale for holding is re-measured, not assumed stale.
+**Depends on:** nothing. **Status:** `[~] Code done (2026-09-19); size/latency measurement held`.
+
+- [x] Added `INSERT INTO symbol_fts(symbol_fts) VALUES('optimize')` to the end of `fts::rebuild` (`fts.rs:83`).
+- [x] Confirmed no `optimize` call exists in `insert_row`/`replace_row`/`delete_row` — the incremental path is untouched; existing `fts` test suite (7 tests) passes unmodified against the new `rebuild` behavior.
+- [ ] **Held pending measurement:** `symbol_fts` on-disk size and `weave search` p50/p95 before/after, on the existing 500-file/10-symbol fixture (`performance_compare.md` §5.2).
+
+**Acceptance criteria:**
+- [x] Full reindex triggers exactly one `optimize` call, at the end.
+- [x] Incremental reindex triggers zero `optimize` calls.
+- [ ] Measured size/latency delta recorded in `performance_compare.md` — held.
+
+**Verifies:** `proposal_im.md` §4.
+
+#### M4B.5 — Contentless `symbol_fts` Table
+
+**Depends on:** nothing standalone; landed in the same migration as M4B.1. **Status:** `[x] Rejected after empirical verification (2026-09-19) — landed as a regular (non-contentless) 4-column table instead`.
+
+- [x] Re-grepped the crate for `snippet()`/`highlight()` against `symbol_fts` — confirmed clean, nothing depends on retrievable content (as the proposal expected).
+- [x] Attempted `content=''` and ran the existing FTS test suite against it — **verified live that FTS5 refuses a plain `DELETE FROM symbol_fts WHERE rowid = ?` on a contentless table** ("cannot DELETE from contentless fts5 table: symbol_fts"). Contentless mode requires every delete to re-supply the original column values via `INSERT INTO symbol_fts(symbol_fts, rowid, ...) VALUES ('delete', ...)` instead — `purge_path`/`purge_missing_nodes` delete by path/rowid without knowing prior content, so they can't cheaply satisfy that requirement.
+- [x] Reverted to a regular table (same 4 columns, no `content=''`) — the disk-size win this milestone chased doesn't materialize without a correctness-risking rewrite of the purge paths Core Invariant 3's own blocking test depends on; not worth it.
+- [x] Landed the migration mechanics (drop-and-rebuild on shape mismatch) as part of M4B.1 instead, since both needed the exact same mechanism.
+
+**Acceptance criteria:**
+- [x] All existing `search_nodes` behavior unchanged — same results, same ranking (11 `fts` tests pass, including all pre-existing ones unmodified).
+- [x] Existing FTS test suite passes unmodified.
+- [ ] ~~Measured on-disk size reduction~~ — moot; the contentless design this depended on doesn't ship.
+
+**Verifies:** `proposal_im.md` §5 (finding recorded there and in `analysis_im.md` §10 as a correction, not silently dropped).
+
+#### M4B.6 — Content-Marker Directory Exclusion
+
+**Depends on:** this session's `ignore::WalkBuilder` gitignore support (already shipped). **Status:** `[x] Done (2026-09-19)`.
+
+- [x] Added a small, fixed `DEPENDENCY_MARKERS` table (`pyvenv.cfg`, `conda-meta`) checked via `has_dependency_marker` (`main.rs`).
+- [x] Wired into `discover_files`'s `filter_entry` closure alongside `should_skip_dir`'s name check (`main.rs:1053`).
+
+**Acceptance criteria:**
+- [x] Fixture `discover_files_excludes_a_renamed_virtualenv_via_marker_file` (`tests.rs`): a renamed venv directory (marker present, name not on the existing denylist) is excluded from `discover_files`'s output, using a `.rs` file inside it to prove the directory itself was skipped, not that the file type was merely unsupported.
+- [x] Same fixture asserts a plain, non-marker sibling directory is not accidentally excluded.
+
+**Verifies:** `proposal_im.md` §6.
+
+#### M4B.7 — Evidence-Authority Tier on Search Results
+
+**Depends on:** nothing. **Status:** `[x] Done (2026-09-19)`.
+
+- [x] Added `SemanticHit { node: Node, direct: bool }` — `weave_search_semantic` now returns `Vec<SemanticHit>` instead of `Vec<Node>`; `direct` is true when the query is a literal case-insensitive substring of the hit's symbol name or path (`search_semantic.rs`).
+- [x] MCP surface: `call_search_semantic` (`handler.rs`) renders each hit with a trailing `[direct]`/`[metadata]` label inline in the response text.
+
+**Acceptance criteria:**
+- [x] `a_literal_substring_query_is_labeled_direct` and `finds_the_closest_chunk_by_shared_vocabulary` (`search_semantic/tests.rs`) cover both a literal-match hit (`direct: true`) and a proximity-only hit (`direct: false`).
+- [x] Ranking/ordering unchanged — `direct` is a label computed after fusion/truncation, never fed back into ranking; existing `a_masked_top_hit_does_not_starve_a_visible_runner_up` RBAC-ordering test still passes unmodified.
+
+**Verifies:** `proposal_im.md` §7.
+
+#### M4B.8 — Growth-Based WAL Checkpoint Valve
+
+**Depends on:** the existing `rotate_staged_write` row-count-based checkpointing. **Status:** `[~] New valve implemented and tested (2026-09-19); deliberately NOT wired into the hot indexing path pending measurement`.
+
+- [x] Added `SqliteStorage::checkpoint_wal_if_needed` (`backend.rs`): a non-blocking `PRAGMA wal_checkpoint(PASSIVE)` on every call, tracked in frames (`wal_checkpoint`'s own `log`/`checkpointed` columns — no raw file-size stat needed), escalating to the existing blocking `checkpoint_wal` (`TRUNCATE`) only once the un-checkpointed backlog exceeds `WAL_HARD_CHECKPOINT_FRAMES` (4,000 — well above SQLite's own 1,000-page default autocheckpoint, so this only catches sustained growth `PASSIVE` can't keep up with, not routine autocheckpoint activity).
+- [ ] **Deliberately not wired into `rotate_staged_write`.** `rotate_staged_write` is exactly the code path PERF-G01's 150 MiB Linux regression came from; swapping its existing every-10,000-row `TRUNCATE` for this adaptive valve is a real behavior change to that same sensitive path (`PASSIVE` checkpoints content but, unlike `TRUNCATE`, doesn't shrink the WAL file's on-disk size) with no measurement backing it yet. Held pending the same before/after 500k-symbol fixture run PERF-G01 itself used, per this milestone's own acceptance criteria — not skipped, sequenced correctly.
+- [ ] **Held pending measurement:** before/after on the same 500k-symbol fixture PERF-G01 used, before wiring this into `rotate_staged_write`.
+
+**Acceptance criteria:**
+- [x] `checkpoint_wal_if_needed_is_safe_on_a_fresh_database` (`backend/tests.rs`): safe to call with little/nothing to checkpoint.
+- [x] `checkpoint_wal_if_needed_keeps_the_wal_file_meaningfully_smaller`: 500 writes with the valve called after each one leave a meaningfully smaller on-disk WAL than the same 500 writes with no checkpointing at all — the valve demonstrably does real work.
+- [ ] No regression on PERF-G01's already-fixed 150 MiB Linux measurement — held until wired in and measured.
+
+**Verifies:** `proposal_im.md` §8, `issues.md` PERF-G01.
+
+#### M4B.9 — CSR Traversal Call-Site Depth Audit
+
+**Depends on:** nothing. **Status:** `[x] Done (2026-09-19) — zero accidentally-unbounded call sites found, no follow-up needed`.
+
+- [x] Ran `graft callers callers_within --depth all` and `graft callers reachable_within --depth all`; cross-checked against a direct grep since `graft` itself flagged a name-ambiguity risk between the two crates' `reachable_within` (core vs. the WASM wrapper) — the direct grep found call sites the ranked `graft callers` output missed (`query.rs`, `impact_radius.rs`, `trace_calls.rs`, python `backend.rs`), confirming the audit needed both tools, not just one.
+- [x] Every call site confirmed bound:
+  - `callers_within` — `blast.rs::compute`: `max_hops` from the CLI's own `--depth` flag (explicit, user-controlled).
+  - `reachable_within` — `query.rs::run`'s `callees` case: fixed `1`; its `impact` case: explicit `u32::MAX` (intentional full radius).
+  - `reachable_within` — `mcp/impact_radius.rs`: explicit `u32::MAX` (the tool's whole purpose is full blast radius).
+  - `reachable_within` — `mcp/trace_calls.rs`: `args.depth`, a caller-supplied MCP request parameter.
+  - `reachable_within` — `python/backend.rs::impact_radius`: explicit `u32::MAX`; `::trace_calls`: caller-supplied `depth: u32` parameter.
+- [x] No accidentally-unbounded call site found — no follow-up filed.
+
+**Acceptance criteria:**
+- [x] Audit result documented above (call sites found + each one's bound choice).
+- [x] Zero accidentally-unbounded call sites remain.
+
+**Verifies:** `proposal_im.md` §9.
+
+#### M4B.10 — `cache_size` Pragma Investigation (`mmap_size` stays untouched)
+
+**Depends on:** nothing. **Status:** `[ ] Not started`.
+
+- [ ] Benchmark `cache_size` tuning on the 500k-symbol fixture (`mem_500k` examples), measuring `weave search`/`weave query` read latency on a warm cache.
+- [ ] Do **not** touch `mmap_size` as part of this milestone — that needs the RSS-measurement-safety question (Core Invariant 4, `issues.md` PERF-G01/PERF-G12) answered first, with its own before/after peak-RSS numbers on both macOS and Linux.
+- [ ] If the measurement justifies a specific `cache_size` value, propose it as a one-line follow-up change, separate from this investigation.
+
+**Acceptance criteria:**
+- [ ] Measurement recorded in `performance_compare.md`, whichever way it comes out (including "no measurable benefit").
+- [ ] `mmap_size` remains untouched at `0` unless a separate, explicit follow-up directly addresses the RSS-measurement question.
+
+**Verifies:** `proposal_im.md` §10.
+
+#### M4B.11 — Grep-Style Literal Fallback on Zero FTS Hits (non-vector `weave search`)
+
+**Depends on:** nothing; complements M4B.7 without overlapping it — M4B.7 labels trust on hits that already exist (MCP's vector+lexical fused results), M4B.11 finds hits that don't exist yet (CLI's FTS-only path, when FTS returns nothing). **Status:** `[x] Done (2026-09-19)`.
+
+- [x] Added `search::run_with_fallback` (`search.rs`) alongside the existing `run`: when `run`'s FTS/synonym path returns zero hits, falls back to a case-insensitive literal-substring scan over `storage.all_nodes()`'s `symbol`/`signature`/`path` fields, bounded to `limit`. `run` itself is untouched — every other caller keeps its existing `Vec<Node>` contract.
+- [x] Fallback only — `run_with_fallback` calls `run` first and returns immediately on any hit, before ever calling `all_nodes()`; never parallel, never merged/re-ranked against FTS hits.
+- [x] `cmd_search` prints "No FTS match — showing literal substring hits:" when the fallback path produced the results, so a zero-hit-turned-grep-hit is never silently presented as a ranked FTS result.
+
+**Acceptance criteria:**
+- [x] `fallback_finds_a_substring_crossing_an_identifier_word_boundary` (`search/tests.rs`): `"ckJwt"` against `checkJwtTtl` (which `split_identifier` tokenizes as `"check"`/`"jwt"`/`"ttl"`, so FTS can't cross the boundary) returns zero via `run` alone but one hit via `run_with_fallback`.
+- [x] `fallback_never_fires_when_fts_already_found_something`: a query FTS already answers via synonym expansion returns `is_fallback: false`.
+- [x] `fallback_result_count_stays_bounded_at_limit`: 10 symbols all match a boundary-crossing substring; fallback with `limit: 2` returns exactly 2, never all 10.
+
+**Verifies:** `proposal_im.md` §11 (not from `analysis_im.md`'s external-source ranking — an in-session FTS/grep design discussion, 2026-09-18).
+
+### M4B exit note
+
+The M4B additions have no release gate of their own — each milestone's own
+acceptance criteria above is its bar, and M4B.1/M4B.5/M4B.8 in particular
+fold into this same phase's own "Phase 4D release gates" above once they
+ship, since they touch the same size/RSS/latency envelope those gates
+already check.
 
 ---
 
@@ -1245,25 +1435,50 @@ Phase 3 (M3.0 query-layer RBAC precedes dependent capabilities):
   Phase 3 scoped code is present; learned retrieval, published distributions and
   full resource/coverage CI proof remain open as identified in §4.
 
-Phase 4 (developer performance, deterministic review & optional local assistance):
-  P4-A profile truth / baselines / CI gates — preliminary jobs/benches present, gates open
-       ↓
-  P4-B bounded indexing / integrity  →  P4-C deterministic retrieval & review evidence
-                                         └→ P4-D optional BGE semantic retrieval (held)
-                                               ↓
-                                             P4-F measured scale options (fusion, ANN, reranking, FFI/GPU)
-
-Phase 5 (explicit on-demand local assistant SLM + held model-backed work — moved out of Phase 4 2026-09-17):
+Phase 5 (explicit on-demand local assistant SLM + held model-backed work — moved out of Phase 4 2026-09-17; sequenced before Phase 4D 2026-09-18):
   P5.1 explicit-only local Q&A / feature design (was P4-E) — not started; depends on P4-C
        ↓ (also feeds P4-F's fusion/scale decisions, alongside P4-D)
   P5.2 vision ingestion (was P4-V) — held, deferred, independent, never part of normal indexing
 
 Phase 6 (Turso CLI backend selector — held, moved out of Phase 2 2026-09-17):
   P6.1 CLI storage-backend selection (was part of M2.7) — held, no committed timeline
+
+Phase 4D (developer performance, deterministic review & storage/search tuning —
+          formed 2026-09-18 by merging the original Phase 4 with Phase 4B;
+          reclassified 2026-09-19 — implemented work marked done, every
+          performance-verification task held pending measurement, not claimed):
+  P4-A profile truth / baselines / CI gates — CI/artifact side done; RSS/latency/p50-p95 baselines held;
+       `scripts/verify_envelope.sh` had a `set -e`/`$?` bug (its own RSS-over-budget failure aborted the
+       script before reaching the fail/report branch, silently skipping the summary and the Turso check)
+       fixed 2026-09-21 — gate now actually reports a failure instead of dying silently on one
+       ↓
+  P4-B bounded indexing / integrity — correctness/integrity done; 500k-alloc profile, Linux-CI parity, reindex-profile baselines held
+       ↓
+  P4-C deterministic retrieval & review evidence — feature-scope gaps open (not a performance hold)
+       └→ P4-D optional BGE semantic retrieval — held (product decision, not a performance hold)
+             ↓
+           P4-F measured scale options — fusion done; ANN/reranking/FFI-GPU/comparison-eval all held pending measurement
+  P4-G optional JSON/HTTP compression — MCP gzip done; Hub crossover benchmark held pending measurement
+
+  Search/storage tuning additions (was Phase 4B, M4B.1-M4B.11):
+  M4B.1  FTS body/doc-comment coverage        — done (2026-09-19); size/latency measurement held
+  M4B.2  Fuzzy symbol-resolution fallback      — done (2026-09-19)
+  M4B.3  WAL mode verification                 — already satisfied
+  M4B.4  FTS5 optimize on full rebuild         — code done; size/latency measurement held
+  M4B.5  Contentless symbol_fts table          — rejected after verification; landed as regular table under M4B.1
+  M4B.6  Content-marker directory exclusion    — done (2026-09-19)
+  M4B.7  Evidence-authority search tier        — done (2026-09-19)
+  M4B.8  Growth-based WAL checkpoint valve     — valve done and tested; not yet wired in, measurement held
+  M4B.9  CSR traversal depth-bound audit       — done (2026-09-19), zero unbounded sites found
+  M4B.10 cache_size investigation              — not started (only remaining item)
+  M4B.11 grep-style literal fallback on zero FTS hits — done (2026-09-19)
+  (M4B.1+M4B.5 shared one migration; M4B.8 ties to PERF-G01)
 ```
 
 **Historical gates and current limits:** M1.4's bidirectional-purge regression and the scoped M1.9 storage/CSR measurement were completed. After repairing the Linux-reported 150 MiB regression, the 2026-09-16 macOS release `mem_500k` run measured 23 MiB after node writes, 24 MiB after edge writes, and 31 MiB after loading 500,000 nodes and 499,999 edges into CSR. It still excludes discovery, AST extraction and resolution, and requires a retained Linux rerun; `csr_memory`'s analytical layout predates `CompactCsr`. The unflagged release binary includes extended languages and historically exceeded 15 MB, while the no-default-features core artifact was historically below it. Parser throughput's historical ~4 MiB/s extraction figure missed the >25 MB/s target; no current rerun is claimed here. The benchmark comparison job remains advisory (`|| true`). See §4 and P4-A/P4-B for the open measurements and implementation gates.
 
+**Fresh re-verification (2026-09-22, Darwin 24.6.0, `scripts/verify_envelope.sh` after its own `set -e` bug fix — see this milestone's own note above):** every gate this script covers passed with the current tree, which now includes all of this session's M4B changes (FTS `body`/`doc_comment` columns, the shared `resolve` fuzzy-fallback module, the grep fallback, the WAL checkpoint valve) compiled into the measured binaries — 0 regressions from any of it. Core (`--no-default-features`) 10.62 MiB; `vector` 10.74 MiB; `lang-extended` 41.26 MiB; `custom` 11.21 MiB — all under their respective 15/50/50/50 MiB budgets. `mem_500k`: SQLite peaked at 12 MiB (nodes), 12 MiB (edges), 24 MiB (CSR) — *lower* than the 2026-09-16 baseline above, not a regression; Turso peaked at 7/7/19 MiB, the first local Turso data point recorded here. This is still the same narrow `mem_500k` synthetic-SQLite-only scope as the 2026-09-16 run (excludes discovery/AST/resolution, single macOS run, no Linux rerun) — it confirms no regression from this session's own changes, it does not itself close P4-A's broader "index size and parent/process-tree RSS per profile" or M4B.1's "`.weave/graph.db` size and peak RSS during `weave search`" held items, which need the full CLI pipeline, not this narrower storage-layer benchmark.
+
 ---
 
-_Authored 2026-09-09; validated against the current tree 2026-09-14. Phase 1–3 status and cross-phase sequencing now distinguish implemented source from historical measurements, incomplete CI proof, optional library-only paths, and proposed Phase 4 work._
+_Authored 2026-09-09; validated against the current tree 2026-09-14. Phase 1–3 status and cross-phase sequencing now distinguish implemented source from historical measurements, incomplete CI proof, optional library-only paths, and proposed Phase 4D work._

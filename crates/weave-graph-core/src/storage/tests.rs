@@ -118,6 +118,13 @@ fn trait_defaults_cover_the_optional_surface() {
             .unwrap()
             .is_empty()
     );
+
+    // Default streams via `for_each_node` rather than materializing
+    // `all_nodes()` — same empty-graph contract, provable here; the
+    // "finds a real match" case is covered on the real backend
+    // (`weave-graph-store-sqlite`'s own `get_node_by_symbol` tests),
+    // since `MinimalStorage`'s `all_nodes()` is always empty.
+    assert!(storage.get_node_by_symbol("anything").unwrap().is_none());
 }
 
 #[cfg(feature = "vector")]

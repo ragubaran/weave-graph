@@ -5,15 +5,33 @@ use crate::tools::{TraceCallsArgs, TraceCallsResult, resolve_symbol};
 /// Call chain traversal — both outgoing (calls) and incoming (callers).
 /// Visited sets on both BFS walks prevent infinite loops on cyclic graphs.
 ///
-/// `mask` is the query-layer RBAC hook (`weave_graph_core::rbac`),
-/// applied once here to the whole node list — see
-/// `weave-graph-cli::query::run`'s doc comment for why (never drops or
-/// reorders entries, so `csr`'s compact indices stay valid).
+/// `mask` is the query-layer RBAC hook (`weave_graph_core::rbac`). When
+/// active, this takes the original path: materialize every node, mask
+/// the whole list once, then resolve and render against that — masking
+/// must happen *before* resolution (Core Invariant 7), or resolving a
+/// hidden symbol by its exact real name and masking the result only
+/// afterward would let a successful resolution alone leak that the
+/// symbol exists. Without a mask there's no such ordering constraint, so
+/// the unmasked path resolves via `get_node_by_symbol` and renders via
+/// per-id `storage.get_node` lookups instead (PERF-G16): no
+/// `all_nodes()` call at all for the common case.
 pub fn weave_trace_calls(
     storage: &dyn Storage,
     csr: &CsrGraph,
     args: TraceCallsArgs<'_>,
     mask: Option<&dyn Fn(&Node) -> Node>,
+) -> TraceCallsResult {
+    match mask {
+        Some(m) => weave_trace_calls_masked(storage, csr, args, m),
+        None => weave_trace_calls_unmasked(storage, csr, args),
+    }
+}
+
+fn weave_trace_calls_masked(
+    storage: &dyn Storage,
+    csr: &CsrGraph,
+    args: TraceCallsArgs<'_>,
+    mask: &dyn Fn(&Node) -> Node,
 ) -> TraceCallsResult {
     let nodes = match storage.all_nodes() {
         Ok(n) => n,
@@ -23,20 +41,64 @@ pub fn weave_trace_calls(
             };
         }
     };
-    let nodes: Vec<Node> = match mask {
-        Some(m) => nodes.iter().map(m).collect(),
-        None => nodes,
+    let nodes: Vec<Node> = nodes.iter().map(mask).collect();
+
+    let root_id = match resolve_symbol(&nodes, args.symbol) {
+        Ok(id) => id,
+        Err(suggestions) => {
+            return TraceCallsResult {
+                text: weave_graph_core::resolve::format_not_found(args.symbol, &suggestions),
+            };
+        }
     };
 
-    let Some(root_id) = resolve_symbol(&nodes, args.symbol) else {
-        return TraceCallsResult {
-            text: format!("symbol not found: {}", args.symbol),
-        };
+    let lookup = |id: NodeId| nodes.iter().find(|n| n.id == id).cloned();
+    let outgoing = outgoing_chain(csr, &lookup, root_id, args.depth);
+    let incoming = incoming_chain(storage, &lookup, root_id, args.depth);
+    render_result(args, outgoing, incoming)
+}
+
+fn weave_trace_calls_unmasked(
+    storage: &dyn Storage,
+    csr: &CsrGraph,
+    args: TraceCallsArgs<'_>,
+) -> TraceCallsResult {
+    let root_id = match storage.get_node_by_symbol(args.symbol) {
+        Ok(Some(node)) => node.id,
+        _ => {
+            let nodes = match storage.all_nodes() {
+                Ok(n) => n,
+                Err(e) => {
+                    return TraceCallsResult {
+                        text: format!("error: {e}"),
+                    };
+                }
+            };
+            match resolve_symbol(&nodes, args.symbol) {
+                Ok(id) => id,
+                Err(suggestions) => {
+                    return TraceCallsResult {
+                        text: weave_graph_core::resolve::format_not_found(
+                            args.symbol,
+                            &suggestions,
+                        ),
+                    };
+                }
+            }
+        }
     };
 
-    let outgoing = outgoing_chain(csr, &nodes, root_id, args.depth);
-    let incoming = incoming_chain(storage, &nodes, root_id, args.depth);
+    let lookup = |id: NodeId| storage.get_node(id).ok().flatten();
+    let outgoing = outgoing_chain(csr, &lookup, root_id, args.depth);
+    let incoming = incoming_chain(storage, &lookup, root_id, args.depth);
+    render_result(args, outgoing, incoming)
+}
 
+fn render_result(
+    args: TraceCallsArgs<'_>,
+    outgoing: Vec<String>,
+    incoming: Vec<String>,
+) -> TraceCallsResult {
     let render = |per_chain: usize| -> String {
         let mut out = vec![format!("trace_calls: {}", args.symbol)];
         for (label, chain) in [("outgoing", &outgoing), ("incoming", &incoming)] {
@@ -70,24 +132,31 @@ pub fn weave_trace_calls(
 }
 
 /// BFS outgoing hops up to `depth` via CSR (RoaringBitmap visited set).
-fn outgoing_chain(csr: &CsrGraph, nodes: &[Node], from: NodeId, depth: u32) -> Vec<String> {
+/// `lookup` resolves a `NodeId` to its display `Node`, either a per-id
+/// storage read (unmasked) or a linear scan of an already-masked list.
+fn outgoing_chain(
+    csr: &CsrGraph,
+    lookup: &dyn Fn(NodeId) -> Option<Node>,
+    from: NodeId,
+    depth: u32,
+) -> Vec<String> {
     csr.reachable_within(from, depth)
         .iter()
-        .filter(|&idx| {
-            // reachable_within returns compact indices; map back through node list
-            nodes
-                .get(idx as usize)
-                .map(|n| n.id != from)
-                .unwrap_or(false)
-        })
-        .filter_map(|idx| nodes.get(idx as usize))
+        .filter_map(|idx| csr.id_of_index(idx))
+        .filter(|&id| id != from)
+        .filter_map(lookup)
         .map(|n| format!("{} ({}:{})", n.symbol, n.path, n.line_start))
         .collect()
 }
 
 /// BFS incoming hops via SQL get_callers (uses idx_edges_target index).
 /// Tracks visited NodeIds to prevent cycles.
-fn incoming_chain(storage: &dyn Storage, nodes: &[Node], root: NodeId, depth: u32) -> Vec<String> {
+fn incoming_chain(
+    storage: &dyn Storage,
+    lookup: &dyn Fn(NodeId) -> Option<Node>,
+    root: NodeId,
+    depth: u32,
+) -> Vec<String> {
     use std::collections::{HashSet, VecDeque};
 
     let mut visited: HashSet<NodeId> = HashSet::from([root]);
@@ -106,7 +175,7 @@ fn incoming_chain(storage: &dyn Storage, nodes: &[Node], root: NodeId, depth: u3
             if !visited.insert(edge.source_id) {
                 continue;
             }
-            if let Some(node) = nodes.iter().find(|n| n.id == edge.source_id) {
+            if let Some(node) = lookup(edge.source_id) {
                 result.push(format!(
                     "{} ({}:{})",
                     node.symbol, node.path, node.line_start

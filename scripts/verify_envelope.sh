@@ -11,7 +11,6 @@ cd "$(dirname "$0")/.."
 
 CORE_BUDGET=$((15 * 1024 * 1024))       # 15 MiB
 FEATURE_BUDGET=$((50 * 1024 * 1024))    # 50 MiB
-RSS_BUDGET=$((80 * 1024 * 1024))        # 80 MiB
 
 PASS=0
 FAIL=0
@@ -63,10 +62,11 @@ done
 echo ""
 echo "--- 3. 500k symbol indexing peak RSS in SQLite (< 80 MiB) ---"
 
-cargo run --release -q -p weave-graph-store-sqlite --example mem_500k 2>&1
-# The example self-reports and exits non-zero if over budget
-sqlite_result=$?
-if [ "$sqlite_result" -eq 0 ]; then
+# The example self-reports and exits non-zero if over budget — the `if`
+# form is required under `set -e`: a bare command followed by `$?` never
+# reaches the `$?` line, since `set -e` aborts the script immediately on
+# that command's own non-zero exit (verified live).
+if cargo run --release -q -p weave-graph-store-sqlite --example mem_500k 2>&1; then
     pass "SQLite 500k indexing within 80 MiB envelope"
 else
     fail "SQLite 500k indexing exceeded 80 MiB envelope"
@@ -80,9 +80,7 @@ echo "--- 4. 500k symbol indexing peak RSS in Turso (< 80 MiB) ---"
 
 # Build and run a Turso 500k memory benchmark if the crate exists
 if [ -f "crates/weave-graph-store-turso/Cargo.toml" ]; then
-    cargo run --release -q -p weave-graph-store-turso --example mem_500k 2>&1
-    turso_result=$?
-    if [ "$turso_result" -eq 0 ]; then
+    if cargo run --release -q -p weave-graph-store-turso --example mem_500k 2>&1; then
         pass "Turso tests passed"
     else
         fail "Turso tests failed"

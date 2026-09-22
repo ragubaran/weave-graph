@@ -1,3 +1,4 @@
+use weave_graph_core::resolve::resolve_symbol as core_resolve_symbol;
 use weave_graph_core::{Node, NodeId};
 
 /// Arguments for `weave_repo_map`. Caps output to stay within ~200 tokens.
@@ -126,10 +127,12 @@ pub struct ImpactRadiusResult {
     pub text: String,
 }
 
-/// Resolves `symbol` to a NodeId by exact match against `all_nodes`.
-/// Returns the first match (lowest id) when multiple definitions exist.
-pub(crate) fn resolve_symbol(nodes: &[Node], symbol: &str) -> Option<NodeId> {
-    nodes.iter().find(|n| n.symbol == symbol).map(|n| n.id)
+/// Resolves `symbol` to a `NodeId` — exact match against `all_nodes`
+/// first (the first match, lowest id, on a collision), then
+/// `weave_graph_core::resolve`'s deterministic fallback chain
+/// (case-insensitive, short-name, edit-distance suggestions) on a miss.
+pub(crate) fn resolve_symbol(nodes: &[Node], symbol: &str) -> Result<NodeId, Vec<String>> {
+    core_resolve_symbol(nodes, symbol)
 }
 
 #[cfg(test)]

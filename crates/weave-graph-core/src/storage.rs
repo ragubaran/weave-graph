@@ -60,6 +60,25 @@ pub trait Storage {
         Ok(())
     }
 
+    /// Exact-match symbol lookup — the fast path every `weave_graph_core::
+    /// resolve::resolve_symbol` caller should try before ever materializing
+    /// `all_nodes()`. The default implementation streams via `for_each_node`
+    /// so even a backend that hasn't overridden this never holds more than
+    /// one `Node` at a time (PERF-G16: `all_nodes()`'s full `Vec<Node>` at
+    /// 500k symbols, repeated per MCP request, was the measured RSS driver
+    /// this exists to avoid). `weave-graph-store-sqlite` overrides it with
+    /// a direct SQL lookup. Returns the first match on a natural-key
+    /// collision, same as every existing exact-match resolver's contract.
+    fn get_node_by_symbol(&self, symbol: &str) -> Result<Option<Node>, StorageError> {
+        let mut found = None;
+        self.for_each_node(&mut |node| {
+            if found.is_none() && node.symbol == symbol {
+                found = Some(node);
+            }
+        })?;
+        Ok(found)
+    }
+
     /// Streams every edge to `f` instead of materializing a `Vec<Edge>`.
     fn for_each_edge(&self, f: &mut dyn FnMut(Edge)) -> Result<(), StorageError> {
         for edge in self.all_edges()? {

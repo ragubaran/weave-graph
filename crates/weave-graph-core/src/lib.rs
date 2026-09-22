@@ -22,6 +22,7 @@ pub mod provenance;
 pub mod ranking;
 #[cfg(feature = "rbac")]
 pub mod rbac;
+pub mod resolve;
 pub mod schema;
 mod storage;
 #[cfg(feature = "fts")]

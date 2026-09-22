@@ -122,7 +122,11 @@ count=0
 for term in "${search_terms[@]:0:50}"; do
     count=$((count + 1))
     start=$(date +%s%N)
-    if (cd "$WORK" && "$BIN_VEC" search "$term" >/dev/null 2>&1); then
+    # `weave search` exits 0 whether or not it finds anything (a
+    # zero-match query just prints "No visible matches" and returns
+    # success) — the exit code alone can't measure recall. Grep the
+    # actual output for the term itself.
+    if (cd "$WORK" && "$BIN_VEC" search "$term" 2>/dev/null) | grep -q "$term"; then
         hits=$((hits + 1))
     fi
     end=$(date +%s%N)
