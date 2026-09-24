@@ -21,6 +21,8 @@ fn edge(source_id: NodeId, target_id: NodeId, kind: &str) -> Edge {
         target_id,
         kind: kind.into(),
         weight: 1.0,
+        extractor: None,
+        resolution_kind: None,
     }
 }
 

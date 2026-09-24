@@ -23,6 +23,8 @@ fn edge(source_id: NodeId, target_id: NodeId) -> Edge {
         target_id,
         kind: "CALLS_EXACT".into(),
         weight: 1.0,
+        extractor: None,
+        resolution_kind: None,
     }
 }
 
@@ -215,4 +217,187 @@ fn callers_propagates_storage_errors() {
     let err = run(&failing, "callers(foo)", None).unwrap_err();
     assert!(err.contains("failed to read callers"));
     assert!(err.contains("simulated disk read failure"));
+}
+
+// --- P10.7: composable path:/lang:/kind:/visibility:/edge: filters ---
+
+#[test]
+fn path_filter_narrows_impact_results() {
+    let storage = chain_storage();
+    let result = run(&storage, "impact(caller) path:b", None).unwrap();
+    assert!(result.contains("b ("), "{result}");
+    assert!(!result.contains("a ("), "{result}");
+    assert!(!result.contains("c ("), "{result}");
+}
+
+#[test]
+fn kind_filter_narrows_callers_results() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let root = storage.upsert_node(&node("root.rs", "root")).unwrap();
+    let func_caller = storage.upsert_node(&node("f.rs", "funcCaller")).unwrap();
+    let struct_caller_node = Node {
+        kind: "struct".into(),
+        ..node("s.rs", "structCaller")
+    };
+    let struct_caller = storage.upsert_node(&struct_caller_node).unwrap();
+    storage.upsert_edge(&edge(func_caller, root)).unwrap();
+    storage.upsert_edge(&edge(struct_caller, root)).unwrap();
+
+    let result = run(&storage, "callers(root) kind:struct", None).unwrap();
+    assert!(result.contains("structCaller ("), "{result}");
+    assert!(!result.contains("funcCaller ("), "{result}");
+}
+
+#[test]
+fn lang_filter_matches_by_file_extension() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let root = storage.upsert_node(&node("root.rs", "root")).unwrap();
+    let rust_caller = storage.upsert_node(&node("f.rs", "rustCaller")).unwrap();
+    let python_caller = storage.upsert_node(&node("f.py", "pythonCaller")).unwrap();
+    storage.upsert_edge(&edge(rust_caller, root)).unwrap();
+    storage.upsert_edge(&edge(python_caller, root)).unwrap();
+
+    let result = run(&storage, "callers(root) lang:python", None).unwrap();
+    assert!(result.contains("pythonCaller ("), "{result}");
+    assert!(!result.contains("rustCaller ("), "{result}");
+}
+
+#[test]
+fn visibility_filter_reuses_the_contract_visibility_rule() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let root = storage.upsert_node(&node("root.rs", "root")).unwrap();
+    let public_node = Node {
+        signature: "pub fn publicCaller()".into(),
+        ..node("pub.rs", "publicCaller")
+    };
+    let private_node = Node {
+        signature: "fn privateCaller()".into(),
+        ..node("priv.rs", "privateCaller")
+    };
+    let public_id = storage.upsert_node(&public_node).unwrap();
+    let private_id = storage.upsert_node(&private_node).unwrap();
+    storage.upsert_edge(&edge(public_id, root)).unwrap();
+    storage.upsert_edge(&edge(private_id, root)).unwrap();
+
+    let result = run(&storage, "callers(root) visibility:public", None).unwrap();
+    assert!(result.contains("publicCaller ("), "{result}");
+    assert!(!result.contains("privateCaller ("), "{result}");
+}
+
+#[test]
+fn edge_filter_narrows_callers_to_one_edge_kind() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let root = storage.upsert_node(&node("root.rs", "root")).unwrap();
+    let exact_caller = storage.upsert_node(&node("e.rs", "exactCaller")).unwrap();
+    let dynamic_caller = storage.upsert_node(&node("d.rs", "dynamicCaller")).unwrap();
+    storage.upsert_edge(&edge(exact_caller, root)).unwrap();
+    storage
+        .upsert_edge(&Edge {
+            kind: "CALLS_DYNAMIC".into(),
+            ..edge(dynamic_caller, root)
+        })
+        .unwrap();
+
+    let result = run(&storage, "callers(root) edge:CALLS_DYNAMIC", None).unwrap();
+    assert!(result.contains("dynamicCaller ("), "{result}");
+    assert!(!result.contains("exactCaller ("), "{result}");
+}
+
+#[test]
+fn edge_filter_is_rejected_for_non_callers_forms() {
+    let storage = chain_storage();
+    let err = run(&storage, "impact(caller) edge:CALLS_EXACT", None).unwrap_err();
+    assert!(err.contains("only supported for callers()"), "{err}");
+}
+
+#[test]
+fn filters_are_rejected_on_path_and_latency() {
+    let storage = chain_storage();
+    let err = run(&storage, "path(caller,c) path:a", None).unwrap_err();
+    assert!(err.contains("not supported"), "{err}");
+}
+
+#[test]
+fn an_invalid_filter_token_is_a_clear_error() {
+    let storage = chain_storage();
+    let err = run(&storage, "callers(a) bogus", None).unwrap_err();
+    assert!(err.contains("invalid filter"), "{err}");
+}
+
+#[test]
+fn an_unknown_filter_key_is_a_clear_error() {
+    let storage = chain_storage();
+    let err = run(&storage, "callers(a) nonexistent:x", None).unwrap_err();
+    assert!(err.contains("unknown filter"), "{err}");
+}
+
+#[test]
+fn an_invalid_visibility_value_is_a_clear_error() {
+    let storage = chain_storage();
+    let err = run(&storage, "callers(a) visibility:sideways", None).unwrap_err();
+    assert!(err.contains("invalid visibility"), "{err}");
+}
+
+#[test]
+fn precise_filter_drops_a_heuristically_resolved_caller() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let root = storage.upsert_node(&node("root.rs", "root")).unwrap();
+    let exact_caller = storage.upsert_node(&node("e.rs", "exactCaller")).unwrap();
+    let heuristic_caller = storage
+        .upsert_node(&node("h.rs", "heuristicCaller"))
+        .unwrap();
+    storage.upsert_edge(&edge(exact_caller, root)).unwrap();
+    storage
+        .upsert_edge(&Edge {
+            kind: "CALLS_DYNAMIC".into(),
+            resolution_kind: Some(weave_graph_core::AMBIGUOUS_HEURISTIC.to_string()),
+            ..edge(heuristic_caller, root)
+        })
+        .unwrap();
+
+    let result = run(&storage, "callers(root) precise:true", None).unwrap();
+    assert!(result.contains("exactCaller ("), "{result}");
+    assert!(!result.contains("heuristicCaller ("), "{result}");
+}
+
+#[test]
+fn precise_false_is_a_no_op_that_keeps_every_caller() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let root = storage.upsert_node(&node("root.rs", "root")).unwrap();
+    let heuristic_caller = storage
+        .upsert_node(&node("h.rs", "heuristicCaller"))
+        .unwrap();
+    storage
+        .upsert_edge(&Edge {
+            kind: "CALLS_DYNAMIC".into(),
+            resolution_kind: Some(weave_graph_core::AMBIGUOUS_HEURISTIC.to_string()),
+            ..edge(heuristic_caller, root)
+        })
+        .unwrap();
+
+    let result = run(&storage, "callers(root) precise:false", None).unwrap();
+    assert!(result.contains("heuristicCaller ("), "{result}");
+}
+
+#[test]
+fn precise_filter_is_rejected_for_non_callers_forms() {
+    let storage = chain_storage();
+    let err = run(&storage, "impact(caller) precise:true", None).unwrap_err();
+    assert!(err.contains("only supported for callers()"), "{err}");
+}
+
+#[test]
+fn an_invalid_precise_value_is_a_clear_error() {
+    let storage = chain_storage();
+    let err = run(&storage, "callers(a) precise:maybe", None).unwrap_err();
+    assert!(err.contains("invalid precise"), "{err}");
+}
+
+#[test]
+fn filters_apply_under_an_rbac_mask_too() {
+    let storage = chain_storage();
+    let mask: &dyn Fn(&Node) -> Node = &|n| n.clone();
+    let result = run(&storage, "impact(caller) path:b", Some(mask)).unwrap();
+    assert!(result.contains("b ("), "{result}");
+    assert!(!result.contains("a ("), "{result}");
 }

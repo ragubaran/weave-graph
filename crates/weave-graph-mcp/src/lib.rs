@@ -4,7 +4,11 @@
 //! no network, regardless of which features are compiled in.
 
 mod error;
+mod explore;
 mod file_api;
+#[cfg(feature = "fts")]
+mod find_all;
+mod freshness;
 mod handler;
 mod impact_radius;
 #[cfg(feature = "notes")]
@@ -18,9 +22,13 @@ mod search_semantic;
 mod tools;
 mod trace_calls;
 mod transport;
+mod verify;
 
 pub use error::McpError;
+pub use explore::weave_explore;
 pub use file_api::weave_file_api;
+#[cfg(feature = "fts")]
+pub use find_all::weave_find_all;
 pub use handler::McpHandler;
 pub use impact_radius::weave_impact_radius;
 #[cfg(feature = "policy-lint")]
@@ -34,8 +42,11 @@ pub use search_semantic::weave_search_semantic;
 #[cfg(feature = "vector")]
 pub use tools::SemanticSearchArgs;
 pub use tools::{
-    FileApiArgs, FileApiResult, ImpactRadiusArgs, ImpactRadiusResult, RepoMapArgs, RepoMapResult,
-    SymbolEntry, TraceCallsArgs, TraceCallsResult, WiringCard,
+    ExploreArgs, ExploreResult, FileApiArgs, FileApiResult, ImpactRadiusArgs, ImpactRadiusResult,
+    RepoMapArgs, RepoMapResult, SymbolEntry, TraceCallsArgs, TraceCallsResult, WiringCard,
 };
+#[cfg(feature = "fts")]
+pub use tools::{FindAllArgs, FindAllResult};
 pub use trace_calls::weave_trace_calls;
 pub use transport::{HttpTransport, McpTransport, StdioTransport, validate_loopback_bind};
+pub use verify::{VerifyArgs, weave_verify};

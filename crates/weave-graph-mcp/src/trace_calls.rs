@@ -54,7 +54,7 @@ fn weave_trace_calls_masked(
 
     let lookup = |id: NodeId| nodes.iter().find(|n| n.id == id).cloned();
     let outgoing = outgoing_chain(csr, &lookup, root_id, args.depth);
-    let incoming = incoming_chain(storage, &lookup, root_id, args.depth);
+    let incoming = incoming_chain(storage, &lookup, root_id, args.depth, args.precise_only);
     render_result(args, outgoing, incoming)
 }
 
@@ -90,7 +90,7 @@ fn weave_trace_calls_unmasked(
 
     let lookup = |id: NodeId| storage.get_node(id).ok().flatten();
     let outgoing = outgoing_chain(csr, &lookup, root_id, args.depth);
-    let incoming = incoming_chain(storage, &lookup, root_id, args.depth);
+    let incoming = incoming_chain(storage, &lookup, root_id, args.depth, args.precise_only);
     render_result(args, outgoing, incoming)
 }
 
@@ -156,6 +156,7 @@ fn incoming_chain(
     lookup: &dyn Fn(NodeId) -> Option<Node>,
     root: NodeId,
     depth: u32,
+    precise_only: bool,
 ) -> Vec<String> {
     use std::collections::{HashSet, VecDeque};
 
@@ -176,11 +177,26 @@ fn incoming_chain(
                 continue;
             }
             if let Some(node) = lookup(edge.source_id) {
+                // P10.5: only the caller (incoming) side has a real edge
+                // to classify — `outgoing_chain`/`weave_impact_radius`
+                // walk the CSR's compact adjacency, which never carries
+                // per-edge kind, so confidence can't be shown there
+                // without a CSR redesign (the same documented limitation
+                // `weave query`'s own `edge:`/`precise:` filters carry).
+                let confidence =
+                    weave_graph_core::edge_confidence(&edge.kind, edge.resolution_kind.as_deref());
+                queue.push_back((edge.source_id, hop + 1));
+                if precise_only && confidence == weave_graph_core::Confidence::Heuristic {
+                    continue;
+                }
+                let suffix = match confidence {
+                    weave_graph_core::Confidence::Heuristic => " [heuristic]",
+                    weave_graph_core::Confidence::Exact => "",
+                };
                 result.push(format!(
-                    "{} ({}:{})",
+                    "{} ({}:{}){suffix}",
                     node.symbol, node.path, node.line_start
                 ));
-                queue.push_back((edge.source_id, hop + 1));
             }
         }
     }

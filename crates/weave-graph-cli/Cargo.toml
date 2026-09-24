@@ -73,7 +73,7 @@ github-auth = ["rbac", "dep:ureq"]
 http-compression = ["weave-graph-mcp/http-compression"]
 otel = []
 policy-lint = ["dep:serde_yaml", "weave-graph-core/policy-lint", "weave-graph-mcp/policy-lint"]
-fts = ["weave-graph-core/fts", "weave-graph-store-sqlite/fts"]
+fts = ["weave-graph-core/fts", "weave-graph-store-sqlite/fts", "weave-graph-mcp/fts"]
 vector = ["fts", "weave-graph-core/vector", "weave-graph-store-sqlite/vector", "weave-graph-mcp/vector"]
 # Convenience bundles (plan.md §0.2), matching the two distributed release
 # variants (docs/deploy.md §1): no new code, just a named shorthand for the

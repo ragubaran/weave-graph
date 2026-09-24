@@ -208,3 +208,94 @@ fn search_against_an_empty_index_returns_no_matches() {
             .is_empty()
     );
 }
+
+/// POL-02's empirical scale check: two chunks embedding the *same* text
+/// are, after binary+int8 quantization round-tripping, as close to
+/// identical as this pipeline can represent — this is what proves
+/// `INT8_UNIT_SCALE`'s `127*127` normalization actually lands near `1.0`
+/// for a real near-duplicate, not just a number chosen to look plausible.
+#[test]
+fn find_similar_node_pairs_scores_a_near_duplicate_close_to_one() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let embedder = MockEmbeddingProvider::new();
+    storage
+        .rebuild_vector_index(
+            &embedder,
+            &[
+                (1, "fn check_jwt_ttl(token: &str) -> bool".to_string()),
+                (2, "fn check_jwt_ttl(token: &str) -> bool".to_string()),
+                (
+                    3,
+                    "fn render_html_layout(page: &Page) -> String".to_string(),
+                ),
+            ],
+        )
+        .unwrap();
+
+    let pairs = storage.find_similar_node_pairs(&[1, 2, 3], 0.0, 8).unwrap();
+    let duplicate_pair = pairs
+        .iter()
+        .find(|(a, b, _)| (*a, *b) == (1, 2))
+        .unwrap_or_else(|| panic!("expected (1, 2) in {pairs:?}"));
+    assert!(
+        duplicate_pair.2 > 0.9,
+        "near-duplicate chunks should score close to 1.0, got {duplicate_pair:?}"
+    );
+}
+
+#[test]
+fn find_similar_node_pairs_dedupes_a_b_and_b_a_into_one_entry() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let embedder = MockEmbeddingProvider::new();
+    storage
+        .rebuild_vector_index(
+            &embedder,
+            &[
+                (1, "fn check_jwt_ttl(token: &str) -> bool".to_string()),
+                (2, "fn check_jwt_ttl(token: &str) -> bool".to_string()),
+            ],
+        )
+        .unwrap();
+
+    let pairs = storage.find_similar_node_pairs(&[1, 2], 0.0, 8).unwrap();
+    let matching: Vec<_> = pairs
+        .iter()
+        .filter(|(a, b, _)| (*a, *b) == (1, 2) || (*a, *b) == (2, 1))
+        .collect();
+    assert_eq!(matching.len(), 1, "{pairs:?}");
+}
+
+#[test]
+fn find_similar_node_pairs_excludes_scores_below_threshold() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let embedder = MockEmbeddingProvider::new();
+    storage
+        .rebuild_vector_index(
+            &embedder,
+            &[
+                (1, "fn check_jwt_ttl(token: &str) -> bool".to_string()),
+                (
+                    2,
+                    "fn render_html_layout(page: &Page) -> String".to_string(),
+                ),
+            ],
+        )
+        .unwrap();
+
+    let pairs = storage.find_similar_node_pairs(&[1, 2], 0.99, 8).unwrap();
+    assert!(
+        pairs.is_empty(),
+        "unrelated chunks must not pass a 0.99 threshold: {pairs:?}"
+    );
+}
+
+#[test]
+fn find_similar_node_pairs_against_an_empty_index_returns_no_matches() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    assert!(
+        storage
+            .find_similar_node_pairs(&[1, 2], 0.5, 8)
+            .unwrap()
+            .is_empty()
+    );
+}

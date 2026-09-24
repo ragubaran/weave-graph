@@ -91,5 +91,77 @@ pub(crate) fn blast_since(root: &Path, base: &str) -> Result<Vec<String>, String
     Ok(paths)
 }
 
+/// One registered Git submodule, discovered from `.gitmodules`. Gated on
+/// `federation` — its only consumer is `weave check-contracts --submodules`;
+/// keeping it out of the default build matches Core Invariant 8.
+#[cfg(feature = "federation")]
+pub(crate) struct Submodule {
+    pub(crate) name: String,
+    pub(crate) path: String,
+}
+
+/// Verification-relevant submodule state (`docs/proposal-skylos.md` §3.1).
+#[cfg(feature = "federation")]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SubmoduleState {
+    /// Checked-out commit matches the parent index; inner tree is clean.
+    Clean,
+    /// Checked-out commit differs from what the parent repo's index records.
+    Bumped,
+    /// Registered in `.gitmodules` but never `git submodule update --init`'d.
+    Uninitialized,
+    /// Inner working tree has uncommitted changes (staged or not).
+    Dirty,
+}
+
+/// Parses `.gitmodules` with a plain line scan rather than a TOML/INI
+/// dependency — the format is a fixed `[submodule "name"]` / `path = ...`
+/// subset of git-config syntax, not worth a general parser for two keys.
+#[cfg(feature = "federation")]
+pub(crate) fn discover_submodules(root: &Path) -> Vec<Submodule> {
+    let Ok(content) = std::fs::read_to_string(root.join(".gitmodules")) else {
+        return Vec::new();
+    };
+    let mut submodules = Vec::new();
+    let mut current_name: Option<String> = None;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("[submodule \"") {
+            current_name = rest.strip_suffix("\"]").map(str::to_string);
+        } else if let Some((key, value)) = trimmed.split_once('=')
+            && key.trim() == "path"
+            && let Some(name) = current_name.clone()
+        {
+            submodules.push(Submodule {
+                name,
+                path: value.trim().to_string(),
+            });
+        }
+    }
+    submodules
+}
+
+/// Reads `git submodule status`'s leading status character to classify a
+/// submodule without a network call: `-` uninitialized, `U` a merge
+/// conflict (treated as bumped — its pointer is not the recorded one
+/// either), `+` checked-out commit differs from the parent index. A `Dirty`
+/// inner tree is checked separately since git's status char alone can't
+/// tell "pointer matches but has uncommitted local edits" from "clean".
+#[cfg(feature = "federation")]
+pub(crate) fn submodule_state(root: &Path, submodule: &Submodule) -> SubmoduleState {
+    let status_char =
+        run(root, &["submodule", "status", "--", &submodule.path]).and_then(|s| s.chars().next());
+    match status_char {
+        Some('-') => return SubmoduleState::Uninitialized,
+        Some('U') | Some('+') => return SubmoduleState::Bumped,
+        _ => {}
+    }
+    if is_working_tree_clean(&root.join(&submodule.path)) {
+        SubmoduleState::Clean
+    } else {
+        SubmoduleState::Dirty
+    }
+}
+
 #[cfg(test)]
 mod tests;

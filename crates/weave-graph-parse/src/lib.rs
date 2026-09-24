@@ -17,4 +17,4 @@ pub use model::{
     ParsedFile, RawCall, RawStructuralEdge, StructuralEdgeKind, SymbolKind, WiringCard,
 };
 pub use parser::{ParseError, SourceParser, parse_file};
-pub use resolve::{ProjectIndex, ResolvedEdge};
+pub use resolve::{ProjectIndex, ResolutionKind, ResolvedEdge};

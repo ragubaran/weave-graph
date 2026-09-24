@@ -204,5 +204,39 @@ pub(crate) fn search_nodes(
     .map_err(backend_err)
 }
 
+/// Every matching row, no `bm25`/`LIMIT` — the exhaustive counterpart to
+/// [`search_nodes`]'s ranked top-N (P10.4: "ranked retrieval is top-N,
+/// not exhaustive"). Ordered by `(path, line_start)` for a stable,
+/// reproducible result set rather than FTS5's insertion-order default.
+pub(crate) fn search_nodes_exhaustive(
+    conn: &Connection,
+    match_expr: &str,
+) -> Result<Vec<Node>, StorageError> {
+    let mut stmt = conn
+        .prepare_cached(
+            "SELECT n.id, n.repo_id, n.path, n.symbol, n.kind, n.line_start, n.line_end, n.signature
+             FROM symbol_fts
+             JOIN nodes AS n ON n.id = symbol_fts.rowid
+             WHERE symbol_fts MATCH ?1
+             ORDER BY n.path, n.line_start",
+        )
+        .map_err(backend_err)?;
+    stmt.query_map(params![match_expr], |row| {
+        Ok(Node {
+            id: row.get::<_, i64>(0)? as NodeId,
+            repo_id: row.get(1)?,
+            path: row.get(2)?,
+            symbol: row.get(3)?,
+            kind: row.get(4)?,
+            line_start: row.get::<_, i64>(5)? as u32,
+            line_end: row.get::<_, i64>(6)? as u32,
+            signature: row.get(7)?,
+        })
+    })
+    .map_err(backend_err)?
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .map_err(backend_err)
+}
+
 #[cfg(test)]
 mod tests;

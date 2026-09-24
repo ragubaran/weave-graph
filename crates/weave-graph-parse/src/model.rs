@@ -22,6 +22,11 @@ pub enum SymbolKind {
     Class,
     Interface,
     Impl,
+    /// P10.8: a framework route declaration (e.g. a Flask
+    /// `@app.route()` decorator) — not a code symbol itself, but its own
+    /// indexed node so a `ROUTES_TO` edge has a real source to attach to.
+    #[cfg(feature = "framework-routes")]
+    Route,
 }
 
 impl SymbolKind {
@@ -34,6 +39,8 @@ impl SymbolKind {
             SymbolKind::Class => "class",
             SymbolKind::Interface => "interface",
             SymbolKind::Impl => "impl",
+            #[cfg(feature = "framework-routes")]
+            SymbolKind::Route => "route",
         }
     }
 }
@@ -64,6 +71,9 @@ pub enum StructuralEdgeKind {
     Imports,
     Inherits,
     Implements,
+    /// P10.8: a route declaration edge to its handler function.
+    #[cfg(feature = "framework-routes")]
+    Handles,
 }
 
 impl StructuralEdgeKind {
@@ -72,6 +82,8 @@ impl StructuralEdgeKind {
             StructuralEdgeKind::Imports => "IMPORTS",
             StructuralEdgeKind::Inherits => "INHERITS",
             StructuralEdgeKind::Implements => "IMPLEMENTS",
+            #[cfg(feature = "framework-routes")]
+            StructuralEdgeKind::Handles => "ROUTES_TO",
         }
     }
 }

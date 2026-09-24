@@ -110,6 +110,7 @@ fn stdio_request_metadata_resolves_a_per_request_identity() {
                     Identity {
                         subject: "alice".into(),
                         roles: vec!["internal".into()],
+                        path_scope: Vec::new(),
                     },
                     |_| false,
                 )
@@ -205,6 +206,7 @@ fn http_transport_maps_bearer_authentication_to_request_metadata() {
                 Identity {
                     subject: "alice".to_string(),
                     roles: vec!["internal".to_string()],
+                    path_scope: Vec::new(),
                 },
                 |_| false,
             )

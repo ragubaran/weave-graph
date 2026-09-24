@@ -74,6 +74,26 @@ fn full_reindex_indexes_symbols_and_cross_file_edges() {
     assert_eq!(storage.all_edges().unwrap().len(), 1);
 }
 
+/// P10.5: a real indexing pass tags its edges with real provenance, not
+/// just the pure resolver unit tests' in-memory `ProjectIndex` calls.
+#[test]
+fn full_reindex_tags_edges_with_extractor_and_resolution_kind() {
+    let fx = Fixture::new();
+    fx.write("a.rs", "pub fn helper() {}\n");
+    fx.write("b.rs", "fn caller() { helper(); }\n");
+    let files = fx.discovered_files(&["a.rs", "b.rs"]);
+    full_reindex(fx.root(), &fx.weave_dir, &fx.active_db, &files).unwrap();
+
+    let storage = fx.storage();
+    let edges = storage.all_edges().unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].extractor.as_deref(), Some("rust"));
+    assert_eq!(
+        edges[0].resolution_kind.as_deref(),
+        Some("UNIQUE_GLOBAL_EXACT")
+    );
+}
+
 #[test]
 fn bounded_parser_folds_files_in_order_across_parse_batches() {
     let fx = Fixture::new();
@@ -81,7 +101,7 @@ fn bounded_parser_folds_files_in_order_across_parse_batches() {
         .map(|i| fx.write(&format!("f{i:03}.rs"), &format!("fn f{i}() {{}}\n")))
         .collect();
     let mut folded = Vec::new();
-    parse_files_bounded(fx.root(), &files, |rel, _parsed| {
+    parse_files_bounded(fx.root(), &files, PARSE_CHUNK, 4, |rel, _parsed| {
         folded.push(rel.to_string());
         Ok(())
     })
@@ -102,7 +122,7 @@ fn staged_write_rotation_checkpoints_and_keeps_the_next_transaction_open() {
         .insert_fresh_nodes(&[staged_node("a.rs", "a")])
         .unwrap();
     let mut pending_rows = STAGED_WRITE_ROWS - 1;
-    rotate_staged_write(&storage, &mut pending_rows, 1).unwrap();
+    rotate_staged_write(&storage, &mut pending_rows, 1, STAGED_WRITE_ROWS).unwrap();
     assert_eq!(pending_rows, 0);
 
     storage
@@ -111,6 +131,18 @@ fn staged_write_rotation_checkpoints_and_keeps_the_next_transaction_open() {
     storage.commit_bulk_write().unwrap();
     storage.checkpoint_wal().unwrap();
     assert_eq!(storage.all_nodes().unwrap().len(), 2);
+}
+
+/// P10.1: on this real host, `admission_budget()` must never *widen*
+/// today's constants — only an actually-detected, tight ceiling scales
+/// them down — and it must always admit real forward progress (a chunk
+/// and a worker count of at least one).
+#[test]
+fn admission_budget_never_exceeds_todays_static_defaults() {
+    let budget = admission_budget();
+    assert!(budget.parse_chunk >= 1 && budget.parse_chunk <= PARSE_CHUNK);
+    assert!(budget.staged_write_rows >= 1 && budget.staged_write_rows <= STAGED_WRITE_ROWS);
+    assert!(budget.worker_threads >= 1);
 }
 
 #[test]

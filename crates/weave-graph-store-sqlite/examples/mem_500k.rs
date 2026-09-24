@@ -81,6 +81,8 @@ fn main() {
                 target_id: pair[1],
                 kind: "CALLS_EXACT".into(),
                 weight: 1.0,
+                extractor: None,
+                resolution_kind: None,
             })
             .collect::<Vec<_>>();
         storage.begin_bulk_write().expect("begin edge batch");

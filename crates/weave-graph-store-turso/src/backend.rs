@@ -76,6 +76,8 @@ fn row_to_node(row: &libsql::Row) -> libsql::Result<Node> {
     })
 }
 
+const EDGE_COLUMNS: &str = "id, source_id, target_id, kind, weight, extractor, resolution_kind";
+
 fn row_to_edge(row: &libsql::Row) -> libsql::Result<Edge> {
     Ok(Edge {
         id: row.get::<i64>(0)? as EdgeId,
@@ -83,6 +85,8 @@ fn row_to_edge(row: &libsql::Row) -> libsql::Result<Edge> {
         target_id: row.get::<i64>(2)? as NodeId,
         kind: row.get(3)?,
         weight: row.get(4)?,
+        extractor: row.get(5)?,
+        resolution_kind: row.get(6)?,
     })
 }
 
@@ -148,7 +152,7 @@ impl Storage for TursoStorage {
             let mut rows = self
                 .conn
                 .query(
-                    "SELECT id, source_id, target_id, kind, weight FROM edges WHERE source_id = ?1",
+                    &format!("SELECT {EDGE_COLUMNS} FROM edges WHERE source_id = ?1"),
                     libsql::params![node_id],
                 )
                 .await?;
@@ -165,7 +169,7 @@ impl Storage for TursoStorage {
             let mut rows = self
                 .conn
                 .query(
-                    "SELECT id, source_id, target_id, kind, weight FROM edges WHERE target_id = ?1",
+                    &format!("SELECT {EDGE_COLUMNS} FROM edges WHERE target_id = ?1"),
                     libsql::params![node_id],
                 )
                 .await?;
@@ -199,7 +203,7 @@ impl Storage for TursoStorage {
             let mut rows = self
                 .conn
                 .query(
-                    "SELECT id, source_id, target_id, kind, weight FROM edges ORDER BY source_id, target_id",
+                    &format!("SELECT {EDGE_COLUMNS} FROM edges ORDER BY source_id, target_id"),
                     (),
                 )
                 .await?;
@@ -232,7 +236,7 @@ impl Storage for TursoStorage {
             let mut rows = self
                 .conn
                 .query(
-                    "SELECT id, source_id, target_id, kind, weight FROM edges ORDER BY source_id, target_id",
+                    &format!("SELECT {EDGE_COLUMNS} FROM edges ORDER BY source_id, target_id"),
                     (),
                 )
                 .await?;
@@ -278,16 +282,20 @@ impl Storage for TursoStorage {
             let mut rows = self
                 .conn
                 .query(
-                    "INSERT INTO edges (source_id, target_id, kind, weight)
-                     VALUES (?1, ?2, ?3, ?4)
+                    "INSERT INTO edges (source_id, target_id, kind, weight, extractor, resolution_kind)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                      ON CONFLICT(source_id, target_id, kind) DO UPDATE SET
-                        weight = excluded.weight
+                        weight = excluded.weight,
+                        extractor = excluded.extractor,
+                        resolution_kind = excluded.resolution_kind
                      RETURNING id",
                     (
                         edge.source_id,
                         edge.target_id,
                         edge.kind.as_str(),
                         edge.weight,
+                        edge.extractor.as_deref(),
+                        edge.resolution_kind.as_deref(),
                     ),
                 )
                 .await?;

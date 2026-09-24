@@ -11,7 +11,7 @@
 use std::path::Path;
 
 use serde::Deserialize;
-use weave_graph_core::policy::{Boundary, BoundaryRule, Violation, lint};
+use weave_graph_core::policy::{Boundary, BoundaryRule, Violation, lint_scoped};
 use weave_graph_core::{Edge, Node};
 
 #[derive(Deserialize)]
@@ -30,12 +30,20 @@ struct RuleEntry {
 struct BoundaryYaml {
     from: String,
     to: String,
+    /// POL-04: roles exempt from this rule.
+    #[serde(default)]
+    allowed_roles: Vec<String>,
+    /// POL-04: reporting-only team attribution.
+    #[serde(default)]
+    owner_role: Option<String>,
 }
 
 fn to_boundary(b: &BoundaryYaml) -> Boundary {
     Boundary {
         from: b.from.clone(),
         to: b.to.clone(),
+        allowed_roles: b.allowed_roles.clone(),
+        owner_role: b.owner_role.clone(),
     }
 }
 
@@ -88,7 +96,13 @@ fn render(violations: &[Violation]) -> String {
     }
     let mut out = format!("✗ {} policy violation(s)\n", violations.len());
     for v in violations {
-        out.push_str(&format!("[{}] {} -> {}\n", v.kind, v.from, v.to));
+        match &v.owner_role {
+            Some(owner) => out.push_str(&format!(
+                "[{}] {} -> {} (owner: {owner})\n",
+                v.kind, v.from, v.to
+            )),
+            None => out.push_str(&format!("[{}] {} -> {}\n", v.kind, v.from, v.to)),
+        }
         for example in &v.examples {
             out.push_str(&format!("    {example}\n"));
         }
@@ -99,13 +113,16 @@ fn render(violations: &[Violation]) -> String {
 /// Loads `policy_path` and lints `nodes`/`edges` — the caller is
 /// responsible for any RBAC filtering (same one-guard rule
 /// `weave_graph_core::policy::lint`'s own doc comment states).
+/// `current_roles` is POL-04's exemption check (empty = no exemptions,
+/// same as before POL-04 existed).
 pub fn weave_policy_lint(
     policy_path: &Path,
     nodes: &[Node],
     edges: &[Edge],
+    current_roles: &[String],
 ) -> Result<String, String> {
     let rules = load_rules(policy_path)?;
-    let violations = lint(nodes, edges, &rules);
+    let violations = lint_scoped(nodes, edges, &rules, current_roles);
     Ok(render(&violations))
 }
 

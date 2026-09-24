@@ -21,6 +21,8 @@ fn edge(source_id: NodeId, target_id: NodeId, kind: &str) -> Edge {
         target_id,
         kind: kind.into(),
         weight: 1.0,
+        extractor: None,
+        resolution_kind: None,
     }
 }
 
@@ -640,6 +642,27 @@ fn upsert_and_purge_unresolved_refs_round_trip() {
     assert!(
         storage
             .get_files_with_unresolved_refs("r", "helper")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn get_unresolved_refs_for_path_returns_only_that_files_refs() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    storage
+        .upsert_unresolved_refs("r", "a.rs", &["helper".to_string(), "widget".to_string()])
+        .unwrap();
+    storage
+        .upsert_unresolved_refs("r", "b.rs", &["other".to_string()])
+        .unwrap();
+
+    let mut refs = storage.get_unresolved_refs_for_path("r", "a.rs").unwrap();
+    refs.sort();
+    assert_eq!(refs, vec!["helper".to_string(), "widget".to_string()]);
+    assert!(
+        storage
+            .get_unresolved_refs_for_path("r", "nonexistent.rs")
             .unwrap()
             .is_empty()
     );

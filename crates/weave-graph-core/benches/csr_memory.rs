@@ -55,6 +55,8 @@ impl ChainStorage {
                 target_id: i + 1,
                 kind: "CALLS_EXACT".into(),
                 weight: 1.0,
+                extractor: None,
+                resolution_kind: None,
             })
             .collect();
         Self { nodes, edges }

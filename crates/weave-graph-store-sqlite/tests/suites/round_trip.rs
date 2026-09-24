@@ -40,6 +40,8 @@ pub fn graph_survives_close_and_reopen(open: OpenFn) {
                 target_id: b,
                 kind: "CALLS_EXACT".into(),
                 weight: 1.0,
+                extractor: None,
+                resolution_kind: None,
             })
             .unwrap();
         (a, b, edge_id)

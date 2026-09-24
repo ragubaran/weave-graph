@@ -22,6 +22,8 @@ fn edge(src: u32, tgt: u32) -> Edge {
         target_id: tgt,
         kind: "CALLS_EXACT".into(),
         weight: 1.0,
+        extractor: None,
+        resolution_kind: None,
     }
 }
 
@@ -42,6 +44,7 @@ fn trace_calls_finds_outgoing_and_incoming() {
             symbol: "root",
             depth: 2,
             max_tokens: None,
+            precise_only: false,
         },
         None,
     );
@@ -52,6 +55,107 @@ fn trace_calls_finds_outgoing_and_incoming() {
     assert!(
         result.text.contains("caller"),
         "incoming must include caller"
+    );
+}
+
+/// P10.5: a heuristically-resolved incoming caller is marked `[heuristic]`
+/// in `weave_trace_calls`'s own text — the one side of this tool with a
+/// real per-edge kind to classify (`outgoing_chain`/`weave_impact_radius`
+/// walk the CSR, which never carries edge kind, so they can't).
+#[test]
+fn a_heuristically_resolved_caller_is_marked_in_the_incoming_chain() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let exact_caller = storage.upsert_node(&node("exactCaller")).unwrap();
+    let heuristic_caller = storage.upsert_node(&node("heuristicCaller")).unwrap();
+    let root = storage.upsert_node(&node("root")).unwrap();
+    storage.upsert_edge(&edge(exact_caller, root)).unwrap();
+    storage
+        .upsert_edge(&Edge {
+            kind: "CALLS_DYNAMIC".into(),
+            resolution_kind: Some(weave_graph_core::AMBIGUOUS_HEURISTIC.to_string()),
+            ..edge(heuristic_caller, root)
+        })
+        .unwrap();
+
+    let csr = CsrGraph::load(&storage).unwrap();
+    let result = weave_trace_calls(
+        &storage,
+        &csr,
+        TraceCallsArgs {
+            symbol: "root",
+            depth: 1,
+            max_tokens: None,
+            precise_only: false,
+        },
+        None,
+    );
+    assert!(
+        result
+            .text
+            .contains("heuristicCaller (heuristicCaller.rs:1) [heuristic]"),
+        "{}",
+        result.text
+    );
+    assert!(
+        result.text.contains("exactCaller (exactCaller.rs:1)\n")
+            || result.text.contains("exactCaller (exactCaller.rs:1)"),
+        "{}",
+        result.text
+    );
+    assert!(
+        !result
+            .text
+            .lines()
+            .any(|l| l.contains("exactCaller") && l.contains("[heuristic]")),
+        "the exact caller must not be marked heuristic: {}",
+        result.text
+    );
+}
+
+#[test]
+fn precise_only_drops_the_heuristic_caller_but_keeps_traversal_past_it() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    let exact_caller = storage.upsert_node(&node("exactCaller")).unwrap();
+    let heuristic_caller = storage.upsert_node(&node("heuristicCaller")).unwrap();
+    let root = storage.upsert_node(&node("root")).unwrap();
+    let grandparent = storage.upsert_node(&node("grandparent")).unwrap();
+    storage.upsert_edge(&edge(exact_caller, root)).unwrap();
+    storage
+        .upsert_edge(&Edge {
+            kind: "CALLS_DYNAMIC".into(),
+            resolution_kind: Some(weave_graph_core::AMBIGUOUS_HEURISTIC.to_string()),
+            ..edge(heuristic_caller, root)
+        })
+        .unwrap();
+    // The heuristic caller's own caller — must still surface even though
+    // the heuristic caller itself is dropped from display (filtering
+    // narrows what's *shown*, never what's *traversed*).
+    storage
+        .upsert_edge(&edge(grandparent, heuristic_caller))
+        .unwrap();
+
+    let csr = CsrGraph::load(&storage).unwrap();
+    let result = weave_trace_calls(
+        &storage,
+        &csr,
+        TraceCallsArgs {
+            symbol: "root",
+            depth: 2,
+            max_tokens: None,
+            precise_only: true,
+        },
+        None,
+    );
+    assert!(result.text.contains("exactCaller ("), "{}", result.text);
+    assert!(
+        !result.text.contains("heuristicCaller ("),
+        "{}",
+        result.text
+    );
+    assert!(
+        result.text.contains("grandparent ("),
+        "traversal must continue through a filtered-out node: {}",
+        result.text
     );
 }
 
@@ -66,6 +170,7 @@ fn unknown_symbol_returns_not_found_message() {
             symbol: "ghost",
             depth: 3,
             max_tokens: None,
+            precise_only: false,
         },
         None,
     );
@@ -88,6 +193,7 @@ fn trace_calls_terminates_on_cycle() {
             symbol: "a",
             depth: 10,
             max_tokens: None,
+            precise_only: false,
         },
         None,
     );
@@ -132,6 +238,8 @@ fn small_max_tokens_truncates_chains_with_explicit_counts() {
                 target_id: leaf,
                 kind: "CALLS_EXACT".into(),
                 weight: 1.0,
+                extractor: None,
+                resolution_kind: None,
             })
             .unwrap();
     }
@@ -144,6 +252,7 @@ fn small_max_tokens_truncates_chains_with_explicit_counts() {
             symbol: "root",
             depth: 1,
             max_tokens: Some(20),
+            precise_only: false,
         },
         None,
     );
@@ -171,6 +280,7 @@ fn small_max_tokens_truncates_chains_with_explicit_counts() {
             symbol: "root",
             depth: 1,
             max_tokens: None,
+            precise_only: false,
         },
         None,
     );

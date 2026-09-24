@@ -15,6 +15,8 @@
 #[cfg(feature = "hub-canvas")]
 pub mod canvas;
 pub mod client;
+#[cfg(feature = "hub-policy-lint")]
+pub mod policy_lint;
 #[cfg(feature = "hub-provenance")]
 pub mod provenance;
 pub mod registry;

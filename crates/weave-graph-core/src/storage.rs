@@ -127,6 +127,18 @@ pub trait Storage {
         Ok(Vec::new())
     }
 
+    /// Returns the unresolved short names referenced from one file — the
+    /// inverse of [`Storage::get_files_with_unresolved_refs`], and the
+    /// primitive `weave verify`'s phantom-symbol check reads per file.
+    fn get_unresolved_refs_for_path(
+        &self,
+        repo_id: &str,
+        path: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        let _ = (repo_id, path);
+        Ok(Vec::new())
+    }
+
     /// Persist one pinned note; returns its id. Writes through
     /// `&self` — both backends' connections allow SQL writes on a shared
     /// reference, and the MCP pin tool only holds `&dyn Storage`.
@@ -186,6 +198,18 @@ pub trait Storage {
         ))
     }
 
+    /// Every matching node for an FTS query, in deterministic
+    /// `(path, line_start)` order — no ranking, no `LIMIT` — the
+    /// exhaustive counterpart to `search_symbols`'s top-N BM25 ranking
+    /// (`weave_find_all`, P10.4). Defaulted to "unsupported" for the same
+    /// reason as `search_symbols`; only `weave-graph-store-sqlite`
+    /// (feature `fts`) overrides this.
+    fn find_all_symbols(&self, _pattern: &str) -> Result<Vec<Node>, StorageError> {
+        Err(StorageError::Backend(
+            "this storage backend does not support exhaustive symbol search".to_string(),
+        ))
+    }
+
     /// Three-stage ANN + rescore semantic search (`weave search
     /// --semantic`). `visible`, when given, must be applied to reranked
     /// candidates *before* the `limit` cap (Core Invariant 7, SEC-01) —
@@ -203,6 +227,26 @@ pub trait Storage {
     ) -> Result<Vec<NodeId>, StorageError> {
         Err(StorageError::Backend(
             "this storage backend does not support vector search".to_string(),
+        ))
+    }
+
+    /// POL-02: self-KNN over every already-embedded chunk in `scope_ids`
+    /// — no fresh text query, unlike [`Storage::search_vector`]. Finds
+    /// `(node_a, node_b, approximate_cosine_similarity)` pairs already
+    /// close in the existing vector index, deduped so `(a, b)`/`(b, a)`
+    /// collapse to one entry. Advisory-only input for `weave policy
+    /// drift`'s `semantic_coupling` rule — never `weave policy lint`'s
+    /// hard-fail path. Defaulted to "unsupported"; only
+    /// `weave-graph-store-sqlite` (feature `vector`) overrides this.
+    #[cfg(feature = "vector")]
+    fn find_similar_node_pairs(
+        &self,
+        _scope_ids: &[NodeId],
+        _threshold: f32,
+        _oversample: usize,
+    ) -> Result<Vec<(NodeId, NodeId, f32)>, StorageError> {
+        Err(StorageError::Backend(
+            "this storage backend does not support semantic-coupling search".to_string(),
         ))
     }
 }

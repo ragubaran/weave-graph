@@ -497,6 +497,8 @@ fn canvas_endpoint_is_404_before_any_push_and_200_after_commit() {
                 target_id: 2,
                 kind: "CALLS_EXACT".into(),
                 weight: 1.0,
+                extractor: None,
+                resolution_kind: None,
             })
             .unwrap();
     }
@@ -721,6 +723,127 @@ fn mesh_canvas_endpoint_applies_repository_and_module_authorization() {
             assert!(!text.contains("# repo-b"), "{text}");
             assert!(text.contains("# visible"), "{text}");
             assert!(!text.contains("# secret"), "{text}");
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker never committed"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// HUB-03, end to end: `/mesh/policy-lint` lints each authorized repo's
+/// latest snapshot against the registry's own `<store>/policy.yaml`,
+/// reusing `CanvasAuthorizer::can_view_repo` (HUB-01's injection point)
+/// exactly as `/mesh/canvas` already does.
+#[cfg(feature = "hub-policy-lint")]
+#[test]
+fn mesh_policy_lint_endpoint_applies_repository_authorization_and_flags_a_violation() {
+    use std::sync::Arc;
+    use weave_graph_core::{Edge, Node, Storage};
+    use weave_graph_store_sqlite::SqliteStorage;
+
+    struct AllowRepoAOnly;
+    impl CanvasAuthorizer for AllowRepoAOnly {
+        fn can_view(&self, _credential: Option<&str>, _module_label: &str) -> bool {
+            true
+        }
+
+        fn can_view_repo(&self, credential: Option<&str>, repo_id: &str) -> bool {
+            credential == Some("Bearer good") && repo_id == "repo-a"
+        }
+    }
+
+    let snapshot_bytes = || -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("graph.db");
+        {
+            let mut storage = SqliteStorage::open(&db_path).unwrap();
+            storage
+                .upsert_node(&Node {
+                    id: 1,
+                    repo_id: "r".into(),
+                    path: "src/ui/view.rs".into(),
+                    symbol: "render".into(),
+                    kind: "function".into(),
+                    line_start: 1,
+                    line_end: 2,
+                    signature: String::new(),
+                })
+                .unwrap();
+            storage
+                .upsert_node(&Node {
+                    id: 2,
+                    repo_id: "r".into(),
+                    path: "src/db/store.rs".into(),
+                    symbol: "save".into(),
+                    kind: "function".into(),
+                    line_start: 1,
+                    line_end: 2,
+                    signature: String::new(),
+                })
+                .unwrap();
+            storage
+                .upsert_edge(&Edge {
+                    id: 0,
+                    source_id: 1,
+                    target_id: 2,
+                    kind: "CALLS_EXACT".into(),
+                    weight: 1.0,
+                    extractor: None,
+                    resolution_kind: None,
+                })
+                .unwrap();
+        }
+        std::fs::read(&db_path).unwrap()
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let registry = Registry::open(dir.path(), generous_config()).unwrap();
+    std::fs::write(
+        dir.path().join("store").join("policy.yaml"),
+        "rules:\n  - disallow:\n      from: src/ui\n      to: src/db\n",
+    )
+    .unwrap();
+    let server = RegistryServer::bind("127.0.0.1:0", registry)
+        .unwrap()
+        .with_canvas_authorizer(Arc::new(AllowRepoAOnly));
+    let addr = server.local_addr().unwrap();
+    thread::spawn(move || {
+        let _ = server.run(None);
+    });
+    let base = format!("http://{addr}");
+
+    raw_request(
+        &base,
+        "PUT",
+        "/snapshots/repo-a/sha1.tar.zst",
+        &[],
+        &snapshot_bytes(),
+    );
+    raw_request(
+        &base,
+        "PUT",
+        "/snapshots/repo-b/sha1.tar.zst",
+        &[],
+        &snapshot_bytes(),
+    );
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let (status, _headers, body) = raw_request(
+            &base,
+            "GET",
+            "/mesh/policy-lint/repo-a,repo-b",
+            &[("Authorization", "Bearer good".into())],
+            b"",
+        );
+        if status == 200 {
+            let text = String::from_utf8(body).unwrap();
+            assert!(text.contains("repo-a"), "{text}");
+            assert!(!text.contains("repo-b"), "{text}");
+            assert!(text.contains("\"kind\":\"disallow\""), "{text}");
             break;
         }
         assert!(

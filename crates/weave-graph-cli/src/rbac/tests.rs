@@ -54,6 +54,34 @@ fn guard_for_configured_internal_subject_sees_everything() {
     assert!(guard.visible(&private));
 }
 
+/// RBAC-01, end to end through `guard_for`: a `[rbac.users.<subject>]`
+/// table entry's `path_scope` narrows the `internal` bypass to that
+/// prefix, reading from `.weave/config.toml` the same way `roles` already does.
+#[test]
+fn guard_for_configured_path_scope_narrows_the_internal_bypass() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join(".weave")).unwrap();
+    fs::write(
+        dir.path().join(".weave/config.toml"),
+        "[rbac.users.hub_oncall]\nroles = [\"internal\"]\npath_scope = [\"crates/weave-graph-hub\"]\n",
+    )
+    .unwrap();
+    let guard = guard_for(dir.path(), Some("hub_oncall"));
+
+    let in_scope = node(
+        "crates/weave-graph-hub/src/server.rs",
+        "helper",
+        "fn helper()",
+    );
+    let out_of_scope = node(
+        "crates/weave-graph-cli/src/main.rs",
+        "helper",
+        "fn helper()",
+    );
+    assert!(guard.visible(&in_scope));
+    assert!(!guard.visible(&out_of_scope));
+}
+
 use crate::rbac::{ScimDirectory, ScimServer};
 
 fn provisioned_root() -> (tempfile::TempDir, ScimDirectory) {

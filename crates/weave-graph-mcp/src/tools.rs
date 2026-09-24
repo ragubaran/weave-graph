@@ -45,6 +45,11 @@ pub struct TraceCallsArgs<'a> {
     /// Token-estimate ceiling: truncates the chains with explicit
     /// "... and N more" markers when the full trace would exceed it.
     pub max_tokens: Option<usize>,
+    /// P10.5: drops heuristically-resolved callers from the *incoming*
+    /// chain (`weave_graph_core::edge_confidence`) — the outgoing chain
+    /// walks the CSR, which carries no per-edge kind, so this can't
+    /// apply there; `false` is byte-identical to today's behavior.
+    pub precise_only: bool,
 }
 
 /// Arguments for `weave_impact_radius`.
@@ -60,6 +65,55 @@ pub struct ImpactRadiusArgs<'a> {
 pub struct SemanticSearchArgs<'a> {
     pub query: &'a str,
     pub limit: usize,
+}
+
+/// Arguments for `weave_explore` (P10.2): composes repo map, file API,
+/// call trace, impact radius, and an exact source excerpt behind one
+/// budget, as one additional tool alongside — not replacing — the four
+/// narrow pull-style ones.
+pub struct ExploreArgs<'a> {
+    /// `Some` orients around one symbol (file API + call trace + impact
+    /// radius + source excerpt); `None` falls back to a module-level
+    /// repo map orientation.
+    pub symbol: Option<&'a str>,
+    /// Token-estimate ceiling: sheds the source excerpt, then the call
+    /// trace, then the impact radius (in that order) before giving up
+    /// and reporting the actual resident size over budget.
+    pub max_tokens: Option<usize>,
+}
+
+/// Output of `weave_explore`.
+pub struct ExploreResult {
+    pub text: String,
+}
+
+/// Arguments for `weave_find_all` (P10.4, feature `fts`): exhaustive,
+/// deterministic symbol-body text search, grouped by enclosing indexed
+/// symbol since each indexed FTS row already *is* one symbol's own body
+/// span — never a ranked top-N (`weave_search_semantic`'s own job).
+#[cfg(feature = "fts")]
+pub struct FindAllArgs<'a> {
+    pub pattern: &'a str,
+    /// Only symbols whose path starts with this prefix.
+    pub path: Option<&'a str>,
+    /// Only symbols in a file of this language (e.g. `"rust"`), matched
+    /// case-insensitively against a small extension map local to this
+    /// crate (never `weave-graph-parse`'s own `Language` enum — the
+    /// wrong dependency direction).
+    pub language: Option<&'a str>,
+    /// Only symbols whose `kind` equals this exactly (e.g. `"function"`).
+    pub kind: Option<&'a str>,
+    /// Hard cap on displayed hits — `total_matches` still reports the
+    /// full exhaustive count even when the rendered list is shorter.
+    pub limit: usize,
+    pub max_tokens: Option<usize>,
+}
+
+/// Output of `weave_find_all`.
+#[cfg(feature = "fts")]
+pub struct FindAllResult {
+    pub text: String,
+    pub total_matches: usize,
 }
 
 /// Word-count token estimate: a whitespace-split count — the same

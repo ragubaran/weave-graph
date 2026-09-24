@@ -15,7 +15,11 @@ type TokenAuthProvider = std::rc::Rc<dyn Fn(&str) -> Option<RbacGuard>>;
 #[cfg(not(feature = "rbac"))]
 type GuardRef<'a> = Option<&'a ()>;
 
+use crate::explore::weave_explore;
 use crate::file_api::weave_file_api;
+#[cfg(feature = "fts")]
+use crate::find_all::weave_find_all;
+use crate::freshness::{Freshness, check_freshness};
 use crate::impact_radius::weave_impact_radius;
 #[cfg(feature = "notes")]
 use crate::notes::{PinNoteArgs, weave_pin_note, weave_recall_notes};
@@ -23,8 +27,11 @@ use crate::protocol::{
     CallToolResult, JsonRpcRequest, JsonRpcResponse, TextContent, ToolDefinition,
 };
 use crate::repo_map::weave_repo_map;
-use crate::tools::{FileApiArgs, ImpactRadiusArgs, RepoMapArgs, TraceCallsArgs};
+#[cfg(feature = "fts")]
+use crate::tools::FindAllArgs;
+use crate::tools::{ExploreArgs, FileApiArgs, ImpactRadiusArgs, RepoMapArgs, TraceCallsArgs};
 use crate::trace_calls::weave_trace_calls;
+use crate::verify::{VerifyArgs, weave_verify};
 
 /// Mirrors `weave-graph-cli::watch::PendingMarker`'s JSON shape without
 /// depending on that crate (wrong dependency direction) — `(blast_radius,
@@ -381,7 +388,8 @@ impl McpHandler {
                     "properties": {
                         "symbol": { "type": "string", "description": "Symbol name to trace" },
                         "depth": { "type": "integer", "description": "Traversal depth in hops" },
-                        "max_tokens": { "type": "integer", "description": "Token-estimate ceiling: truncates chains with explicit 'and N more' markers" }
+                        "max_tokens": { "type": "integer", "description": "Token-estimate ceiling: truncates chains with explicit 'and N more' markers" },
+                        "precise_only": { "type": "boolean", "description": "Drop heuristically-resolved callers from the incoming chain (P10.5); the outgoing chain has no per-edge confidence to filter on" }
                     },
                     "required": ["symbol"]
                 }),
@@ -442,6 +450,54 @@ impl McpHandler {
                 input_schema: json!({
                     "type": "object",
                     "properties": {}
+                }),
+            },
+            ToolDefinition {
+                name: "weave_check_freshness".to_string(),
+                description: "Reconciles the indexed graph against the live working tree (behind HEAD, uncommitted edits, or fresh) before you trust other tools' answers.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+            ToolDefinition {
+                name: "weave_explore".to_string(),
+                description: "Composes the repo map, file API, call trace, impact radius, and an exact source excerpt behind one token budget (P10.2) — one additional orientation tool, not a replacement for the four narrow ones.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "symbol": { "type": "string", "description": "Symbol to orient around; omit for a module-level repo overview" },
+                        "max_tokens": { "type": "integer", "description": "Token-estimate ceiling: sheds the source excerpt, then the call trace, then the impact radius before reporting the actual resident size" }
+                    }
+                }),
+            },
+            #[cfg(feature = "fts")]
+            ToolDefinition {
+                name: "weave_find_all".to_string(),
+                description: "Exhaustive, deterministic text search over every indexed symbol's body/doc comment, grouped by enclosing symbol (feature: fts) — never a ranked top-N.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Text to search for" },
+                        "path": { "type": "string", "description": "Only symbols whose path starts with this prefix" },
+                        "language": { "type": "string", "description": "Only symbols in a file of this language, e.g. \"rust\"" },
+                        "kind": { "type": "string", "description": "Only symbols of this exact kind, e.g. \"function\"" },
+                        "limit": { "type": "integer", "description": "Max hits to render (default: 50); the full exhaustive count is always reported" },
+                        "max_tokens": { "type": "integer", "description": "Token-estimate ceiling on the rendered list" }
+                    },
+                    "required": ["pattern"]
+                }),
+            },
+            ToolDefinition {
+                name: "weave_verify".to_string(),
+                description: "Checks one file for phantom symbols (calls/references with no matching indexed symbol) before you present an edit — the fast, storage-only slice of `weave verify`.".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "file": { "type": "string", "description": "Indexed file path to verify" },
+                        "range": { "type": "array", "items": { "type": "integer" }, "description": "Optional [start, end] line range, display-only" }
+                    },
+                    "required": ["file"]
                 }),
             },
         ];
@@ -505,6 +561,9 @@ impl McpHandler {
             "weave_file_api" => self.call_file_api(&args, guard_ref),
             "weave_trace_calls" => self.call_trace_calls(&args, guard_ref),
             "weave_impact_radius" => self.call_impact_radius(&args, guard_ref),
+            "weave_explore" => self.call_explore(&args, guard_ref),
+            #[cfg(feature = "fts")]
+            "weave_find_all" => self.call_find_all(&args, guard_ref),
             #[cfg(feature = "notes")]
             "weave_pin_note" => self.call_pin_note(&args),
             #[cfg(feature = "notes")]
@@ -513,6 +572,8 @@ impl McpHandler {
             "weave_search_semantic" => self.call_search_semantic(&args, guard_ref),
             #[cfg(feature = "policy-lint")]
             "weave_policy_lint" => self.call_policy_lint(guard_ref),
+            "weave_check_freshness" => self.call_check_freshness(),
+            "weave_verify" => self.call_verify(&args),
             _ => CallToolResult::err(format!("Unknown tool: {name}")),
         };
         self.append_watch_staleness(&mut tool_result);
@@ -552,6 +613,62 @@ impl McpHandler {
         }
     }
 
+    /// `weave_check_freshness` (`docs/sum_feat.md` P10.3): a dedicated,
+    /// explicit freshness check, distinct from `append_watch_staleness`'s
+    /// passive marker-file read on every call — this one actively
+    /// reconciles the indexed commit against the working tree via `git`,
+    /// so it still reports something meaningful when `watch` mode never
+    /// ran. Never silently claims fresh when it can't tell (`Unknown`).
+    fn call_check_freshness(&self) -> CallToolResult {
+        let Some(weave_dir) = &self.weave_dir else {
+            return CallToolResult::ok(
+                "Freshness unknown: no `.weave` directory configured for this session.".to_string(),
+            );
+        };
+        let text = match check_freshness(weave_dir) {
+            Freshness::Fresh => {
+                "✅ Fresh: indexed commit matches HEAD, working tree clean.".to_string()
+            }
+            Freshness::Dirty => "⚠️ Dirty: indexed commit matches HEAD, but the working tree has \
+                 uncommitted changes not reflected in the graph — run `weave index`."
+                .to_string(),
+            Freshness::Behind {
+                indexed_sha,
+                head_sha,
+            } => format!(
+                "⚠️ Behind: indexed {} but HEAD is {head_sha} — run `weave index`.",
+                indexed_sha.as_deref().unwrap_or("nothing yet")
+            ),
+            Freshness::Unknown => {
+                "ℹ️ Freshness unknown: this directory isn't a Git repository (or `git` \
+                 isn't on PATH)."
+                    .to_string()
+            }
+        };
+        CallToolResult::ok(text)
+    }
+
+    /// `weave_verify`: phantom-symbol check for one file
+    /// (`docs/proposal-skylos.md` §3.5). `isError: true` reflects a
+    /// lookup failure (no storage, bad args), not a `fail` verdict —
+    /// `fail`/`pass` are both `isError: false` results the agent reads
+    /// from the leading `✅`/`❌` in the text, the same convention
+    /// `weave_policy_lint` already uses for its own lint verdict.
+    fn call_verify(&self, args: &Value) -> CallToolResult {
+        let Some(file) = args.get("file").and_then(|v| v.as_str()) else {
+            return CallToolResult::err("Missing 'file' parameter");
+        };
+        let range = args.get("range").and_then(|v| v.as_array()).and_then(|a| {
+            let start = a.first()?.as_u64()? as u32;
+            let end = a.get(1)?.as_u64()? as u32;
+            Some((start, end))
+        });
+        match weave_verify(&*self.storage.borrow(), VerifyArgs { file, range }) {
+            Ok(result) => CallToolResult::ok(result.text),
+            Err(e) => CallToolResult::err(format!("error: {e}")),
+        }
+    }
+
     fn call_repo_map(
         &self,
         args: &Value,
@@ -585,6 +702,85 @@ impl McpHandler {
             mask,
         );
         as_tool_result(res.text)
+    }
+
+    /// `weave_explore` (P10.2): one budgeted tool composing the four
+    /// narrow pull-style ones plus an exact source excerpt. `repo_root`
+    /// (for the excerpt) is `weave_dir`'s parent — the same directory
+    /// `weave_dir` is a subdirectory of — `None` for an in-memory backend
+    /// with no `weave_dir` set at all.
+    fn call_explore(
+        &self,
+        args: &Value,
+        #[allow(unused_variables)] guard: GuardRef,
+    ) -> CallToolResult {
+        let symbol = args.get("symbol").and_then(|v| v.as_str());
+        let max_tokens = args
+            .get("max_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|d| d as usize);
+        let repo_root = self.weave_dir.as_deref().and_then(|d| d.parent());
+        #[cfg(feature = "rbac")]
+        let masker = guard.map(|g| move |n: &Node| g.mask_node(n));
+        #[cfg(feature = "rbac")]
+        let mask: Option<&dyn Fn(&Node) -> Node> =
+            masker.as_ref().map(|c| c as &dyn Fn(&Node) -> Node);
+        #[cfg(not(feature = "rbac"))]
+        let mask: Option<&dyn Fn(&Node) -> Node> = None;
+        let res = weave_explore(
+            &*self.storage.borrow(),
+            &self.csr.borrow(),
+            repo_root,
+            ExploreArgs { symbol, max_tokens },
+            mask,
+        );
+        as_tool_result(res.text)
+    }
+
+    /// `weave_find_all` (P10.4, feature `fts`): exhaustive symbol-body
+    /// text search — see `find_all.rs`'s own doc comment for why this
+    /// rides the existing FTS5 substrate instead of a new regex crate.
+    #[cfg(feature = "fts")]
+    fn call_find_all(
+        &self,
+        args: &Value,
+        #[allow(unused_variables)] guard: GuardRef,
+    ) -> CallToolResult {
+        let Some(pattern) = args.get("pattern").and_then(|v| v.as_str()) else {
+            return CallToolResult::err("Missing 'pattern' parameter");
+        };
+        let path = args.get("path").and_then(|v| v.as_str());
+        let language = args.get("language").and_then(|v| v.as_str());
+        let kind = args.get("kind").and_then(|v| v.as_str());
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .map(|d| d as usize)
+            .unwrap_or(50);
+        let max_tokens = args
+            .get("max_tokens")
+            .and_then(|v| v.as_u64())
+            .map(|d| d as usize);
+        #[cfg(feature = "rbac")]
+        let masker = guard.map(|g| move |n: &Node| g.mask_node(n));
+        #[cfg(feature = "rbac")]
+        let mask: Option<&dyn Fn(&Node) -> Node> =
+            masker.as_ref().map(|c| c as &dyn Fn(&Node) -> Node);
+        #[cfg(not(feature = "rbac"))]
+        let mask: Option<&dyn Fn(&Node) -> Node> = None;
+        let res = weave_find_all(
+            &*self.storage.borrow(),
+            FindAllArgs {
+                pattern,
+                path,
+                language,
+                kind,
+                limit,
+                max_tokens,
+            },
+            mask,
+        );
+        CallToolResult::ok(res.text)
     }
 
     fn call_file_api(
@@ -636,6 +832,10 @@ impl McpHandler {
             .get("max_tokens")
             .and_then(|v| v.as_u64())
             .map(|d| d as usize);
+        let precise_only = args
+            .get("precise_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         #[cfg(feature = "rbac")]
         let masker = guard.map(|g| move |n: &Node| g.mask_node(n));
         #[cfg(feature = "rbac")]
@@ -650,6 +850,7 @@ impl McpHandler {
                 symbol,
                 depth,
                 max_tokens,
+                precise_only,
             },
             mask,
         );
@@ -789,7 +990,11 @@ impl McpHandler {
             .clone()
             .unwrap_or_else(|| std::path::PathBuf::from(".weave"));
         let policy_path = weave_dir.join("policy.yaml");
-        match crate::policy_lint::weave_policy_lint(&policy_path, &nodes, &edges) {
+        #[cfg(feature = "rbac")]
+        let current_roles: Vec<String> = guard.map(|g| g.roles().to_vec()).unwrap_or_default();
+        #[cfg(not(feature = "rbac"))]
+        let current_roles: Vec<String> = Vec::new();
+        match crate::policy_lint::weave_policy_lint(&policy_path, &nodes, &edges, &current_roles) {
             Ok(text) => CallToolResult::ok(text),
             Err(e) => CallToolResult::err(format!("error: {e}")),
         }

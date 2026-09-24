@@ -249,6 +249,8 @@ pub(crate) fn upsert_doc_edges(
                     target_id: topic_id,
                     kind: TAGGED.to_string(),
                     weight: 1.0,
+                    extractor: None,
+                    resolution_kind: None,
                 })?;
                 total += 1;
             }
@@ -281,6 +283,8 @@ pub(crate) fn upsert_doc_edges(
                     target_id: target,
                     kind: LINKS_TO.to_string(),
                     weight: 1.0,
+                    extractor: None,
+                    resolution_kind: None,
                 })?;
                 total += 1;
             }
@@ -300,6 +304,8 @@ pub(crate) fn upsert_doc_edges(
                     target_id,
                     kind: EXPLAINS_RATIONALE.to_string(),
                     weight: 1.0,
+                    extractor: None,
+                    resolution_kind: None,
                 })?;
                 total += 1;
             }

@@ -111,6 +111,10 @@ pub(crate) fn add_linked_repo(
 pub(crate) struct UserConfig {
     pub roles: Vec<String>,
     pub token: Option<String>,
+    /// RBAC-01: path prefixes this user's `internal` bypass is scoped to.
+    /// Empty/absent = unscoped, today's behavior — only parseable from
+    /// the table form (`[rbac.users.alice]`), not the bare-array shorthand.
+    pub path_scope: Vec<String>,
 }
 
 /// `[rbac.users]`: a static subject -> roles map, e.g.
@@ -137,13 +141,14 @@ pub(crate) fn read_rbac_users(config_path: &Path) -> std::collections::HashMap<S
     users
         .iter()
         .filter_map(|(subject, value)| {
-            let (roles_val, token_val) = match value {
-                toml::Value::Array(arr) => (Some(arr), None),
+            let (roles_val, token_val, path_scope_val) = match value {
+                toml::Value::Array(arr) => (Some(arr), None, None),
                 toml::Value::Table(tbl) => (
                     tbl.get("roles").and_then(|v| v.as_array()),
                     tbl.get("token").and_then(|v| v.as_str()),
+                    tbl.get("path_scope").and_then(|v| v.as_array()),
                 ),
-                _ => (None, None),
+                _ => (None, None, None),
             };
 
             let roles: Vec<String> = roles_val?
@@ -152,8 +157,20 @@ pub(crate) fn read_rbac_users(config_path: &Path) -> std::collections::HashMap<S
                 .collect();
 
             let token = token_val.map(String::from);
+            let path_scope: Vec<String> = path_scope_val
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p.as_str().map(String::from))
+                .collect();
 
-            Some((subject.clone(), UserConfig { roles, token }))
+            Some((
+                subject.clone(),
+                UserConfig {
+                    roles,
+                    token,
+                    path_scope,
+                },
+            ))
         })
         .collect()
 }

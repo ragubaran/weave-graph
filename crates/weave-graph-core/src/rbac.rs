@@ -28,6 +28,15 @@ use crate::model::NodeId;
 pub struct Identity {
     pub subject: String,
     pub roles: Vec<String>,
+    /// RBAC-01: path prefixes this identity's `internal` bypass is scoped
+    /// to, e.g. `["crates/weave-graph-hub/**"]`. Empty means unscoped —
+    /// today's behavior, an `internal` identity sees everything
+    /// `is_public` doesn't already allow. Matched by
+    /// [`RbacGuard::visible`] via the same boundary-safe prefix rule
+    /// `weave_graph_core::policy::in_module` uses (duplicated here, not
+    /// imported: that module is gated behind the separate `policy-lint`
+    /// feature, and `rbac` must not pull it in just for one helper).
+    pub path_scope: Vec<String>,
 }
 
 impl Identity {
@@ -37,6 +46,7 @@ impl Identity {
         Self {
             subject: "anonymous".to_string(),
             roles: Vec::new(),
+            path_scope: Vec::new(),
         }
     }
 
@@ -72,25 +82,51 @@ pub trait AuthProvider {
 /// `AuthProvider` implementation this crate deliberately doesn't own.
 #[derive(Debug, Default, Clone)]
 pub struct StaticAuthProvider {
-    users: HashMap<String, Vec<String>>,
+    /// `(roles, path_scope)` per subject — `path_scope` empty unless
+    /// [`StaticAuthProvider::with_path_scopes`] set it (RBAC-01).
+    users: HashMap<String, (Vec<String>, Vec<String>)>,
 }
 
 impl StaticAuthProvider {
     pub fn new(users: HashMap<String, Vec<String>>) -> Self {
+        Self {
+            users: users
+                .into_iter()
+                .map(|(subject, roles)| (subject, (roles, Vec::new())))
+                .collect(),
+        }
+    }
+
+    /// RBAC-01: same shape as [`StaticAuthProvider::new`], plus each
+    /// subject's `path_scope`. A separate constructor rather than
+    /// widening `new`'s own signature, so every existing caller (and
+    /// test) stays byte-for-byte unaffected.
+    pub fn with_path_scopes(users: HashMap<String, (Vec<String>, Vec<String>)>) -> Self {
         Self { users }
     }
 }
 
 impl AuthProvider for StaticAuthProvider {
     fn resolve(&self, credential: Option<&str>) -> Identity {
-        match credential.and_then(|subject| self.users.get(subject).map(|roles| (subject, roles))) {
-            Some((subject, roles)) => Identity {
+        match credential.and_then(|subject| self.users.get(subject).map(|entry| (subject, entry))) {
+            Some((subject, (roles, path_scope))) => Identity {
                 subject: subject.to_string(),
                 roles: roles.clone(),
+                path_scope: path_scope.clone(),
             },
             None => Identity::anonymous(),
         }
     }
+}
+
+/// Boundary-safe path-prefix match — `path` is `prefix` itself, or lives
+/// under `prefix/`, never a sibling whose name merely starts with it
+/// (`crates/weave-graph-hub` must not swallow `crates/weave-graph-hub2`).
+/// Byte-for-byte the same rule as `weave_graph_core::policy::in_module`;
+/// duplicated rather than imported (see [`Identity::path_scope`]'s own
+/// doc comment for why).
+fn in_module(path: &str, prefix: &str) -> bool {
+    path == prefix || prefix.is_empty() || path.starts_with(&format!("{prefix}/"))
 }
 
 /// Opaque contract-boundary stand-in: a hidden node's
@@ -124,10 +160,27 @@ impl RbacGuard {
         }
     }
 
-    /// Everyone with the `internal` role sees everything; everyone else
-    /// sees only what `is_public` allows.
+    /// Everyone with the `internal` role sees everything, unless
+    /// `path_scope` narrows that (RBAC-01): a scoped identity's bypass
+    /// only covers nodes under one of its listed prefixes, falling back
+    /// to `is_public` outside that scope exactly like a non-internal
+    /// identity would. An unscoped `internal` identity (`path_scope`
+    /// empty) is unaffected — today's unconditional bypass.
     pub fn visible(&self, node: &Node) -> bool {
-        self.identity.is_internal() || (self.is_public)(node)
+        if self.identity.is_internal() {
+            if self.identity.path_scope.is_empty() {
+                return true;
+            }
+            if self
+                .identity
+                .path_scope
+                .iter()
+                .any(|prefix| in_module(&node.path, prefix))
+            {
+                return true;
+            }
+        }
+        (self.is_public)(node)
     }
 
     /// Does this identity carry the `allow-drift` role
@@ -136,6 +189,13 @@ impl RbacGuard {
     /// `Identity` directly.
     pub fn can_waive(&self) -> bool {
         self.identity.can_waive()
+    }
+
+    /// This identity's raw role list — POL-04's exemption check
+    /// (`weave_graph_core::policy::lint_scoped`) reads it directly rather
+    /// than this crate re-deriving its own "does this role apply" logic.
+    pub fn roles(&self) -> &[String] {
+        &self.identity.roles
     }
 
     /// Masks a single node for output: unchanged if visible, an opaque

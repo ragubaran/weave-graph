@@ -75,6 +75,11 @@ lang-extended = [
     "dep:tree-sitter-yaml",
     "dep:tree-sitter-zig",
 ]
+# P10.8: typed `route -> handler` edges, pilot scoped to Flask-style
+# `@app.route()`/`@app.get()`/etc. decorators over the existing Python
+# extractor. No new dependency (reuses tree-sitter-python, already a
+# core-tier grammar) and no default-build cost — off unless requested.
+framework-routes = []
 
 [dev-dependencies]
 criterion = "0.8.2"

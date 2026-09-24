@@ -621,6 +621,34 @@ impl Registry {
         }
     }
 
+    /// N-repo mesh policy lint (feature `hub-policy-lint`, HUB-03): each
+    /// requested repo's latest snapshot, linted separately against
+    /// `<store_dir>/policy.yaml` — never merged into one shared node-id
+    /// space, the same reasoning `weave policy lint --federated`
+    /// documents for its own per-peer loop. A repo with no committed
+    /// snapshot is skipped, not failed, same "one bad repo must not blank
+    /// out the others" rule `mesh_canvas` already follows. The outer
+    /// `Err` is only a malformed `policy.yaml` — a config error, not a
+    /// per-repo one.
+    #[cfg(feature = "hub-policy-lint")]
+    pub fn mesh_policy_lint(
+        &self,
+        repo_ids: &[String],
+    ) -> Result<Vec<(String, Vec<weave_graph_core::policy::Violation>)>, String> {
+        let rules = crate::policy_lint::load_rules(&self.store_dir)?;
+        Ok(repo_ids
+            .iter()
+            .filter_map(|repo_id| match self.pull(repo_id, "latest") {
+                PullResult::Found(bytes, _signature) => {
+                    crate::policy_lint::lint_snapshot_bytes(&bytes, &rules)
+                        .ok()
+                        .map(|violations| (repo_id.clone(), violations))
+                }
+                PullResult::NotFound => None,
+            })
+            .collect())
+    }
+
     /// N-repo mesh view (feature `hub-canvas`): each requested repo's own
     /// module canvas, stitched into one document via
     /// [`crate::canvas::build_mesh_canvas`]. A repo with no committed

@@ -39,6 +39,8 @@ pub fn csr_query_path_matches_sql_query_path_on_the_same_graph(open: OpenFn) {
             target_id: b,
             kind: "CALLS_EXACT".into(),
             weight: 1.0,
+            extractor: None,
+            resolution_kind: None,
         })
         .unwrap();
     storage
@@ -48,6 +50,8 @@ pub fn csr_query_path_matches_sql_query_path_on_the_same_graph(open: OpenFn) {
             target_id: c,
             kind: "CALLS_EXACT".into(),
             weight: 1.0,
+            extractor: None,
+            resolution_kind: None,
         })
         .unwrap();
 

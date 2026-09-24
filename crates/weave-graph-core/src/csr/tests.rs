@@ -86,6 +86,8 @@ fn edge(source_id: NodeId, target_id: NodeId, weight: f64) -> crate::model::Edge
         target_id,
         kind: "CALLS_EXACT".into(),
         weight,
+        extractor: None,
+        resolution_kind: None,
     }
 }
 
@@ -126,6 +128,8 @@ fn duplicate_source_target_pairs_with_different_kinds_collapse_to_one_edge() {
                 target_id: 2,
                 kind: "CALLS_EXACT".into(),
                 weight: 1.0,
+                extractor: None,
+                resolution_kind: None,
             },
             crate::model::Edge {
                 id: 1,
@@ -133,6 +137,8 @@ fn duplicate_source_target_pairs_with_different_kinds_collapse_to_one_edge() {
                 target_id: 2,
                 kind: "IMPORTS".into(),
                 weight: 5.0,
+                extractor: None,
+                resolution_kind: None,
             },
         ],
     };

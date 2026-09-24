@@ -88,6 +88,8 @@ fn main() {
             target_id: ids[(i + 1) as usize],
             kind: "CALLS_EXACT".into(),
             weight: 1.0,
+            extractor: None,
+            resolution_kind: None,
         };
         if i % WRITE_BATCH_ROWS as u32 == 0 {
             storage.begin_bulk_write().expect("begin edge batch");

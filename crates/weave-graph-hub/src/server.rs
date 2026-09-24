@@ -370,6 +370,78 @@ fn handle_mesh_canvas(
     }
 }
 
+/// Parses `.../mesh/policy-lint/{repo-a},{repo-b},...}` — identical shape
+/// to [`parse_mesh_canvas_path`], duplicated rather than generalized: a
+/// two-line function isn't worth a shared parameterized parser.
+#[cfg(feature = "hub-policy-lint")]
+fn parse_mesh_policy_lint_path(path: &str) -> Option<Vec<String>> {
+    let idx = path.find("/mesh/policy-lint/")?;
+    let rest = path[idx + "/mesh/policy-lint/".len()..].trim_end_matches('/');
+    if rest.is_empty() {
+        return None;
+    }
+    let repo_ids: Vec<String> = rest.split(',').map(str::to_string).collect();
+    if repo_ids.iter().any(|id| !is_safe_path_component(id)) {
+        return None;
+    }
+    Some(repo_ids)
+}
+
+/// HUB-03: mesh-wide policy lint. Repository-level authorization is
+/// applied *before* `Registry::mesh_policy_lint` ever opens a snapshot —
+/// the same "filter first, fetch second" order `handle_mesh_canvas`
+/// already uses, so an unauthorized repo is never even pulled from disk.
+#[cfg(feature = "hub-policy-lint")]
+fn handle_mesh_policy_lint(
+    stream: &mut TcpStream,
+    registry: &Registry,
+    repo_ids: &[String],
+    credential: Option<&str>,
+    authorizer: Option<&dyn CanvasAuthorizer>,
+) {
+    let allowed: Vec<String> = repo_ids
+        .iter()
+        .filter(|repo_id| authorizer.is_none_or(|a| a.can_view_repo(credential, repo_id)))
+        .cloned()
+        .collect();
+    let bands = match registry.mesh_policy_lint(&allowed) {
+        Ok(bands) => bands,
+        Err(e) => {
+            return write_response(stream, 500, "Internal Server Error", &[], e.as_bytes());
+        }
+    };
+    let body = serde_json::json!({
+        "repos": bands.iter().map(|(repo_id, violations)| {
+            serde_json::json!({
+                "repo_id": repo_id,
+                "violations": violations.iter().map(|v| serde_json::json!({
+                    "kind": v.kind,
+                    "from": v.from,
+                    "to": v.to,
+                    "examples": v.examples,
+                    "owner_role": v.owner_role,
+                })).collect::<Vec<_>>(),
+            })
+        }).collect::<Vec<_>>(),
+    });
+    match serde_json::to_vec(&body) {
+        Ok(bytes) => write_response(
+            stream,
+            200,
+            "OK",
+            &[("Content-Type", "application/json".to_string())],
+            &bytes,
+        ),
+        Err(e) => write_response(
+            stream,
+            500,
+            "Internal Server Error",
+            &[],
+            e.to_string().as_bytes(),
+        ),
+    }
+}
+
 /// Body is the raw webhook URL text, mirroring `webhooks::notify`'s own
 /// plain-body simplicity — an empty body unregisters (`Registry::set_webhook`'s
 /// own documented idiom), so a subscriber removes itself with `PUT` + no body
@@ -480,6 +552,19 @@ fn handle_connection(
         && let Some(repo_ids) = parse_mesh_canvas_path(&req.path)
     {
         handle_mesh_canvas(
+            &mut stream,
+            registry,
+            &repo_ids,
+            header(&req, "Authorization"),
+            canvas_authorizer,
+        );
+        return Ok(());
+    }
+    #[cfg(feature = "hub-policy-lint")]
+    if req.method == "GET"
+        && let Some(repo_ids) = parse_mesh_policy_lint_path(&req.path)
+    {
+        handle_mesh_policy_lint(
             &mut stream,
             registry,
             &repo_ids,

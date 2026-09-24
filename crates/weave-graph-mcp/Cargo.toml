@@ -31,6 +31,10 @@ vector = ["weave-graph-core/vector", "weave-graph-store-sqlite/vector"]
 # reverse), not shared.
 policy-lint = ["dep:serde_yaml", "weave-graph-core/policy-lint"]
 http-compression = ["dep:flate2"]
+# P10.4: weave_find_all, built on the existing FTS5 symbol-body substrate
+# (weave-graph-core's synonym query expansion + weave-graph-store-sqlite's
+# exhaustive symbol_fts scan) rather than a new regex dependency.
+fts = ["weave-graph-core/fts", "weave-graph-store-sqlite/fts"]
 
 [dev-dependencies]
 tempfile = "3.27.0"

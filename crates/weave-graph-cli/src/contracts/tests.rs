@@ -2,8 +2,8 @@ use std::fs;
 use std::path::Path;
 
 use super::{
-    CheckContractsWaiver, cmd_check_contracts, record_expectations, repo_contract_hash,
-    repo_contract_map,
+    CheckContractsWaiver, cmd_check_contracts, cmd_check_contracts_submodules, record_expectations,
+    repo_contract_hash, repo_contract_map,
 };
 
 struct RepoFixture {
@@ -481,4 +481,193 @@ fn allow_drift_is_refused_when_the_bound_identity_lacks_the_allow_drift_role() {
     )
     .unwrap_err();
     assert!(err.to_string().contains("not authorized"), "{err}");
+}
+
+fn git(root: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?} failed");
+}
+
+fn init_repo() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-q"]);
+    git(dir.path(), &["config", "user.email", "test@example.com"]);
+    git(dir.path(), &["config", "user.name", "Test"]);
+    dir
+}
+
+#[test]
+fn check_contracts_submodules_is_ok_with_no_gitmodules_file() {
+    let dir = tempfile::tempdir().unwrap();
+    cmd_check_contracts_submodules(dir.path()).unwrap();
+}
+
+#[test]
+fn check_contracts_submodules_errs_on_an_uninitialized_submodule() {
+    let inner = init_repo();
+    write_source(inner.path(), "a", "pub fn a() {}\n");
+    git(inner.path(), &["add", "-A"]);
+    git(inner.path(), &["commit", "-q", "-m", "inner first"]);
+
+    let outer = init_repo();
+    git(
+        outer.path(),
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            inner.path().to_str().unwrap(),
+            "sub",
+        ],
+    );
+    git(outer.path(), &["add", "-A"]);
+    git(outer.path(), &["commit", "-q", "-m", "add submodule"]);
+    git(outer.path(), &["submodule", "deinit", "-q", "-f", "sub"]);
+
+    let err = cmd_check_contracts_submodules(outer.path()).unwrap_err();
+    assert!(err.to_string().contains("incomplete or blocking"), "{err}");
+}
+
+/// Sets up an outer repo with one submodule and indexes the outer repo
+/// (needed now that a `Clean`/`Bumped` submodule check reads the parent's
+/// own already-indexed graph for consumer-scoped drift filtering).
+fn outer_with_indexed_submodule(inner_source: &str) -> (tempfile::TempDir, tempfile::TempDir) {
+    let inner = init_repo();
+    write_source(inner.path(), "a", inner_source);
+    git(inner.path(), &["add", "-A"]);
+    git(inner.path(), &["commit", "-q", "-m", "inner first"]);
+
+    let outer = init_repo();
+    git(
+        outer.path(),
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            inner.path().to_str().unwrap(),
+            "sub",
+        ],
+    );
+    git(outer.path(), &["add", "-A"]);
+    git(outer.path(), &["commit", "-q", "-m", "add submodule"]);
+
+    let weave_dir = outer.path().join(".weave");
+    fs::create_dir_all(&weave_dir).unwrap();
+    let files = vec![outer.path().join("sub").join("a.rs")];
+    crate::index::full_reindex(
+        outer.path(),
+        &weave_dir,
+        &weave_dir.join("graph.db"),
+        &files,
+    )
+    .unwrap();
+
+    (outer, inner)
+}
+
+#[test]
+fn check_contracts_submodules_is_ok_when_every_submodule_is_clean() {
+    let (outer, _inner) = outer_with_indexed_submodule("pub fn a() {}\n");
+    cmd_check_contracts_submodules(outer.path()).unwrap();
+}
+
+#[test]
+fn check_contracts_submodules_records_a_baseline_on_first_run_and_is_unchanged_on_the_next() {
+    let (outer, _inner) = outer_with_indexed_submodule("pub fn a() {}\n");
+    // First run: no prior baseline recorded yet — must not block.
+    cmd_check_contracts_submodules(outer.path()).unwrap();
+    // Second run against the same unchanged submodule contract: still ok.
+    cmd_check_contracts_submodules(outer.path()).unwrap();
+}
+
+#[test]
+fn check_contracts_submodules_blocks_when_the_parent_imports_the_drifted_symbol() {
+    let (outer, inner) = outer_with_indexed_submodule("pub fn a() {}\n");
+    // Parent repo actually calls the submodule's exported `a`.
+    write_source(outer.path(), "consumer", "fn consumer() { a(); }\n");
+    let weave_dir = outer.path().join(".weave");
+    let files = vec![
+        outer.path().join("sub").join("a.rs"),
+        outer.path().join("consumer.rs"),
+    ];
+    crate::index::full_reindex(
+        outer.path(),
+        &weave_dir,
+        &weave_dir.join("graph.db"),
+        &files,
+    )
+    .unwrap();
+    cmd_check_contracts_submodules(outer.path()).unwrap(); // records the baseline
+
+    // Submodule's exported signature changes and the pointer is bumped.
+    write_source(inner.path(), "a", "pub fn a(extra: u32) {}\n");
+    git(inner.path(), &["add", "-A"]);
+    git(inner.path(), &["commit", "-q", "-m", "inner second"]);
+    let inner_sha = String::from_utf8(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(inner.path())
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let inner_sha = inner_sha.trim();
+    git(
+        outer.path().join("sub").as_path(),
+        &["fetch", "-q", "origin", inner_sha],
+    );
+    git(
+        outer.path().join("sub").as_path(),
+        &["checkout", "-q", inner_sha],
+    );
+
+    let err = cmd_check_contracts_submodules(outer.path()).unwrap_err();
+    assert!(err.to_string().contains("sub"), "{err}");
+}
+
+#[test]
+fn check_contracts_submodules_does_not_block_on_drift_the_parent_never_calls() {
+    let (outer, inner) = outer_with_indexed_submodule("pub fn a() {}\npub fn unused() {}\n");
+    cmd_check_contracts_submodules(outer.path()).unwrap(); // records the baseline
+
+    // A symbol the parent repo never imports changes; the pointer bumps.
+    write_source(
+        inner.path(),
+        "a",
+        "pub fn a() {}\npub fn unused(extra: u32) {}\n",
+    );
+    git(inner.path(), &["add", "-A"]);
+    git(inner.path(), &["commit", "-q", "-m", "inner second"]);
+    let inner_sha = String::from_utf8(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(inner.path())
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let inner_sha = inner_sha.trim();
+    git(
+        outer.path().join("sub").as_path(),
+        &["fetch", "-q", "origin", inner_sha],
+    );
+    git(
+        outer.path().join("sub").as_path(),
+        &["checkout", "-q", inner_sha],
+    );
+
+    cmd_check_contracts_submodules(outer.path()).unwrap();
 }

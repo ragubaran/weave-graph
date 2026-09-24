@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use serde::Deserialize;
-use weave_graph_core::policy::{Boundary, BoundaryRule};
+use weave_graph_core::policy::{Boundary, BoundaryRule, Violation};
 use weave_graph_core::{Edge, Node};
 
 const POLICY_FILE: &str = ".weave/policy.yaml";
@@ -17,6 +17,20 @@ const POLICY_FILE: &str = ".weave/policy.yaml";
 struct PolicyFile {
     #[serde(default)]
     rules: Vec<RuleEntry>,
+    /// POL-02: advisory-only, `weave policy drift` alone reads this — see
+    /// `load_semantic_coupling_rules`.
+    #[cfg(feature = "vector")]
+    #[serde(default)]
+    semantic_coupling: Vec<SemanticCouplingYaml>,
+}
+
+#[cfg(feature = "vector")]
+#[derive(Deserialize)]
+struct SemanticCouplingYaml {
+    within: String,
+    threshold: f32,
+    #[serde(default)]
+    exempt_globs: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -29,12 +43,20 @@ struct RuleEntry {
 struct BoundaryYaml {
     from: String,
     to: String,
+    /// POL-04: roles exempt from this rule.
+    #[serde(default)]
+    allowed_roles: Vec<String>,
+    /// POL-04: reporting-only team attribution.
+    #[serde(default)]
+    owner_role: Option<String>,
 }
 
 fn to_boundary(b: &BoundaryYaml) -> Boundary {
     Boundary {
         from: b.from.clone(),
         to: b.to.clone(),
+        allowed_roles: b.allowed_roles.clone(),
+        owner_role: b.owner_role.clone(),
     }
 }
 
@@ -82,16 +104,238 @@ fn validate_boundary(boundary: &Boundary) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// POL-02: parses the optional `semantic_coupling` list from the same
+/// policy file `load_rules` reads. A separate, always-succeeds-on-absence
+/// pass (unlike `load_rules`) since only the advisory `weave policy drift`
+/// consults it — an unwritten policy file is a normal drift run, not a
+/// config error.
+#[cfg(feature = "vector")]
+pub(crate) fn load_semantic_coupling_rules(
+    path: &Path,
+) -> Result<Vec<weave_graph_core::policy::SemanticCouplingRule>, String> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Ok(Vec::new());
+    };
+    let parsed: PolicyFile =
+        serde_yaml::from_str(&content).map_err(|e| format!("invalid policy YAML: {e}"))?;
+    let mut rules = Vec::new();
+    for entry in parsed.semantic_coupling {
+        if entry.within.is_empty() {
+            return Err("semantic_coupling rule needs a non-empty `within` prefix".to_string());
+        }
+        if !(0.0..=1.0).contains(&entry.threshold) {
+            return Err("semantic_coupling `threshold` must be between 0.0 and 1.0".to_string());
+        }
+        rules.push(weave_graph_core::policy::SemanticCouplingRule {
+            within: entry.within,
+            threshold: entry.threshold,
+            exempt_globs: entry.exempt_globs,
+        });
+    }
+    Ok(rules)
+}
+/// A violation's stable rule id for `--waive`: `<kind>:<from>-><to>`,
+/// exactly what the unwaived print path already renders — no separate ID
+/// scheme to keep in sync.
+fn rule_id(v: &Violation) -> String {
+    format!("{}:{}->{}", v.kind, v.from, v.to)
+}
+
+/// POL-05: appends one append-only line to `.weave/policy-waivers.log`
+/// per waived rule — `timestamp, subject, rule-id, reason`, plain text,
+/// no rotation logic. Never overwrites; a missing file is created.
+fn append_waiver_log(
+    root: &Path,
+    as_subject: Option<&str>,
+    rule_id: &str,
+    reason: &str,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let path = root.join(".weave").join("policy-waivers.log");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let timestamp = crate::provenance::format_utc(std::time::SystemTime::now());
+    let subject = as_subject.unwrap_or("anonymous");
+    writeln!(file, "{timestamp}, {subject}, {rule_id}, {reason}")
+}
+
+/// Shared by the single-repo and FED-01 federated paths: waives, prints,
+/// logs, and turns the final verdict into the command's `Result`. Neither
+/// path duplicates this — only how `violations`/`hidden_nodes`/
+/// `skipped_edges` get computed differs between them.
+fn report_and_gate(
+    root: &Path,
+    gate: LintGate,
+    rule_count: usize,
+    violations: Vec<Violation>,
+    hidden_nodes: usize,
+    skipped_edges: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // POL-05: waiving requires the same audit-trail gate every other
+    // bypass in this codebase uses — authorized before any violation is
+    // actually exempted, never after the fact.
+    let waive_reason = if gate.waive.is_empty() {
+        None
+    } else {
+        crate::waiver::authorize(root, gate.as_subject)?;
+        Some(crate::waiver::require_reason(gate.reason)?)
+    };
+    let waive_ids: std::collections::HashSet<&str> =
+        gate.waive.iter().map(String::as_str).collect();
+    let (waived, blocking): (Vec<Violation>, Vec<Violation>) = violations
+        .into_iter()
+        .partition(|v| waive_ids.contains(rule_id(v).as_str()));
+
+    println!("Policy: {rule_count} rule(s) from {POLICY_FILE}");
+    if hidden_nodes > 0 || skipped_edges > 0 {
+        println!("  {skipped_edges} edge(s) and {hidden_nodes} symbol(s) skipped (rbac-masked)");
+    }
+    let incomplete = hidden_nodes > 0 || skipped_edges > 0;
+    if blocking.is_empty() && waived.is_empty() && !incomplete {
+        println!("✓ no boundary violations");
+    }
+    for v in &waived {
+        println!("⚠ [{}] {} -> {} — WAIVED", v.kind, v.from, v.to);
+        for example in &v.examples {
+            println!("    {example}");
+        }
+    }
+    for v in &blocking {
+        match &v.owner_role {
+            Some(owner) => println!("✗ [{}] {} -> {} (owner: {owner})", v.kind, v.from, v.to),
+            None => println!("✗ [{}] {} -> {}", v.kind, v.from, v.to),
+        }
+        for example in &v.examples {
+            println!("    {example}");
+        }
+    }
+
+    if let Some(reason) = &waive_reason {
+        print!(
+            "{}",
+            crate::waiver::emit_banner("weave policy lint", reason)
+        );
+        for v in &waived {
+            append_waiver_log(root, gate.as_subject, &rule_id(v), reason)?;
+        }
+    }
+
+    #[cfg(feature = "slm")]
+    print_adr_obligations(root);
+
+    if !blocking.is_empty() {
+        return Err(format!(
+            "{} policy violation(s) — blocking (CI gate)",
+            blocking.len()
+        )
+        .into());
+    }
+
+    if incomplete && (gate.fail_on_masked || gate.as_subject.is_some()) {
+        return Err(
+            "Policy view incomplete: nodes or edges were skipped by RBAC, so this run cannot certify repository-wide boundaries."
+            .into()
+        );
+    }
+    Ok(())
+}
+
+/// Gate settings shared by both `cmd_policy_lint`'s local and federated
+/// paths, bundled for the same reason `contracts::CheckContractsWaiver`
+/// bundles its own flags: `report_and_gate` never touches `std::env`
+/// itself, so the caller (`main.rs`) collects these once, from the CLI
+/// flags plus `--as`.
+struct LintGate<'a> {
+    as_subject: Option<&'a str>,
+    fail_on_masked: bool,
+    waive: &'a [String],
+    reason: Option<&'a str>,
+}
+
+/// FED-01: `Boundary{from, to}` prefixes matched across every
+/// `[federation] linked_repos` peer instead of within one repo — reusing
+/// `federation::open_federated_storage`'s existing per-peer graph exactly
+/// as `weave check-contracts --scoped` already does, not a new plumbing
+/// path. Linted **per peer, separately** (never merged into one shared
+/// node-id space): each peer's federated database is its own independent
+/// `SqliteStorage` with its own id sequence, so a merged `Vec<Node>` would
+/// let two unrelated nodes from different peers collide on the same id.
+/// Violations are deduped by `(kind, from, to)` across peers.
+#[cfg(feature = "federation")]
+fn cmd_policy_lint_federated(
+    root: &Path,
+    gate: LintGate,
+    rules: &[BoundaryRule],
+    visible: Option<&dyn Fn(&Node) -> bool>,
+    current_roles: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = root.join(".weave").join("config.toml");
+    let linked: Vec<std::path::PathBuf> = crate::config::read_linked_repos(&config_path)
+        .into_iter()
+        .map(|p| if p.is_absolute() { p } else { root.join(p) })
+        .collect();
+    if linked.is_empty() {
+        return Err(
+            "No linked repos in .weave/config.toml ([federation] linked_repos). \
+             Run `weave link <repo-a> <repo-b>` first."
+                .into(),
+        );
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut violations = Vec::new();
+    let mut hidden_nodes = 0usize;
+    let mut skipped_edges = 0usize;
+    for peer in &linked {
+        let (storage, _) = crate::federation::open_federated_storage(root, peer)?;
+        let (nodes, edges) = fetch_graph(&storage)?;
+        let view = filter_view(nodes, edges, visible);
+        hidden_nodes += view.hidden_nodes;
+        skipped_edges += view.skipped_edges;
+        for v in
+            weave_graph_core::policy::lint_scoped(&view.nodes, &view.edges, rules, current_roles)
+        {
+            if seen.insert((v.kind, v.from.clone(), v.to.clone())) {
+                violations.push(v);
+            }
+        }
+    }
+
+    report_and_gate(
+        root,
+        gate,
+        rules.len(),
+        violations,
+        hidden_nodes,
+        skipped_edges,
+    )
+}
+
 /// `weave policy lint`: violations on stdout, non-zero exit on any. With
 /// `rbac` + `--as`, the linted view is the masked one — edges touching
 /// hidden symbols cannot be classified and are reported as skipped, never
 /// silently dropped and never invented into violations.
+///
+/// `waive` names rule ids (POL-05, [`rule_id`]'s format) to exempt from
+/// blocking — never from the printed report, so a waived violation is
+/// still visible, just not fatal. Requires `--reason` and the same
+/// `allow-drift` gate `weave check-contracts`/`weave blast` already use
+/// (`waiver::authorize`); each waived id is appended to
+/// `.weave/policy-waivers.log`.
+///
+/// `federated` (FED-01) lints across every linked repo instead of just
+/// `root` — see [`cmd_policy_lint_federated`].
 pub(crate) fn cmd_policy_lint(
     root: &Path,
     as_subject: Option<&str>,
     fail_on_masked: bool,
+    waive: &[String],
+    reason: Option<&str>,
+    federated: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (storage, _db) = crate::open_storage_for_read(root)?;
     let rules = load_rules(&root.join(POLICY_FILE))?;
 
     #[cfg(feature = "rbac")]
@@ -103,48 +347,54 @@ pub(crate) fn cmd_policy_lint(
         visible_check.as_ref().map(|c| c as &dyn Fn(&Node) -> bool);
     #[cfg(not(feature = "rbac"))]
     let (visible, _) = (None::<&dyn Fn(&Node) -> bool>, as_subject);
+    // POL-04: an unauthenticated run (no `--as`, or `rbac` not compiled
+    // in) carries no roles, so `allowed_roles` exemptions never apply —
+    // matches `lint()`'s own pre-POL-04 behavior exactly.
+    #[cfg(feature = "rbac")]
+    let current_roles: Vec<String> = guard
+        .as_ref()
+        .map(|g| g.roles().to_vec())
+        .unwrap_or_default();
+    #[cfg(not(feature = "rbac"))]
+    let current_roles: Vec<String> = Vec::new();
 
-    let (all_nodes, all_edges) = fetch_graph(&storage)?;
-    let view = filter_view(all_nodes, all_edges, visible);
-    let violations = weave_graph_core::policy::lint(&view.nodes, &view.edges, &rules);
+    let gate = LintGate {
+        as_subject,
+        fail_on_masked,
+        waive,
+        reason,
+    };
 
-    println!("Policy: {} rule(s) from {}", rules.len(), POLICY_FILE);
-    if view.hidden_nodes > 0 || view.skipped_edges > 0 {
-        println!(
-            "  {} edge(s) and {} symbol(s) skipped (rbac-masked)",
-            view.skipped_edges, view.hidden_nodes
-        );
-    }
-    let incomplete = view.hidden_nodes > 0 || view.skipped_edges > 0;
-    if violations.is_empty() && !incomplete {
-        println!("✓ no boundary violations");
-    } else if !violations.is_empty() {
-        for v in &violations {
-            println!("✗ [{}] {} -> {}", v.kind, v.from, v.to);
-            for example in &v.examples {
-                println!("    {example}");
-            }
+    if federated {
+        #[cfg(feature = "federation")]
+        {
+            return cmd_policy_lint_federated(root, gate, &rules, visible, &current_roles);
+        }
+        #[cfg(not(feature = "federation"))]
+        {
+            let _ = gate;
+            return Err(
+                "weave policy lint --federated requires the `federation` feature, which is \
+                 not compiled into this binary."
+                    .into(),
+            );
         }
     }
 
-    #[cfg(feature = "slm")]
-    print_adr_obligations(root);
+    let (storage, _db) = crate::open_storage_for_read(root)?;
+    let (all_nodes, all_edges) = fetch_graph(&storage)?;
+    let view = filter_view(all_nodes, all_edges, visible);
+    let violations =
+        weave_graph_core::policy::lint_scoped(&view.nodes, &view.edges, &rules, &current_roles);
 
-    if !violations.is_empty() {
-        return Err(format!(
-            "{} policy violation(s) — blocking (CI gate)",
-            violations.len()
-        )
-        .into());
-    }
-
-    if incomplete && (fail_on_masked || as_subject.is_some()) {
-        return Err(
-            "Policy view incomplete: nodes or edges were skipped by RBAC, so this run cannot certify repository-wide boundaries."
-            .into()
-        );
-    }
-    Ok(())
+    report_and_gate(
+        root,
+        gate,
+        rules.len(),
+        violations,
+        view.hidden_nodes,
+        view.skipped_edges,
+    )
 }
 
 /// `weave policy drift`: advisory architecture-rot report — dependency
@@ -207,7 +457,51 @@ pub(crate) fn cmd_policy_drift(
             }
         }
     }
+    #[cfg(feature = "vector")]
+    {
+        let findings = semantic_coupling_report(root, &storage, &view.nodes, &view.edges)?;
+        if findings.is_empty() {
+            println!("  no undeclared semantic coupling above the configured threshold(s)");
+        } else {
+            println!(
+                "  {} undeclared semantic coupling pair(s) (advisory, POL-02):",
+                findings.len()
+            );
+            for finding in &findings {
+                println!(
+                    "    {} <-> {} (similarity {:.2})",
+                    finding.file_a, finding.file_b, finding.similarity
+                );
+            }
+        }
+    }
     Ok(())
+}
+
+/// POL-02: high-similarity file pairs with no declared edge between them.
+/// Opt-in via `.weave/policy.yaml`'s `semantic_coupling` list — most repos
+/// never set it, so an absent list means zero rules and an empty report,
+/// not an error. Split from its printing so tests can assert on the
+/// findings directly rather than scraping stdout.
+#[cfg(feature = "vector")]
+pub(crate) fn semantic_coupling_report(
+    root: &Path,
+    storage: &dyn weave_graph_core::Storage,
+    nodes: &[Node],
+    edges: &[Edge],
+) -> Result<Vec<weave_graph_core::policy::SemanticCouplingFinding>, Box<dyn std::error::Error>> {
+    const OVERSAMPLE: usize = 8;
+
+    let rules = load_semantic_coupling_rules(&root.join(POLICY_FILE))?;
+    let scope_ids: Vec<u32> = nodes.iter().map(|n| n.id).collect();
+    let mut findings = Vec::new();
+    for rule in &rules {
+        let pairs = storage.find_similar_node_pairs(&scope_ids, rule.threshold, OVERSAMPLE)?;
+        findings.extend(weave_graph_core::policy::semantic_coupling_findings(
+            nodes, edges, &pairs, rule,
+        ));
+    }
+    Ok(findings)
 }
 
 /// The graph view lint/drift actually evaluate: nodes filtered by the

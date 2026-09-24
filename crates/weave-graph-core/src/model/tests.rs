@@ -21,6 +21,8 @@ fn node_and_edge_are_plain_equatable_data() {
         target_id: 2,
         kind: "CALLS_EXACT".into(),
         weight: 1.0,
+        extractor: None,
+        resolution_kind: None,
     };
     assert_eq!(e.source_id, 1);
     assert_eq!(e.target_id, 2);

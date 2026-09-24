@@ -7,7 +7,7 @@
 
 /// Highest schema version any migration in `MIGRATIONS` brings a database
 /// to — round-trip tests assert against it.
-pub const LATEST_SCHEMA_VERSION: u32 = 9;
+pub const LATEST_SCHEMA_VERSION: u32 = 10;
 
 /// Base schema: `nodes`, `edges`, `doc_links`, `contracts`,
 /// `schema_version`. Unique indices on each table's natural key make
@@ -160,6 +160,16 @@ pub const V9_DROP_UNUSED_SEMANTIC_KEY_INDEX: &str = "
 DROP INDEX IF EXISTS idx_nodes_semantic_key;
 ";
 
+/// P10.5: edge provenance and confidence. Nullable, same precedent as V3/
+/// V6/V8's own additive columns — a row written before this migration
+/// reads back as `NULL` (`Option::None`), never a read error, and
+/// `edge_confidence` already treats `resolution_kind: None` as a defined
+/// fallback rather than "unknown".
+pub const V10_EDGE_PROVENANCE: &str = "
+ALTER TABLE edges ADD COLUMN extractor TEXT;
+ALTER TABLE edges ADD COLUMN resolution_kind TEXT;
+";
+
 /// Versioned migration history shared by every storage backend.
 pub const MIGRATIONS: &[(u32, &str)] = &[
     (1, V1_CREATE_TABLES),
@@ -171,6 +181,7 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (7, V7_RESOLVER_INPUTS),
     (8, V8_NODE_SEMANTIC_KEY),
     (9, V9_DROP_UNUSED_SEMANTIC_KEY_INDEX),
+    (10, V10_EDGE_PROVENANCE),
 ];
 
 /// Returns unapplied migrations in version order, independent of declaration order.

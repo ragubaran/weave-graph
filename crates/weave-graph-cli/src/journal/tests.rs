@@ -23,6 +23,8 @@ fn edge(source_id: u32, target_id: u32) -> Edge {
         target_id,
         kind: "CALLS_EXACT".to_string(),
         weight: 1.0,
+        extractor: None,
+        resolution_kind: None,
     }
 }
 

@@ -37,6 +37,8 @@ fn seeded_chain(n: u32) -> (tempfile::TempDir, SqliteStorage, Vec<u32>) {
                 target_id: w[1],
                 kind: "CALLS_EXACT".into(),
                 weight: 1.0,
+                extractor: None,
+                resolution_kind: None,
             })
             .unwrap();
     }

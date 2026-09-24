@@ -280,3 +280,55 @@ fn search_filters_masked_hits_before_applying_the_limit() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].symbol, "publicAuth");
 }
+
+/// P10.4: `find_all_symbols` returns every match, not a ranked top-N —
+/// the exhaustive counterpart to `search_symbols`'s BM25 ranking.
+#[test]
+fn find_all_symbols_returns_every_match_not_a_ranked_top_n() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    for i in 0..5 {
+        storage
+            .upsert_node(&node_at(
+                &format!("authHandler{i}"),
+                &format!("f{i}.rs"),
+                &format!("fn authHandler{i}() {{ auth() }}"),
+            ))
+            .unwrap();
+    }
+    storage.rebuild_fts_index().unwrap();
+
+    let hits = storage.find_all_symbols("\"auth\"").unwrap();
+    assert_eq!(hits.len(), 5, "{hits:?}");
+}
+
+#[test]
+fn find_all_symbols_orders_deterministically_by_path_then_line() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    storage
+        .upsert_node(&node_at("zLater", "z.rs", "fn zLater() { auth() }"))
+        .unwrap();
+    storage
+        .upsert_node(&node_at("aFirst", "a.rs", "fn aFirst() { auth() }"))
+        .unwrap();
+    storage.rebuild_fts_index().unwrap();
+
+    let hits = storage.find_all_symbols("\"auth\"").unwrap();
+    let paths: Vec<&str> = hits.iter().map(|n| n.path.as_str()).collect();
+    assert_eq!(paths, vec!["a.rs", "z.rs"]);
+}
+
+#[test]
+fn find_all_symbols_with_no_match_returns_empty() {
+    let mut storage = SqliteStorage::open_in_memory().unwrap();
+    storage
+        .upsert_node(&node("helper", "fn helper() {}"))
+        .unwrap();
+    storage.rebuild_fts_index().unwrap();
+
+    assert!(
+        storage
+            .find_all_symbols("\"nonexistent\"")
+            .unwrap()
+            .is_empty()
+    );
+}

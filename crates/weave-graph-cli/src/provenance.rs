@@ -53,7 +53,10 @@ impl Provenance {
 
 /// Formats a `SystemTime` as `YYYY-MM-DDTHH:MM:SSZ` (UTC), stdlib-only —
 /// not worth a `chrono`/`time` dependency for one timestamp format.
-fn format_utc(time: SystemTime) -> String {
+/// `pub(crate)`: also reused by `policy::cmd_policy_lint`'s waiver-log
+/// timestamps (POL-05), so a waiver's log line and a provenance badge
+/// never disagree about what "now" looks like.
+pub(crate) fn format_utc(time: SystemTime) -> String {
     let secs = time
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs())

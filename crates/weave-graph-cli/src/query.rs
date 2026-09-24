@@ -1,9 +1,12 @@
 use std::collections::{HashSet, VecDeque};
+use std::path::Path;
 
 use weave_graph_core::resolve::{format_not_found, resolve_symbol};
 use weave_graph_core::{CsrGraph, Node, NodeId, Storage};
+use weave_graph_parse::Language;
+use weave_graph_parse::contract::{short_name, visibility_rule};
 
-const USAGE: &str = "Supported forms: callers(<symbol>), callees(<symbol>), impact(<symbol>), path(<a>,<b>), latency(<symbol>)";
+const USAGE: &str = "Supported forms: callers(<symbol>), callees(<symbol>), impact(<symbol>), path(<a>,<b>), latency(<symbol>), each optionally followed by space-separated path:/lang:/kind:/visibility:/edge: filters";
 
 fn parse_call(expr: &str) -> Option<(&str, Vec<&str>)> {
     let open = expr.find('(')?;
@@ -18,6 +21,113 @@ fn parse_call(expr: &str) -> Option<(&str, Vec<&str>)> {
         inner.split(',').map(str::trim).collect()
     };
     Some((name, args))
+}
+
+/// Composable read-side filters appended after a query call, space
+/// separated (P10.7): `path:`/`lang:`/`kind:`/`visibility:` narrow which
+/// resolved nodes are displayed; `edge:` narrows which *edges* `callers()`
+/// walks display-side. `visibility:` reuses the exact heuristic `weave
+/// verify`'s submodule-encapsulation check already relies on
+/// (`weave_graph_parse::contract::visibility_rule`) — the same
+/// public/private classification everywhere else in this codebase, not a
+/// second one invented for this filter.
+#[derive(Default)]
+struct QueryFilters<'a> {
+    path: Option<&'a str>,
+    lang: Option<&'a str>,
+    kind: Option<&'a str>,
+    visibility: Option<&'a str>,
+    edge: Option<&'a str>,
+    /// P10.5: `precise:true` drops heuristically-resolved edges
+    /// (`weave_graph_core::edge_confidence`) — `callers()`-only, same
+    /// restriction as `edge:` (the CSR-backed forms carry no per-edge
+    /// kind to classify).
+    precise: Option<bool>,
+}
+
+impl<'a> QueryFilters<'a> {
+    fn parse(rest: &'a str) -> Result<Self, String> {
+        let mut filters = Self::default();
+        for token in rest.split_whitespace() {
+            let Some((key, value)) = token.split_once(':') else {
+                return Err(format!(
+                    "invalid filter '{token}': expected key:value (path/lang/kind/visibility/edge)"
+                ));
+            };
+            match key {
+                "path" => filters.path = Some(value),
+                "lang" => filters.lang = Some(value),
+                "kind" => filters.kind = Some(value),
+                "visibility" => {
+                    if !value.eq_ignore_ascii_case("public")
+                        && !value.eq_ignore_ascii_case("private")
+                    {
+                        return Err(format!(
+                            "invalid visibility:{value} — expected 'public' or 'private'"
+                        ));
+                    }
+                    filters.visibility = Some(value);
+                }
+                "edge" => filters.edge = Some(value),
+                "precise" => {
+                    filters.precise = Some(match value {
+                        "true" => true,
+                        "false" => false,
+                        _ => {
+                            return Err(format!(
+                                "invalid precise:{value} — expected 'true' or 'false'"
+                            ));
+                        }
+                    });
+                }
+                other => {
+                    return Err(format!(
+                        "unknown filter '{other}:' — supported: path, lang, kind, visibility, edge"
+                    ));
+                }
+            }
+        }
+        Ok(filters)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.path.is_none()
+            && self.lang.is_none()
+            && self.kind.is_none()
+            && self.visibility.is_none()
+            && self.edge.is_none()
+            && self.precise.is_none()
+    }
+
+    /// Node-level filters only — `edge:` is applied separately, by the
+    /// one caller (`callers_text`) that has real per-edge kind data.
+    fn matches_node(&self, n: &Node) -> bool {
+        if self.path.is_some_and(|p| !n.path.starts_with(p)) {
+            return false;
+        }
+        if self.kind.is_some_and(|k| n.kind != k) {
+            return false;
+        }
+        if let Some(lang) = self.lang {
+            let matches = Language::from_path(Path::new(&n.path))
+                .is_some_and(|l| format!("{l:?}").eq_ignore_ascii_case(lang));
+            if !matches {
+                return false;
+            }
+        }
+        if let Some(visibility) = self.visibility {
+            let want_public = visibility.eq_ignore_ascii_case("public");
+            // An unresolvable language treats every symbol as exported —
+            // the same documented ceiling `contract.rs` itself carries.
+            let is_public = Language::from_path(Path::new(&n.path))
+                .map(|lang| visibility_rule(lang)(n.signature.trim(), short_name(&n.symbol)))
+                .unwrap_or(true);
+            if is_public != want_public {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 fn single_arg<'a>(args: &[&'a str]) -> Result<&'a str, String> {
@@ -61,11 +171,28 @@ pub(crate) fn run(
     mask: Option<&dyn Fn(&Node) -> Node>,
 ) -> Result<String, String> {
     let expr = expression.trim();
+    let close = expr
+        .find(')')
+        .ok_or_else(|| format!("unrecognized query: {expr}. {USAGE}"))?;
+    let (call, rest) = expr.split_at(close + 1);
     let (name, args) =
-        parse_call(expr).ok_or_else(|| format!("unrecognized query: {expr}. {USAGE}"))?;
+        parse_call(call).ok_or_else(|| format!("unrecognized query: {expr}. {USAGE}"))?;
+    let filters = QueryFilters::parse(rest.trim())?;
+    if matches!(name, "path" | "latency") && !filters.is_empty() {
+        return Err(format!(
+            "filters are not supported for {name}() — only callers()/callees()/impact() \
+             accept path:/lang:/kind:/visibility: filters, and edge: is callers()-only"
+        ));
+    }
+    if name != "callers" && filters.edge.is_some() {
+        return Err("edge: filter is only supported for callers()".to_string());
+    }
+    if name != "callers" && filters.precise.is_some() {
+        return Err("precise: filter is only supported for callers()".to_string());
+    }
     match mask {
-        Some(m) => run_masked(storage, name, &args, m),
-        None => run_unmasked(storage, name, &args),
+        Some(m) => run_masked(storage, name, &args, &filters, m),
+        None => run_unmasked(storage, name, &args, &filters),
     }
 }
 
@@ -73,6 +200,7 @@ fn run_masked(
     storage: &dyn Storage,
     name: &str,
     args: &[&str],
+    filters: &QueryFilters,
     mask: &dyn Fn(&Node) -> Node,
 ) -> Result<String, String> {
     let nodes = storage.all_nodes().map_err(|e| e.to_string())?;
@@ -82,17 +210,17 @@ fn run_masked(
     match name {
         "callers" => {
             let root = resolve(&nodes, single_arg(args)?)?;
-            callers_text(storage, &lookup, root)
+            callers_text(storage, &lookup, root, filters)
         }
         "callees" => {
             let root = resolve(&nodes, single_arg(args)?)?;
             let csr = CsrGraph::load(storage).map_err(|e| e.to_string())?;
-            Ok(reachable_text(&csr, &lookup, root, 1))
+            Ok(reachable_text(&csr, &lookup, root, 1, filters))
         }
         "impact" => {
             let root = resolve(&nodes, single_arg(args)?)?;
             let csr = CsrGraph::load(storage).map_err(|e| e.to_string())?;
-            Ok(reachable_text(&csr, &lookup, root, u32::MAX))
+            Ok(reachable_text(&csr, &lookup, root, u32::MAX, filters))
         }
         "path" => {
             let (a, b) = pair_args(args)?;
@@ -126,23 +254,28 @@ fn run_masked(
     }
 }
 
-fn run_unmasked(storage: &dyn Storage, name: &str, args: &[&str]) -> Result<String, String> {
+fn run_unmasked(
+    storage: &dyn Storage,
+    name: &str,
+    args: &[&str],
+    filters: &QueryFilters,
+) -> Result<String, String> {
     let lookup = |id: NodeId| storage.get_node(id).ok().flatten();
 
     match name {
         "callers" => {
             let root = resolve_fast(storage, single_arg(args)?)?;
-            callers_text(storage, &lookup, root)
+            callers_text(storage, &lookup, root, filters)
         }
         "callees" => {
             let root = resolve_fast(storage, single_arg(args)?)?;
             let csr = CsrGraph::load(storage).map_err(|e| e.to_string())?;
-            Ok(reachable_text(&csr, &lookup, root, 1))
+            Ok(reachable_text(&csr, &lookup, root, 1, filters))
         }
         "impact" => {
             let root = resolve_fast(storage, single_arg(args)?)?;
             let csr = CsrGraph::load(storage).map_err(|e| e.to_string())?;
-            Ok(reachable_text(&csr, &lookup, root, u32::MAX))
+            Ok(reachable_text(&csr, &lookup, root, u32::MAX, filters))
         }
         "path" => {
             let (a, b) = pair_args(args)?;
@@ -196,10 +329,14 @@ fn describe(n: &Node) -> String {
 /// set) — via `Storage::get_callers`, propagating backend storage errors.
 /// `lookup` resolves a `NodeId` to its display `Node`, either a per-id
 /// storage read (unmasked) or a linear scan of an already-masked list.
+/// `filters` narrows only what's *displayed*: traversal always continues
+/// through a filtered-out caller, since it may itself have further
+/// callers the result set still needs.
 fn callers_text(
     storage: &dyn Storage,
     lookup: &dyn Fn(NodeId) -> Option<Node>,
     root: NodeId,
+    filters: &QueryFilters,
 ) -> Result<String, String> {
     let mut visited = HashSet::from([root]);
     let mut queue = VecDeque::from([root]);
@@ -213,7 +350,15 @@ fn callers_text(
                 continue;
             }
             if let Some(node) = lookup(edge.source_id) {
-                lines.push(describe(&node));
+                let edge_matches = filters.edge.is_none_or(|k| edge.kind == k);
+                let precise_matches = filters.precise != Some(true)
+                    || weave_graph_core::edge_confidence(
+                        &edge.kind,
+                        edge.resolution_kind.as_deref(),
+                    ) == weave_graph_core::Confidence::Exact;
+                if edge_matches && precise_matches && filters.matches_node(&node) {
+                    lines.push(describe(&node));
+                }
                 queue.push_back(edge.source_id);
             }
         }
@@ -230,6 +375,7 @@ fn reachable_text(
     lookup: &dyn Fn(NodeId) -> Option<Node>,
     root: NodeId,
     max_hops: u32,
+    filters: &QueryFilters,
 ) -> String {
     let lines: Vec<String> = csr
         .reachable_within(root, max_hops)
@@ -237,6 +383,7 @@ fn reachable_text(
         .filter_map(|idx| csr.id_of_index(idx))
         .filter(|&id| id != root)
         .filter_map(lookup)
+        .filter(|n| filters.matches_node(n))
         .map(|n| describe(&n))
         .collect();
     if lines.is_empty() {

@@ -446,5 +446,201 @@ pub(crate) fn cmd_check_contracts(
     Ok(())
 }
 
+/// A submodule's contract expectation lives in the same shared `contracts`
+/// table federation uses, under a label no real repo directory name can
+/// collide with — so `weave link`'s own `provider_label`s (plain directory
+/// names) and submodule providers never shadow each other.
+fn submodule_provider_label(submodule: &crate::git::Submodule) -> String {
+    format!("submodule:{}", submodule.path)
+}
+
+/// Qualified symbol names the **parent repo's own already-indexed graph**
+/// calls into `submodule`'s path — path-prefix based, not `CROSS_REPO`-edge
+/// based like [`imported_symbols`]: a submodule is just a subdirectory of
+/// the same repo's single index, not a second federated graph. This is the
+/// consumer scope a submodule contract drift blocks CI on.
+pub(crate) fn submodule_imported_symbols(
+    root: &Path,
+    submodule: &crate::git::Submodule,
+) -> Result<HashSet<String>, Box<dyn std::error::Error>> {
+    let (storage, _) = crate::open_storage_for_read(root)?;
+    let nodes = storage.all_nodes()?;
+    let node_by_id: HashMap<_, _> = nodes.iter().map(|n| (n.id, n)).collect();
+    let prefix = format!("{}/", submodule.path.trim_end_matches('/'));
+    let mut imported = HashSet::new();
+    for edge in storage.all_edges()? {
+        let Some(source) = node_by_id.get(&edge.source_id) else {
+            continue;
+        };
+        let Some(target) = node_by_id.get(&edge.target_id) else {
+            continue;
+        };
+        if !source.path.starts_with(&prefix) && target.path.starts_with(&prefix) {
+            imported.insert(target.symbol.clone());
+        }
+    }
+    Ok(imported)
+}
+
+/// Read-only comparison of `submodule`'s current exported API against its
+/// last recorded baseline. Shared by `cmd_check_contracts_submodules`
+/// (which also records a new baseline as a side effect) and `weave
+/// verify`'s stale-submodule-reference check (which never writes).
+pub(crate) enum SubmoduleDrift {
+    /// No prior baseline recorded — first time this submodule has been checked.
+    NoBaseline(ContractMap),
+    /// Current contract hash matches the recorded baseline exactly.
+    Unchanged,
+    /// The exported API changed since the baseline, split by
+    /// [`partition_by_scope`] into symbols the parent repo actually calls
+    /// (`in_scope`, blocking) and everything else (`out_of_scope`,
+    /// informational).
+    Drifted {
+        in_scope: ContractDiff<ContractEntry>,
+        out_of_scope: ContractDiff<ContractEntry>,
+        current_map: ContractMap,
+    },
+}
+
+pub(crate) fn submodule_drift(
+    root: &Path,
+    submodule: &crate::git::Submodule,
+) -> Result<SubmoduleDrift, Box<dyn std::error::Error>> {
+    let consumer_label = repo_label(root);
+    let current_map = repo_contract_map(&root.join(&submodule.path))?;
+    let (storage, _) = crate::open_storage_for_read(root)?;
+    let expectations = storage.contract_expectations(&consumer_label)?;
+    let provider_label = submodule_provider_label(submodule);
+    let expected = expectations
+        .iter()
+        .find(|(name, _, _, _)| *name == provider_label)
+        .cloned();
+    drop(storage);
+
+    let Some((_, expected_hash, _, expected_blob)) = expected else {
+        return Ok(SubmoduleDrift::NoBaseline(current_map));
+    };
+    if contract_hash_of(&current_map) == expected_hash {
+        return Ok(SubmoduleDrift::Unchanged);
+    }
+    let expected_map = deserialize_entries(&expected_blob);
+    let diff = contract::diff_contracts(&expected_map, &current_map, |e: &ContractEntry| {
+        (e.0.clone(), e.1.clone())
+    });
+    let imported = submodule_imported_symbols(root, submodule)?;
+    let (in_scope, out_of_scope) = partition_by_scope(diff, &imported);
+    Ok(SubmoduleDrift::Drifted {
+        in_scope,
+        out_of_scope,
+        current_map,
+    })
+}
+
+/// Records `map` as `submodule`'s new contract baseline — same shared
+/// `contracts` table `record_one_side` writes to, opened fresh (a
+/// read-only handle from `open_storage_for_read` can't write).
+fn record_submodule_expectation(
+    root: &Path,
+    consumer_label: &str,
+    submodule: &crate::git::Submodule,
+    map: &ContractMap,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db_path = crate::open_storage_for_read(root)?.1;
+    let mut storage = SqliteStorage::open(&db_path)?;
+    let sha = crate::git::current_sha(&root.join(&submodule.path))
+        .unwrap_or_else(|| "uncommitted".to_string());
+    storage.upsert_contract(
+        consumer_label,
+        &submodule_provider_label(submodule),
+        &contract_hash_of(map),
+        &sha,
+        &serialize_entries(map),
+    )?;
+    Ok(())
+}
+
+/// `weave check-contracts --submodules`: report every registered Git
+/// submodule's verification state and, for every provable one (`Clean` or
+/// `Bumped`), diff its current exported API against the last recorded
+/// baseline (`docs/proposal-skylos.md` §3.1). Independent of
+/// `.weave/config.toml`'s `linked_repos` — a repo can have submodules with
+/// no federation link at all, so this never touches the `linked_repos`
+/// requirement `cmd_check_contracts` enforces above.
+///
+/// `Dirty`/`Uninitialized` submodules can't be proven sound against
+/// anything — the tri-state `incomplete` verdict `docs/proposal-skylos.md`
+/// §3.3 describes rather than a false pass — so their contract is not
+/// diffed at all, only reported as blocking. A `Clean`/`Bumped` submodule's
+/// drift only blocks when [`submodule_imported_symbols`] shows the parent
+/// repo actually calls the changed symbol; everything else is
+/// informational, reusing federation's own [`partition_by_scope`]. Every
+/// checked submodule's current contract becomes its new baseline
+/// afterward, whether or not this call reports a blocking diff.
+pub(crate) fn cmd_check_contracts_submodules(
+    root: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let submodules = crate::git::discover_submodules(root);
+    if submodules.is_empty() {
+        println!("No Git submodules registered in .gitmodules.");
+        return Ok(());
+    }
+    let consumer_label = repo_label(root);
+    let mut blocking_names = Vec::new();
+    for submodule in &submodules {
+        let state = crate::git::submodule_state(root, submodule);
+        let label = match state {
+            crate::git::SubmoduleState::Clean => "clean",
+            crate::git::SubmoduleState::Bumped => "bumped (pointer differs from parent index)",
+            crate::git::SubmoduleState::Dirty => "dirty (uncommitted changes inside submodule)",
+            crate::git::SubmoduleState::Uninitialized => "uninitialized (never checked out)",
+        };
+        println!("  {} ({}) — {label}", submodule.name, submodule.path);
+        if matches!(
+            state,
+            crate::git::SubmoduleState::Dirty | crate::git::SubmoduleState::Uninitialized
+        ) {
+            blocking_names.push(submodule.name.clone());
+            continue;
+        }
+
+        match submodule_drift(root, submodule)? {
+            SubmoduleDrift::NoBaseline(current_map) => {
+                println!("    no prior baseline — recording current contract as the new baseline");
+                record_submodule_expectation(root, &consumer_label, submodule, &current_map)?;
+            }
+            SubmoduleDrift::Unchanged => {
+                println!("    contract unchanged since last baseline");
+            }
+            SubmoduleDrift::Drifted {
+                in_scope,
+                out_of_scope,
+                current_map,
+            } => {
+                if in_scope.is_empty() {
+                    println!(
+                        "    contract drifted but touches no symbol the parent repo imports (informational)"
+                    );
+                } else {
+                    println!("    contract drift touches an imported symbol — blocking");
+                    blocking_names.push(submodule.name.clone());
+                }
+                print_diff(&in_scope, "imported — blocking");
+                print_diff(&out_of_scope, "informational, not imported");
+                record_submodule_expectation(root, &consumer_label, submodule, &current_map)?;
+            }
+        }
+    }
+    if blocking_names.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "submodule verification incomplete or blocking: {} ({})",
+            blocking_names.len(),
+            blocking_names.join(", ")
+        )
+        .into())
+    }
+}
+
 #[cfg(test)]
 mod tests;

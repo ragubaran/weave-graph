@@ -86,6 +86,8 @@ fn edge(src: u32, tgt: u32) -> Edge {
         target_id: tgt,
         kind: "CALLS_EXACT".into(),
         weight: 1.0,
+        extractor: None,
+        resolution_kind: None,
     }
 }
 
@@ -284,6 +286,8 @@ fn hub_storage() -> (SqliteStorage, CsrGraph) {
                 target_id: leaf,
                 kind: "CALLS_EXACT".into(),
                 weight: 1.0,
+                extractor: None,
+                resolution_kind: None,
             })
             .unwrap();
     }

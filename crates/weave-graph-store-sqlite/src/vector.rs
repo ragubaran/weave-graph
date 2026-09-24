@@ -301,5 +301,116 @@ pub(crate) fn search(
     Ok(scored.into_iter().map(|(id, _)| id).collect())
 }
 
+/// `vec_quantize_int8(_, 'unit')` linearly maps a unit-normalized float
+/// component in `[-1, 1]` to an `i8` in `[-127, 127]`. Two quantized unit
+/// vectors' raw dot product is therefore scaled by `127 * 127` relative
+/// to their real cosine similarity — dividing by this constant is what
+/// makes [`find_similar_pairs`]'s scores comparable to a plain
+/// `threshold: 0.85`-style cosine value in `.weave/policy.yaml`, not an
+/// internal quantization detail the config author has to know about.
+const INT8_UNIT_SCALE: f32 = 127.0 * 127.0;
+
+/// POL-02: self-KNN over every chunk already in `scope_ids` — reuses
+/// [`search`]'s own two-stage binary-ANN-then-int8-rerank funnel, but the
+/// query vector for each stage-1 lookup is that node's own stored
+/// `binary_vec`, not a freshly embedded text query. No `EmbeddingProvider`
+/// is needed at all: only vectors already persisted by a prior
+/// `rebuild_vector_index` are read. Pairs are deduped so `(a, b)` and
+/// `(b, a)` collapse to one entry with a stable `a < b` ordering.
+pub(crate) fn find_similar_pairs(
+    conn: &Connection,
+    scope_ids: &[NodeId],
+    threshold: f32,
+    oversample: usize,
+) -> Result<Vec<(NodeId, NodeId, f32)>, StorageError> {
+    if scope_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let has_vectors: bool = conn
+        .query_row("SELECT EXISTS(SELECT 1 FROM vec_chunks)", [], |row| {
+            row.get(0)
+        })
+        .map_err(backend_err)?;
+    if !has_vectors {
+        return Ok(Vec::new());
+    }
+
+    // +1 reserves the slot `vec0` always spends on the node's own
+    // guaranteed zero-distance self-match (never excludable in the SQL
+    // itself, see the stage-1 comment below) — without it, `oversample`'s
+    // worth of *other* candidates would silently shrink by one.
+    let candidate_limit = oversample.max(1) + 1;
+    let mut own_int8_stmt = conn
+        .prepare("SELECT int8_vec FROM vec_chunks WHERE rowid = ?1")
+        .map_err(backend_err)?;
+    // `vec0`'s KNN planner needs `LIMIT` as a literal, and — like
+    // `search`'s own stage-1 query — refuses any extra predicate
+    // alongside the `MATCH`/`ORDER BY`/`LIMIT` triple ("A LIMIT or 'k = ?'
+    // constraint is required on vec0 knn queries", caught live). So the
+    // query can't exclude the node's own id via `AND rowid != ?1`; the
+    // self-match (distance 0, always present and always ranked first) is
+    // filtered out in Rust below instead.
+    let mut stage1 = conn
+        .prepare(&format!(
+            "SELECT rowid FROM vec_chunks \
+             WHERE binary_vec MATCH (SELECT binary_vec FROM vec_chunks WHERE rowid = ?1) \
+             ORDER BY distance LIMIT {candidate_limit}",
+        ))
+        .map_err(backend_err)?;
+
+    let mut seen: std::collections::HashSet<(NodeId, NodeId)> = std::collections::HashSet::new();
+    let mut pairs = Vec::new();
+    for &id in scope_ids {
+        let own_int8: Option<Vec<u8>> = own_int8_stmt
+            .query_row(params![id], |r| r.get(0))
+            .optional()
+            .map_err(backend_err)?;
+        let Some(own_int8) = own_int8 else {
+            continue;
+        };
+        let candidates: Vec<i64> = stage1
+            .query_map(params![id], |r| r.get(0))
+            .map_err(backend_err)?
+            .collect::<Result<_, _>>()
+            .map_err(backend_err)?;
+        let candidates: Vec<i64> = candidates
+            .into_iter()
+            .filter(|&cand| cand as NodeId != id)
+            .collect();
+        if candidates.is_empty() {
+            continue;
+        }
+        let placeholders = candidates.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT rowid, int8_vec FROM vec_chunks WHERE rowid IN ({placeholders})");
+        let mut stage2 = conn.prepare(&sql).map_err(backend_err)?;
+        let scored: Vec<(NodeId, Vec<u8>)> = stage2
+            .query_map(params_from_iter(candidates.iter()), |r| {
+                Ok((r.get::<_, i64>(0)? as NodeId, r.get::<_, Vec<u8>>(1)?))
+            })
+            .map_err(backend_err)?
+            .collect::<Result<_, _>>()
+            .map_err(backend_err)?;
+        for (cand_id, cand_int8) in scored {
+            let dot: f32 = own_int8
+                .iter()
+                .zip(cand_int8.iter())
+                .map(|(&a, &b)| (a as i8 as f32) * (b as i8 as f32))
+                .sum();
+            let similarity = dot / INT8_UNIT_SCALE;
+            if similarity >= threshold {
+                let key = if id < cand_id {
+                    (id, cand_id)
+                } else {
+                    (cand_id, id)
+                };
+                if seen.insert(key) {
+                    pairs.push((key.0, key.1, similarity));
+                }
+            }
+        }
+    }
+    Ok(pairs)
+}
+
 #[cfg(test)]
 mod tests;

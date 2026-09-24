@@ -327,9 +327,12 @@ impl SqliteStorage {
         let mut stmt = self
             .conn
             .prepare_cached(
-                "INSERT INTO edges (source_id, target_id, kind, weight)
-                 VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(source_id, target_id, kind) DO UPDATE SET weight = excluded.weight",
+                "INSERT INTO edges (source_id, target_id, kind, weight, extractor, resolution_kind)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(source_id, target_id, kind) DO UPDATE SET
+                    weight = excluded.weight,
+                    extractor = excluded.extractor,
+                    resolution_kind = excluded.resolution_kind",
             )
             .map_err(backend_err)?;
         for edge in edges {
@@ -337,7 +340,9 @@ impl SqliteStorage {
                 edge.source_id,
                 edge.target_id,
                 edge.kind,
-                edge.weight
+                edge.weight,
+                edge.extractor,
+                edge.resolution_kind
             ])
             .map_err(backend_err)?;
         }
@@ -683,6 +688,8 @@ fn row_to_node(row: &rusqlite::Row) -> rusqlite::Result<Node> {
     })
 }
 
+const EDGE_COLUMNS: &str = "id, source_id, target_id, kind, weight, extractor, resolution_kind";
+
 fn row_to_edge(row: &rusqlite::Row) -> rusqlite::Result<Edge> {
     Ok(Edge {
         id: row.get::<_, i64>(0)? as EdgeId,
@@ -690,6 +697,8 @@ fn row_to_edge(row: &rusqlite::Row) -> rusqlite::Result<Edge> {
         target_id: row.get::<_, i64>(2)? as NodeId,
         kind: row.get(3)?,
         weight: row.get(4)?,
+        extractor: row.get(5)?,
+        resolution_kind: row.get(6)?,
     })
 }
 
@@ -746,9 +755,9 @@ impl Storage for SqliteStorage {
     fn get_edges(&self, node_id: NodeId) -> Result<Vec<Edge>, StorageError> {
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT id, source_id, target_id, kind, weight FROM edges WHERE source_id = ?1",
-            )
+            .prepare(&format!(
+                "SELECT {EDGE_COLUMNS} FROM edges WHERE source_id = ?1"
+            ))
             .map_err(backend_err)?;
         let rows = stmt
             .query_map(params![node_id], row_to_edge)
@@ -761,9 +770,9 @@ impl Storage for SqliteStorage {
         // idx_edges_target (V2 migration) makes this O(k) not O(E).
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT id, source_id, target_id, kind, weight FROM edges WHERE target_id = ?1",
-            )
+            .prepare(&format!(
+                "SELECT {EDGE_COLUMNS} FROM edges WHERE target_id = ?1"
+            ))
             .map_err(backend_err)?;
         let rows = stmt
             .query_map(params![node_id], row_to_edge)
@@ -805,7 +814,9 @@ impl Storage for SqliteStorage {
     fn all_edges(&self) -> Result<Vec<Edge>, StorageError> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, source_id, target_id, kind, weight FROM edges ORDER BY source_id, target_id")
+            .prepare(&format!(
+                "SELECT {EDGE_COLUMNS} FROM edges ORDER BY source_id, target_id"
+            ))
             .map_err(backend_err)?;
         let rows = stmt.query_map([], row_to_edge).map_err(backend_err)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -834,9 +845,9 @@ impl Storage for SqliteStorage {
     fn for_each_edge(&self, f: &mut dyn FnMut(Edge)) -> Result<(), StorageError> {
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT id, source_id, target_id, kind, weight FROM edges ORDER BY source_id, target_id",
-            )
+            .prepare(&format!(
+                "SELECT {EDGE_COLUMNS} FROM edges ORDER BY source_id, target_id"
+            ))
             .map_err(backend_err)?;
         let mut rows = stmt.query([]).map_err(backend_err)?;
         while let Some(row) = rows.next().map_err(backend_err)? {
@@ -854,16 +865,25 @@ impl Storage for SqliteStorage {
         let mut stmt = self
             .conn
             .prepare_cached(
-                "INSERT INTO edges (source_id, target_id, kind, weight)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO edges (source_id, target_id, kind, weight, extractor, resolution_kind)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(source_id, target_id, kind) DO UPDATE SET
-                    weight = excluded.weight
+                    weight = excluded.weight,
+                    extractor = excluded.extractor,
+                    resolution_kind = excluded.resolution_kind
                  RETURNING id",
             )
             .map_err(backend_err)?;
 
         stmt.query_row(
-            params![edge.source_id, edge.target_id, edge.kind, edge.weight],
+            params![
+                edge.source_id,
+                edge.target_id,
+                edge.kind,
+                edge.weight,
+                edge.extractor,
+                edge.resolution_kind
+            ],
             |row| row.get::<_, i64>(0),
         )
         .map(|id| id as EdgeId)
@@ -984,6 +1004,25 @@ impl Storage for SqliteStorage {
             .collect::<Result<Vec<String>, _>>()
             .map_err(backend_err)?;
         Ok(paths)
+    }
+
+    fn get_unresolved_refs_for_path(
+        &self,
+        repo_id: &str,
+        path: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare_cached(
+                "SELECT short_name FROM unresolved_refs WHERE repo_id = ?1 AND path = ?2",
+            )
+            .map_err(backend_err)?;
+        let names = stmt
+            .query_map(params![repo_id, path], |row| row.get(0))
+            .map_err(backend_err)?
+            .collect::<Result<Vec<String>, _>>()
+            .map_err(backend_err)?;
+        Ok(names)
     }
 
     fn pin_note(&self, note: &Note) -> Result<i64, StorageError> {
@@ -1124,6 +1163,13 @@ impl Storage for SqliteStorage {
             .map(|nodes| nodes.into_iter().map(|node| node.id).collect())
     }
 
+    /// Every matching node, no ranking or `LIMIT` — `weave_find_all`'s
+    /// exhaustive substrate (P10.4).
+    #[cfg(feature = "fts")]
+    fn find_all_symbols(&self, pattern: &str) -> Result<Vec<Node>, StorageError> {
+        crate::fts::search_nodes_exhaustive(&self.conn, pattern)
+    }
+
     /// Three-stage semantic search: binary ANN oversampled by
     /// `oversample`, reranked against int8 distance, capped at `limit`.
     /// `visible` (SEC-01), when given, is applied to the reranked
@@ -1148,6 +1194,17 @@ impl Storage for SqliteStorage {
             None
         };
         crate::vector::search(&self.conn, embedder, query_text, limit, oversample, filter)
+    }
+
+    /// POL-02: self-KNN over already-embedded chunks, no fresh query text.
+    #[cfg(feature = "vector")]
+    fn find_similar_node_pairs(
+        &self,
+        scope_ids: &[NodeId],
+        threshold: f32,
+        oversample: usize,
+    ) -> Result<Vec<(NodeId, NodeId, f32)>, StorageError> {
+        crate::vector::find_similar_pairs(&self.conn, scope_ids, threshold, oversample)
     }
 }
 

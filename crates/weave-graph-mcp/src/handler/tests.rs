@@ -137,19 +137,24 @@ fn handle_tools_list() {
 
     let res = handler.handle_message(&msg).unwrap();
     let tools = res.result.unwrap()["tools"].as_array().unwrap().clone();
-    // 4 base tools, +2 with `notes` (weave_pin_note/recall), +1 with
-    // `vector` (weave_search_semantic), +1 with `policy-lint`
-    // (weave_policy_lint).
-    let expected = 4
+    // 7 base tools (+weave_check_freshness, +weave_verify, +weave_explore),
+    // +2 with `notes` (weave_pin_note/recall), +1 with `vector`
+    // (weave_search_semantic), +1 with `policy-lint` (weave_policy_lint),
+    // +1 with `fts` (weave_find_all).
+    let expected = 7
         + if cfg!(feature = "notes") { 2 } else { 0 }
         + if cfg!(feature = "vector") { 1 } else { 0 }
-        + if cfg!(feature = "policy-lint") { 1 } else { 0 };
+        + if cfg!(feature = "policy-lint") { 1 } else { 0 }
+        + if cfg!(feature = "fts") { 1 } else { 0 };
     assert_eq!(tools.len(), expected);
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"weave_repo_map"));
     assert!(names.contains(&"weave_file_api"));
     assert!(names.contains(&"weave_trace_calls"));
     assert!(names.contains(&"weave_impact_radius"));
+    assert!(names.contains(&"weave_check_freshness"));
+    assert!(names.contains(&"weave_verify"));
+    assert!(names.contains(&"weave_explore"));
     if cfg!(feature = "vector") {
         assert!(names.contains(&"weave_search_semantic"));
     }
@@ -295,6 +300,207 @@ fn handle_tools_call_policy_lint() {
         .unwrap()
         .to_string();
     assert_eq!(text, "✓ no boundary violations");
+}
+
+#[test]
+fn handle_tools_call_verify_passes_with_no_unresolved_refs() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 24,
+        "method": "tools/call",
+        "params": { "name": "weave_verify", "arguments": { "file": "src/lib.rs" } }
+    })
+    .to_string();
+    let res = handler.handle_message(&req).unwrap();
+    let text = res.result.unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(text.contains("pass"), "{text}");
+}
+
+#[test]
+fn handle_tools_call_verify_fails_on_an_unresolved_reference() {
+    let mut storage = setup_storage();
+    storage
+        .upsert_unresolved_refs("local", "src/lib.rs", &["phantom_fn".to_string()])
+        .unwrap();
+    let handler = McpHandler::new(storage).unwrap();
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 25,
+        "method": "tools/call",
+        "params": { "name": "weave_verify", "arguments": { "file": "src/lib.rs", "range": [1, 10] } }
+    })
+    .to_string();
+    let res = handler.handle_message(&req).unwrap();
+    let text = res.result.unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(text.contains("phantom_fn"), "{text}");
+    assert!(text.contains("1-10"), "{text}");
+}
+
+#[test]
+fn handle_tools_call_verify_requires_the_file_parameter() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 26,
+        "method": "tools/call",
+        "params": { "name": "weave_verify", "arguments": {} }
+    })
+    .to_string();
+    let res = handler.handle_message(&req).unwrap();
+    assert_eq!(res.result.unwrap()["isError"], true);
+}
+
+#[test]
+fn handle_tools_call_explore_composes_file_api_for_a_known_symbol() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 27,
+        "method": "tools/call",
+        "params": { "name": "weave_explore", "arguments": { "symbol": "run" } }
+    })
+    .to_string();
+    let res = handler.handle_message(&req).unwrap();
+    let text = res.result.unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(text.contains("file API"), "{text}");
+    assert!(text.contains("resident_tokens"), "{text}");
+}
+
+#[test]
+fn handle_tools_call_explore_without_a_symbol_falls_back_to_repo_overview() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 28,
+        "method": "tools/call",
+        "params": { "name": "weave_explore", "arguments": {} }
+    })
+    .to_string();
+    let res = handler.handle_message(&req).unwrap();
+    let text = res.result.unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(text.contains("repo overview"), "{text}");
+}
+
+#[cfg(feature = "fts")]
+#[test]
+fn handle_tools_call_find_all_finds_the_seeded_symbol() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 29,
+        "method": "tools/call",
+        "params": { "name": "weave_find_all", "arguments": { "pattern": "run" } }
+    })
+    .to_string();
+    let res = handler.handle_message(&req).unwrap();
+    let text = res.result.unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(text.contains("run"), "{text}");
+}
+
+#[cfg(feature = "fts")]
+#[test]
+fn handle_tools_call_find_all_requires_the_pattern_parameter() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 30,
+        "method": "tools/call",
+        "params": { "name": "weave_find_all", "arguments": {} }
+    })
+    .to_string();
+    let res = handler.handle_message(&req).unwrap();
+    assert_eq!(res.result.unwrap()["isError"], true);
+}
+
+#[test]
+fn handle_tools_call_check_freshness_without_a_weave_dir() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 22,
+        "method": "tools/call",
+        "params": { "name": "weave_check_freshness", "arguments": {} }
+    })
+    .to_string();
+    let res = handler.handle_message(&req).unwrap();
+    let text = res.result.unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(text.contains("unknown"), "{text}");
+}
+
+#[test]
+fn handle_tools_call_check_freshness_reports_fresh_after_a_matching_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(args)
+            .status()
+            .unwrap();
+    };
+    run(&["init", "-q"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "user.name", "Test"]);
+    std::fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-q", "-m", "first"]);
+    let head = String::from_utf8(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let weave_dir = dir.path().join(".weave");
+    std::fs::create_dir_all(&weave_dir).unwrap();
+    std::fs::write(weave_dir.join("last_indexed_sha"), head.trim()).unwrap();
+
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap().with_weave_dir(weave_dir);
+
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": 23,
+        "method": "tools/call",
+        "params": { "name": "weave_check_freshness", "arguments": {} }
+    })
+    .to_string();
+    let res = handler.handle_message(&req).unwrap();
+    let text = res.result.unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(text.contains("Fresh"), "{text}");
 }
 
 #[test]
@@ -596,6 +802,7 @@ fn repo_map_and_file_api_respect_the_bound_rbac_identity() {
     let identity = Identity {
         subject: "contractor-bot".to_string(),
         roles: vec!["contractor".to_string()],
+        path_scope: Vec::new(),
     };
     let guard = RbacGuard::new(identity, |n: &Node| !n.path.starts_with("src/payment/"));
     let handler = McpHandler::new(storage).unwrap().with_identity(guard);

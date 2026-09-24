@@ -133,6 +133,8 @@ fn plain_call_with_no_same_file_match_falls_back_to_the_unique_global_candidate(
             source_moniker: "a.rs#caller".into(),
             target_moniker: "b.rs#shared_helper".into(),
             kind: "CALLS_EXACT".into(),
+            resolution_kind: ResolutionKind::UniqueGlobalExact,
+            extractor: Some("rust".into()),
         }]
     );
 }
@@ -185,6 +187,8 @@ fn resolve_cross_repo_falls_back_to_the_other_index_when_self_has_no_candidate()
             source_moniker: "a.rs#caller".into(),
             target_moniker: "b.rs#helper".into(),
             kind: "CALLS_EXACT".into(),
+            resolution_kind: ResolutionKind::AmbiguousHeuristic,
+            extractor: Some("rust".into()),
         }]
     );
 }
@@ -251,6 +255,112 @@ fn resolve_cross_repo_resolves_a_structural_edge_against_the_fallback_index() {
             source_moniker: "a.ts#Dog".into(),
             target_moniker: "b.ts#Animal".into(),
             kind: "INHERITS".into(),
+            resolution_kind: ResolutionKind::AmbiguousHeuristic,
+            extractor: Some("typescript".into()),
         }]
+    );
+}
+
+// --- P10.5: resolution_kind / extractor provenance ---
+
+#[test]
+fn same_file_match_is_tagged_same_file_exact_with_its_own_language() {
+    let a = parse(
+        Language::Rust,
+        "a.rs",
+        "fn helper() {}\nfn caller() { helper(); }\n",
+    );
+    let b = parse(Language::Rust, "b.rs", "fn helper() {}\n");
+    let mut index = ProjectIndex::new();
+    index.add_file(&a);
+    index.add_file(&b);
+
+    let edges = index.resolve(&a);
+    let call = edges
+        .0
+        .iter()
+        .find(|e| e.kind == "CALLS_EXACT")
+        .expect("same-file helper must resolve");
+    assert_eq!(call.resolution_kind, ResolutionKind::SameFileExact);
+    assert_eq!(call.extractor.as_deref(), Some("rust"));
+}
+
+#[test]
+fn dynamic_fan_out_is_tagged_ambiguous_heuristic() {
+    let src = "struct A; impl A { fn run(&self) { self.step(); } fn step(&self) {} }\nstruct B; impl B { fn step(&self) {} }\n";
+    let a = parse(Language::Rust, "a.rs", src);
+    let mut index = ProjectIndex::new();
+    index.add_file(&a);
+
+    let edges = index.resolve(&a);
+    let dynamic: Vec<_> = edges
+        .0
+        .iter()
+        .filter(|e| e.kind == "CALLS_DYNAMIC")
+        .collect();
+    assert_eq!(dynamic.len(), 2);
+    assert!(
+        dynamic
+            .iter()
+            .all(|e| e.resolution_kind == ResolutionKind::AmbiguousHeuristic)
+    );
+}
+
+#[test]
+fn a_structural_edge_with_one_candidate_is_tagged_unique_global_exact() {
+    let a = parse(
+        Language::Python,
+        "a.py",
+        "class Base:\n    pass\n\nclass Child(Base):\n    pass\n",
+    );
+    let mut index = ProjectIndex::new();
+    index.add_file(&a);
+
+    let edges = index.resolve(&a);
+    let inherits = edges
+        .0
+        .iter()
+        .find(|e| e.kind == "INHERITS")
+        .expect("Base must resolve");
+    assert_eq!(inherits.resolution_kind, ResolutionKind::UniqueGlobalExact);
+    assert_eq!(inherits.extractor.as_deref(), Some("python"));
+}
+
+#[test]
+fn a_structural_edge_with_multiple_candidates_is_tagged_ambiguous_heuristic() {
+    let a = parse(
+        Language::Python,
+        "a.py",
+        "class Base:\n    pass\nclass Child(Base):\n    pass\n",
+    );
+    let b = parse(Language::Python, "b.py", "class Base:\n    pass\n");
+    let mut index = ProjectIndex::new();
+    index.add_file(&a);
+    index.add_file(&b);
+
+    let edges = index.resolve(&a);
+    let inherits: Vec<_> = edges.0.iter().filter(|e| e.kind == "INHERITS").collect();
+    assert_eq!(
+        inherits.len(),
+        2,
+        "both same-named Base candidates must appear"
+    );
+    assert!(
+        inherits
+            .iter()
+            .all(|e| e.resolution_kind == ResolutionKind::AmbiguousHeuristic)
+    );
+}
+
+#[test]
+fn resolution_kind_as_str_matches_the_schema_free_form_values() {
+    assert_eq!(ResolutionKind::SameFileExact.as_str(), "SAME_FILE_EXACT");
+    assert_eq!(
+        ResolutionKind::UniqueGlobalExact.as_str(),
+        "UNIQUE_GLOBAL_EXACT"
+    );
+    assert_eq!(
+        ResolutionKind::AmbiguousHeuristic.as_str(),
+        weave_graph_core::AMBIGUOUS_HEURISTIC
     );
 }

@@ -86,6 +86,16 @@ fn search_symbols_default_refuses_with_an_unsupported_error() {
     assert!(err.to_string().contains("does not support symbol search"));
 }
 
+#[test]
+fn find_all_symbols_default_refuses_with_an_unsupported_error() {
+    let storage = MinimalStorage;
+    let err = storage.find_all_symbols("anything").unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("does not support exhaustive symbol search")
+    );
+}
+
 /// The optional-surface defaults every minimal backend inherits: edge
 /// counting without materialization, streaming iteration, and no-op
 /// resolver-input persistence. Exercising them here pins the defaults a
@@ -118,6 +128,12 @@ fn trait_defaults_cover_the_optional_surface() {
             .unwrap()
             .is_empty()
     );
+    assert!(
+        storage
+            .get_unresolved_refs_for_path("r", "a.rs")
+            .unwrap()
+            .is_empty()
+    );
 
     // Default streams via `for_each_node` rather than materializing
     // `all_nodes()` — same empty-graph contract, provable here; the
@@ -136,4 +152,17 @@ fn search_vector_default_refuses_with_an_unsupported_error() {
         .search_vector(&embedder, "anything", 10, 4, None)
         .unwrap_err();
     assert!(err.to_string().contains("does not support vector search"));
+}
+
+#[cfg(feature = "vector")]
+#[test]
+fn find_similar_node_pairs_default_refuses_with_an_unsupported_error() {
+    let storage = MinimalStorage;
+    let err = storage
+        .find_similar_node_pairs(&[1, 2], 0.85, 8)
+        .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("does not support semantic-coupling search")
+    );
 }

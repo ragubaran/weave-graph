@@ -10,6 +10,8 @@ use weave_graph_core::{Edge, Node, NodeId, Storage, StorageError};
 use weave_graph_parse::{ParsedFile, ProjectIndex, parse_file};
 use weave_graph_store_sqlite::SqliteStorage;
 
+use crate::resource_budget;
+
 pub(crate) struct IndexStats {
     pub(crate) files: usize,
     pub(crate) symbols: usize,
@@ -90,13 +92,27 @@ pub(crate) fn build_project_index_from_storage(
 const PARSE_CHUNK: usize = 32;
 const STAGED_WRITE_ROWS: usize = 10_000;
 
+/// Detects the real environment once per pipeline run (P10.1/P10.9) and
+/// scales `PARSE_CHUNK`/`STAGED_WRITE_ROWS`/the parser pool's thread count
+/// down under a genuine cgroup/host-memory ceiling — an ample or
+/// undetectable one reproduces today's constants exactly. Prints one
+/// explanatory line to stderr only when it actually reduced something.
+fn admission_budget() -> resource_budget::AdmissionBudget {
+    let budget = resource_budget::detect_admission_budget(PARSE_CHUNK, STAGED_WRITE_ROWS);
+    if let Some(explanation) = budget.explain(PARSE_CHUNK) {
+        eprintln!("{explanation}");
+    }
+    budget
+}
+
 fn rotate_staged_write(
     storage: &SqliteStorage,
     pending_rows: &mut usize,
     written_rows: usize,
+    staged_write_rows: usize,
 ) -> Result<(), StorageError> {
     *pending_rows += written_rows;
-    if *pending_rows < STAGED_WRITE_ROWS {
+    if *pending_rows < staged_write_rows {
         return Ok(());
     }
     storage.commit_bulk_write()?;
@@ -117,13 +133,9 @@ fn restart_staged_write(
     Ok(())
 }
 
-fn bounded_parser_pool() -> Result<ThreadPool, StorageError> {
+fn bounded_parser_pool(worker_threads: usize) -> Result<ThreadPool, StorageError> {
     ThreadPoolBuilder::new()
-        .num_threads(
-            std::thread::available_parallelism()
-                .map(|count| count.get())
-                .unwrap_or(1),
-        )
+        .num_threads(worker_threads.max(1))
         .build()
         .map_err(|error| StorageError::Backend(format!("could not start parser pool: {error}")))
 }
@@ -133,15 +145,20 @@ fn bounded_parser_pool() -> Result<ThreadPool, StorageError> {
 /// caller's closure — node/edge writes stay funnel-shaped through the one
 /// SQLite connection (L10's single-writer constraint). A parse error or
 /// unparseable file is reported and skipped, exactly as the sequential
-/// loop always behaved.
+/// loop always behaved. `parse_chunk`/`worker_threads` come from the
+/// caller's [`resource_budget::AdmissionBudget`] — file processing order
+/// never changes, only batch size (P10.1's own "deterministic ordering
+/// preserved" requirement).
 fn parse_files_bounded(
     root: &Path,
     files: &[PathBuf],
+    parse_chunk: usize,
+    worker_threads: usize,
     mut fold: impl FnMut(&str, &ParsedFile) -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
-    let parser_pool = bounded_parser_pool()?;
+    let parser_pool = bounded_parser_pool(worker_threads)?;
     let mut failure = None;
-    for chunk in files.chunks(PARSE_CHUNK) {
+    for chunk in files.chunks(parse_chunk.max(1)) {
         let parsed = parser_pool.install(|| {
             chunk
                 .par_iter()
@@ -206,29 +223,41 @@ fn upsert_all_nodes(
     root: &Path,
     files: &[PathBuf],
     pending_rows: &mut usize,
+    budget: &resource_budget::AdmissionBudget,
 ) -> Result<Vec<(String, NodeId)>, StorageError> {
     let mut ids = Vec::new();
-    parse_files_bounded(root, files, |rel, parsed| {
-        let nodes = parsed
-            .symbols
-            .iter()
-            .map(|symbol| Node {
-                id: 0,
-                repo_id: "local".to_string(),
-                path: rel.to_string(),
-                symbol: symbol.symbol.clone(),
-                kind: symbol.kind.as_str().to_string(),
-                line_start: symbol.line_start,
-                line_end: symbol.line_end,
-                signature: symbol.signature.clone(),
-            })
-            .collect::<Vec<_>>();
-        let node_ids = storage.upsert_nodes(&nodes)?;
-        let written_rows = node_ids.len();
-        ids.extend(node_ids.into_iter().map(|id| (rel.to_string(), id)));
-        rotate_staged_write(storage, pending_rows, written_rows)?;
-        Ok(())
-    })?;
+    parse_files_bounded(
+        root,
+        files,
+        budget.parse_chunk,
+        budget.worker_threads,
+        |rel, parsed| {
+            let nodes = parsed
+                .symbols
+                .iter()
+                .map(|symbol| Node {
+                    id: 0,
+                    repo_id: "local".to_string(),
+                    path: rel.to_string(),
+                    symbol: symbol.symbol.clone(),
+                    kind: symbol.kind.as_str().to_string(),
+                    line_start: symbol.line_start,
+                    line_end: symbol.line_end,
+                    signature: symbol.signature.clone(),
+                })
+                .collect::<Vec<_>>();
+            let node_ids = storage.upsert_nodes(&nodes)?;
+            let written_rows = node_ids.len();
+            ids.extend(node_ids.into_iter().map(|id| (rel.to_string(), id)));
+            rotate_staged_write(
+                storage,
+                pending_rows,
+                written_rows,
+                budget.staged_write_rows,
+            )?;
+            Ok(())
+        },
+    )?;
     Ok(ids)
 }
 
@@ -239,31 +268,45 @@ fn upsert_all_edges(
     files: &[PathBuf],
     moniker_id_to_node: &HashMap<u32, NodeId>,
     pending_rows: &mut usize,
+    budget: &resource_budget::AdmissionBudget,
 ) -> Result<(), StorageError> {
-    parse_files_bounded(root, files, |rel, parsed| {
-        let (edges, unresolved) = project_index.resolve_ids(parsed);
-        let resolved = edges
-            .into_iter()
-            .filter_map(|edge| {
-                let src_id = *moniker_id_to_node.get(&edge.source_id)?;
-                let tgt_id = *moniker_id_to_node.get(&edge.target_id)?;
-                Some(Edge {
-                    id: 0,
-                    source_id: src_id,
-                    target_id: tgt_id,
-                    kind: edge.kind,
-                    weight: 1.0,
+    parse_files_bounded(
+        root,
+        files,
+        budget.parse_chunk,
+        budget.worker_threads,
+        |rel, parsed| {
+            let (edges, unresolved) = project_index.resolve_ids(parsed);
+            let resolved = edges
+                .into_iter()
+                .filter_map(|edge| {
+                    let src_id = *moniker_id_to_node.get(&edge.source_id)?;
+                    let tgt_id = *moniker_id_to_node.get(&edge.target_id)?;
+                    Some(Edge {
+                        id: 0,
+                        source_id: src_id,
+                        target_id: tgt_id,
+                        kind: edge.kind,
+                        weight: 1.0,
+                        extractor: edge.extractor,
+                        resolution_kind: Some(edge.resolution_kind.as_str().to_string()),
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
-        let written_rows = resolved.len() + unresolved.len();
-        storage.upsert_edges(&resolved)?;
-        use weave_graph_core::Storage;
-        storage.purge_file_unresolved_refs("local", rel)?;
-        storage.upsert_unresolved_refs("local", rel, &unresolved)?;
-        rotate_staged_write(storage, pending_rows, written_rows)?;
-        Ok(())
-    })?;
+                .collect::<Vec<_>>();
+            let written_rows = resolved.len() + unresolved.len();
+            storage.upsert_edges(&resolved)?;
+            use weave_graph_core::Storage;
+            storage.purge_file_unresolved_refs("local", rel)?;
+            storage.upsert_unresolved_refs("local", rel, &unresolved)?;
+            rotate_staged_write(
+                storage,
+                pending_rows,
+                written_rows,
+                budget.staged_write_rows,
+            )?;
+            Ok(())
+        },
+    )?;
     Ok(())
 }
 
@@ -479,6 +522,7 @@ pub(crate) fn full_reindex(
     }
     let mut storage = SqliteStorage::open(&rebuild_db)?;
     storage.begin_bulk_write()?;
+    let budget = admission_budget();
 
     // One parse pass writes nodes only — edge resolution needs its own
     // separate pass regardless (the *complete* index only exists after
@@ -486,30 +530,41 @@ pub(crate) fn full_reindex(
     // pure waste: `build_project_index_from_storage` below builds the one
     // that's actually used, from the now-written `nodes` table, cheaper
     // than a second parse. The `ParsedFile` is dropped per chunk; nothing
-    // accumulates (PERF-06's streaming constraint, bounded by
-    // `PARSE_CHUNK` instead of one-at-a-time).
+    // accumulates (PERF-06's streaming constraint, bounded by the
+    // admission budget's `parse_chunk` instead of one-at-a-time).
     let mut total_symbols = 0usize;
     let mut pending_rows = 0usize;
-    parse_files_bounded(root, files, |rel, parsed| {
-        let nodes = parsed
-            .symbols
-            .iter()
-            .map(|symbol| Node {
-                id: 0,
-                repo_id: "local".to_string(),
-                path: rel.to_string(),
-                symbol: symbol.symbol.clone(),
-                kind: symbol.kind.as_str().to_string(),
-                line_start: symbol.line_start,
-                line_end: symbol.line_end,
-                signature: symbol.signature.clone(),
-            })
-            .collect::<Vec<_>>();
-        let written_rows = storage.insert_fresh_nodes(&nodes)?.len();
-        total_symbols += written_rows;
-        rotate_staged_write(&storage, &mut pending_rows, written_rows)?;
-        Ok(())
-    })?;
+    parse_files_bounded(
+        root,
+        files,
+        budget.parse_chunk,
+        budget.worker_threads,
+        |rel, parsed| {
+            let nodes = parsed
+                .symbols
+                .iter()
+                .map(|symbol| Node {
+                    id: 0,
+                    repo_id: "local".to_string(),
+                    path: rel.to_string(),
+                    symbol: symbol.symbol.clone(),
+                    kind: symbol.kind.as_str().to_string(),
+                    line_start: symbol.line_start,
+                    line_end: symbol.line_end,
+                    signature: symbol.signature.clone(),
+                })
+                .collect::<Vec<_>>();
+            let written_rows = storage.insert_fresh_nodes(&nodes)?.len();
+            total_symbols += written_rows;
+            rotate_staged_write(
+                &storage,
+                &mut pending_rows,
+                written_rows,
+                budget.staged_write_rows,
+            )?;
+            Ok(())
+        },
+    )?;
     restart_staged_write(&storage, &mut pending_rows)?;
 
     let (project_index, moniker_id_to_node) = build_project_index_from_storage(&storage)?;
@@ -520,6 +575,7 @@ pub(crate) fn full_reindex(
         files,
         &moniker_id_to_node,
         &mut pending_rows,
+        &budget,
     )?;
     let total_edges = storage.edge_count()?;
     #[cfg(feature = "docs")]
@@ -604,6 +660,7 @@ pub(crate) fn incremental_reindex(
         source.backup_to(&rebuild_db)?;
     }
     let mut storage = SqliteStorage::open(&rebuild_db)?;
+    let budget = admission_budget();
 
     use weave_graph_core::Storage;
 
@@ -619,19 +676,25 @@ pub(crate) fn incremental_reindex(
         .cloned()
         .collect();
 
-    let _ = parse_files_bounded(root, &changed_pathbufs, |_rel, parsed| {
-        for symbol in &parsed.symbols {
-            short_names.insert(
-                symbol
-                    .symbol
-                    .rsplit("::")
-                    .next()
-                    .unwrap_or(&symbol.symbol)
-                    .to_string(),
-            );
-        }
-        Ok(())
-    });
+    let _ = parse_files_bounded(
+        root,
+        &changed_pathbufs,
+        budget.parse_chunk,
+        budget.worker_threads,
+        |_rel, parsed| {
+            for symbol in &parsed.symbols {
+                short_names.insert(
+                    symbol
+                        .symbol
+                        .rsplit("::")
+                        .next()
+                        .unwrap_or(&symbol.symbol)
+                        .to_string(),
+                );
+            }
+            Ok(())
+        },
+    );
 
     // 1c. Find files with unresolved refs to any of these short names
     for short_name in short_names {
@@ -660,7 +723,13 @@ pub(crate) fn incremental_reindex(
     }
 
     // --- 3. Upsert New Nodes for Changed Files ---
-    let changed_nodes = upsert_all_nodes(&mut storage, root, &changed_pathbufs, &mut pending_rows)?;
+    let changed_nodes = upsert_all_nodes(
+        &mut storage,
+        root,
+        &changed_pathbufs,
+        &mut pending_rows,
+        &budget,
+    )?;
     for rel in changed {
         let retained = changed_nodes
             .iter()
@@ -689,6 +758,7 @@ pub(crate) fn incremental_reindex(
         &affected_pathbufs,
         &moniker_id_to_node,
         &mut pending_rows,
+        &budget,
     )?;
     let total_edges = storage.edge_count()?;
     #[cfg(feature = "docs")]

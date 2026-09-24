@@ -183,3 +183,38 @@ fn read_rbac_users_parses_the_configured_map() {
     );
     assert!(!users.contains_key("carol"));
 }
+
+#[test]
+fn read_rbac_users_parses_path_scope_from_the_table_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(
+        &path,
+        "[rbac.users.hub_oncall]\nroles = [\"internal\"]\npath_scope = [\"crates/weave-graph-hub\"]\n\n[rbac.users.alice]\nroles = [\"internal\"]\n",
+    )
+    .unwrap();
+    let users = read_rbac_users(&path);
+    assert_eq!(
+        users.get("hub_oncall").map(|u| u.path_scope.clone()),
+        Some(vec!["crates/weave-graph-hub".to_string()])
+    );
+    // Absent `path_scope` is empty, not a parse failure.
+    assert_eq!(
+        users.get("alice").map(|u| u.path_scope.clone()),
+        Some(vec![])
+    );
+    // The bare-array shorthand (`alice = ["internal"]`) has no table to
+    // hold a `path_scope`, so it's simply unscoped — not an error.
+}
+
+#[test]
+fn read_rbac_users_bare_array_shorthand_has_no_path_scope() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[rbac.users]\nalice = [\"internal\"]\n").unwrap();
+    let users = read_rbac_users(&path);
+    assert_eq!(
+        users.get("alice").map(|u| u.path_scope.clone()),
+        Some(vec![])
+    );
+}

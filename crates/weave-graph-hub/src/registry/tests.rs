@@ -615,6 +615,8 @@ fn canvas_renders_the_latest_committed_snapshot_s_modules() {
                 target_id: 2,
                 kind: "CALLS_EXACT".into(),
                 weight: 1.0,
+                extractor: None,
+                resolution_kind: None,
             })
             .unwrap();
     }

@@ -257,6 +257,8 @@ fn persist_composite_graph(
             target_id: db_id[tgt as usize],
             kind: "LOCAL".to_string(),
             weight: 1.0,
+            extractor: None,
+            resolution_kind: None,
         })?;
     }
     for &(src, tgt) in cross_repo_edges {
@@ -266,6 +268,8 @@ fn persist_composite_graph(
             target_id: db_id[tgt as usize],
             kind: "CROSS_REPO".to_string(),
             weight: 1.0,
+            extractor: None,
+            resolution_kind: None,
         })?;
     }
     storage.commit_bulk_write()?;

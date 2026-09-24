@@ -87,7 +87,7 @@ Separation is enforced by crate boundaries, so a tier cannot accidentally depend
 | `rbac`           | ❌      | `AuthProvider` trait + **query-layer** node masking.                                                                                                                                                                                    | `[CUSTOM]`      |
 | `otel`           | ❌      | OpenTelemetry/APM trace overlay onto graph nodes.                                                                                                                                                                                       | `[CUSTOM]`      |
 | `policy-lint`    | ❌      | YAML architectural boundary rules + CI gate.                                                                                                                                                                                            | `[CUSTOM]`      |
-| `slm`            | ❌      | Local NL→query intent router for **humans at a terminal** (`weave ask`). Never on the MCP/agent path; never required. See §2.4; full spec `slm-spec.md`.                                                                                | optional        |
+| `slm`            | ❌      | Local NL→query intent router for **humans at a terminal** (`weave ask`). Never on the MCP/agent path; never required. See §2.4.                                                                                | optional        |
 | `python`         | ❌      | PyO3 bindings for the `pip install weave-graph` wheel.                                                                                                                                                                                  | optional        |
 | `turso`          | ❌      | Swaps the storage backend to `libSQL`/Turso.                                                                                                                                                                                            | optional        |
 | `notes`          | ❌      | Cross-agent pinned memory notes on graph nodes (`weave note pin`/`weave_recall_notes`), two-tier ephemeral/crystallized lifecycle, `blake3` content-hash staleness. See `impl.md` M2.10.                                                | optional        |
@@ -407,7 +407,7 @@ flowchart TD
 
 ### 2.4 Local Intent Router _(feature: `slm`)_
 
-_Full specification: `slm-spec.md`. Summary of the binding decisions:_
+_Binding decisions:_
 
 - **Purpose**: natural-language access to graph knowledge for a **human at a terminal** — `weave ask "who calls JWT session verification?"` routes to an exact tool call, executes it deterministically, and shows both the resolved call and the result. No cloud cost, no data egress, no query syntax to learn.
 - **Never on the agent path** (§1.5). `slm` is a terminal convenience, not a layer under MCP.
@@ -425,7 +425,7 @@ _Full specification: `slm-spec.md`. Summary of the binding decisions:_
 - **`IntentRouter` trait**: the `llama.cpp`/GGUF path is one implementation. Local inference runtimes churn fast (GGML → GGUF → ONNX/MLX); routing logic must not weld to today's loader. An Apple Silicon/MLX backend is a 2027 target behind the same trait.
 - **Constrained decoding** is the priority refinement: emit tool calls under a grammar so malformed calls are unrepresentable rather than parsed-and-hoped.
 - **Explicit non-goals**: no local code generation, no multi-file refactoring. Those belong to frontier models consuming the graph over MCP. A 3B model attempting refactors reintroduces exactly the unreliability determinism exists to eliminate.
-- **Out of scope entirely**: an earlier fine-tuning sketch involving teacher-model Q&A synthesis and compiler-checked examples. It is retained only as an unapproved idea in [proposal.md](proposal.md). No training pipeline compiles into the binary. Distinguish model production from `weave slm doctor`, which verifies an installed model.
+- **Out of scope entirely**: an earlier fine-tuning sketch involving teacher-model Q&A synthesis and compiler-checked examples, retained only as an unapproved idea, never a product decision. No training pipeline compiles into the binary. Distinguish model production from `weave slm doctor`, which verifies an installed model.
 
 ---
 
@@ -499,9 +499,9 @@ _Goal: `weave-graph` is a 3-year bet, not a one-off script. These principles kee
 
 ## Phase 1 Exit Gate: Measured, Not Projected
 
-Every performance figure currently in `performance_compare.md` is a **target**, not a measurement — no implementation exists yet. Before Phase 2 planning treats any of them as established:
+Every performance figure quoted anywhere in this plan is a **target**, not a measurement — no implementation exists yet. Before Phase 2 planning treats any of them as established:
 
-1.  **Split the numbers.** `performance_compare.md` must separate **Target SLOs** (design constraints) from **Empirical Measurements** (pinned to commit, hardware, and reproducible `cargo bench` output). Presenting projections as results compounds error into every downstream decision — storage backend choice, CI gate tolerability, and the `<80MB` envelope all currently rest on unmeasured figures.
+1.  **Split the numbers.** Target SLOs (design constraints) must stay clearly separated from Empirical Measurements (pinned to commit, hardware, and reproducible `cargo bench` output). Presenting projections as results compounds error into every downstream decision — storage backend choice, CI gate tolerability, and the `<80MB` envelope all currently rest on unmeasured figures.
 2.  **Ship the harness.** `benches/` using `criterion` (one framework, not two): `parser_throughput` (Tree-sitter extraction across `tokio`, `ripgrep`, `typescript`), `csr_memory` (bytes-per-node/edge up to 1M nodes), `sqlite_latency` (point lookup, 3-hop BFS, batch insert).
 3.  **Gate regressions in CI** at a stated threshold once baselines exist.
 
@@ -521,6 +521,12 @@ _Historical implementation summary (2026-09-13): many Phase 1–3 milestones wer
 | **Phase 2b (Hub — rare)**                                   | `hub`                                               | Snapshot hydration, merge-only delta publish, retention policy                                                                                                                                          | Teams opting into shared sync                      | Small VM or free-tier hosted `libSQL`                       |
 | **Phase 3 (Custom)**                                        | `rbac`, `otel`, `policy-lint` (+`hub`)              | Central Graph Registry with partitioned ingestion, query-layer RBAC, SSO, Policy Linter, OTel overlay                                                                                                   | Self-Hosted VPC, Kubernetes                        | Standard Cloud Server / VPC Instance                        |
 | **Phase 4 (Developer performance and optional assistance)** | Independent opt-in `fts`, `vector`, and `slm` paths | Deterministic review evidence first; portable lite retrieval and explicit-only local assistance after their gates                                                                                       | Normal developers, with optional local model users | Core remains model-free; optional costs measured separately |
+| **Phase 5 (Local assistant, held)**                          | `slm` (generative path only)                        | Explicit-only local Q&A / feature-design assistant; vision ingestion held and deferred, independent of SLM                                                                                              | Individual workstations, offline/air-gapped         | Bounded worker RSS; no startup on any normal-developer path  |
+| **Phase 6 (Turso backend selector, held)**                   | `turso`                                             | CLI-facing storage-backend selection for the existing `TursoStorage` backend                                                                                                                              | Teams evaluating embedded-replica sync              | Standard Dev PC; ~15–25% slower batch-insert than `rusqlite`, held pending libSQL maturity |
+| **Phase 7 (Search & storage tuning)**                        | `fts` (plus core)                                   | FTS body/doc-comment coverage, fuzzy resolution fallback, WAL checkpoint valve, evidence-authority search tier                                                                                           | Normal developers                                   | Core-adjacent; size/RSS/latency measured under Phase 4's own gates |
+| **Phase 8 (Embedding / vector search, held)**                | `vector`                                            | BGE semantic retrieval: portability spike, embedding fingerprint, checksum-verified install, held-out quality gate                                                                                       | Individual workstations opting into semantic search | Model weights outside core closure; RAM/quality measured separately |
+| **Phase 9 (Skylos-style verification, proposal)**             | `rbac`, `policy-lint`, `federation`, `hub`          | Submodule contract checking, tri-state `weave verify`, `.weave/contracts.yml`, `weave_verify` MCP tool                                                                                                   | `custom`-tier teams                                 | Same envelope as existing `custom` build; zero default-build impact |
+| **Phase 10 (Competitive feature adoption, proposal)**         | Existing `fts`/`vector` paths, no new flag           | Memory-bounded indexing, `weave_explore`/freshness/`find_all` MCP tools, edge provenance, optional SCIP/LSP import                                                                                        | Normal developers and agents                         | No new default-build dependency; each item measured before shipping |
 
 ---
 
@@ -683,7 +689,79 @@ complete embedding fingerprint.
    corrupting the serving generation.
 
 The package-level tasks, individual statuses and acceptance gates are in
-[impl.md](impl.md#5-phase-4-developer-performance-evidence-based-review--optional-local-assistance).
+[impl.md](impl.md#4-phase-4-developer-performance-evidence-based-review--ci-gates).
 Open measurement, Turso, security, and release decisions are in
-[issues.md](issues.md). The still-unapproved Mermaid architecture-map design
-is kept in [proposal.md](proposal.md).
+[issues.md](issues.md). A Mermaid architecture-map design remains an
+unapproved idea, not yet a product decision.
+
+---
+
+## Phase 4: Developer Performance, Evidence-Based Review & CI Gates
+
+_Feature description for [impl.md](impl.md#4-phase-4-developer-performance-evidence-based-review--ci-gates)'s Phase 4. Independent opt-in `fts`/`vector`/`slm` paths; approved decisions are in §6 above._
+
+- **Profile truth**: reproducible release-build measurements (core, Basic/FTS, extended-language, vector, `slm` profiles) via `scripts/profile_matrix.sh`; CI dependency-closure and feature-isolation checks reject network/model dependencies from the core build and confirm inactive optional features don't move default-build latency or RSS.
+- **Bounded indexing & reindexing**: fixed-size ordered parse batches, interned `u32` edge endpoints, an 80 MiB peak-RSS harness (`scripts/pipeline_rss.sh`) for the full 500k-symbol CLI pipeline, and the same atomic staged-rebuild/bidirectional-purge guarantees Phase 1 established.
+- **Deterministic retrieval & review evidence**: `weave blast`'s bounded, RBAC-filtered changed-file impact bundle (symbols, callers/callees, contract surface, revision range) feeds CI review and any future local assistant, with no model in the loop.
+- **Measured scale options**: deterministic lexical/vector rank fusion with stable tie-breaking; ANN, reranking, and FFI/GPU acceleration are conditional on a measured bottleneck, not built speculatively.
+- **Optional JSON/HTTP response compression** (`http-compression`/`hub-compression`, gzip) for MCP and Hub transports, disabled below a measured crossover threshold.
+- **Status**: reclassified 2026-09-19 — implemented work is marked done; every RSS/latency/quality performance-verification task is explicitly held pending measurement, not claimed. Per-task status in [impl.md](impl.md) §4. Embedding/vector-search work (`P4-D`) split out into its own held Phase 8 below, 2026-09-23.
+
+## Phase 5: Explicit On-Demand Local Assistant (SLM) & Held Model-Backed Work
+
+_Feature description for [impl.md](impl.md#5-phase-5-explicit-on-demand-local-assistant-slm--held-model-backed-work)'s Phase 5. Corresponds to the "Local assistant" profile row in §6 above._
+
+- **Explicit-only local Q&A / feature-design assistant**: retains fast deterministic handling for anything a graph/query call can answer; starts a bounded, cancellable local generative-model worker only when the user explicitly asks a codebase question or requests a feature design — never during normal indexing, search, watch, or MCP traffic.
+- Applies query-layer RBAC and revision/authorization-aware cache keys before any model context is assembled; treats repository text as untrusted evidence, never as authority over the user or tool permissions.
+- **Vision ingestion (P5.2)**: held and deferred, independent of SLM, no committed timeline — never folded into ordinary `weave index` if approved later.
+- **Status**: not started. M2.4 (Phase 2) already ships the deterministic SLM scope this phase builds on — router, CLI verbs, grounding invariants; only the generative/real-model portion is scheduled here.
+
+## Phase 6: Turso Backend Selector (Held)
+
+_Feature description for [impl.md](impl.md#6-phase-6-turso-backend-selector-held)'s Phase 6._
+
+- A user-facing CLI storage-backend selector (e.g. `weave init --backend turso`) so the `TursoStorage` backend M2.7 (Phase 2) already ships — shared migrations, backend tests — is reachable outside test code.
+- Held per §1.1's own "revisit when [libSQL] exits beta" rationale: embedded libSQL measured ~15–25% slower than `rusqlite` on the M2.7 batch-insert benchmark. Re-run that benchmark against the then-current libSQL release before scheduling this.
+- **Status**: held, no committed timeline.
+
+## Phase 7: Search & Storage Tuning Additions
+
+_Feature description for [impl.md](impl.md#7-phase-7-search--storage-tuning-additions-m71m711)'s Phase 7 (M7.1–M7.11; renamed from `M4B.x` 2026-09-23)._
+
+- FTS `body`/`doc_comment` coverage so search matches symbol bodies and doc comments, not just names/signatures; a fuzzy symbol-resolution fallback (case-insensitive, short-name, Levenshtein-ranked suggestions) shared across CLI and MCP.
+- FTS5 `optimize` on full rebuild only; a growth-based WAL checkpoint valve (implemented, not yet wired into the hot indexing path pending measurement); a content-marker directory exclusion (`pyvenv.cfg`, `conda-meta`) alongside the existing name-based skip list.
+- An evidence-authority tier (`direct`/`metadata` label) on semantic search results; a grep-style literal fallback when a lexical search returns zero FTS hits.
+- **Status**: 9 of 11 items done as of 2026-09-19; the `cache_size` pragma investigation is the only item not started. Un-merged from a combined "Phase 4D" into its own numbered phase 2026-09-23 so document phase numbers run sequentially 1–7 — these items were never held on a product decision or an external dependency, same bar as Phase 4's own tasks.
+
+---
+
+## Phase 8: Embedding / Vector Search (BGE Semantic Retrieval) — Held
+
+_Feature description for [impl.md](impl.md#8-phase-8-embedding--vector-search-bge-semantic-retrieval--held)'s Phase 8. Corresponds to the "Lite semantic retrieval" profile row in §6 above. Split out of Phase 4's `P4-D` 2026-09-23 into its own held phase, same carve-out precedent as Phase 5/6._
+
+- **Optional BGE semantic retrieval** (`vector` feature): `BAAI/bge-small-en-v1.5`, installed explicitly and kept outside the core dependency closure; a portability spike, a complete embedding fingerprint (model revision, tokenizer, pooling, normalization, quantization, chunking), checksum-verified offline install, and a held-out Recall@k/MRR/nDCG quality gate against held-out code queries — not just `MockEmbeddingProvider` plumbing tests — must all land before a "semantic search" claim is made.
+- Publishes vector data/metadata transactionally; serves deterministic graph/lexical results while a compatible vector generation is absent or rebuilding, never mixing generations.
+- **Status**: held by product decision, not started. M3.7 (Phase 3) vector storage/quantization and the mock-provider boundary are existing groundwork this phase builds on.
+
+---
+
+## Phase 9: Skylos-Style Verification & Submodule Contract Checking (Proposal)
+
+_Feature description for [impl.md](impl.md#9-phase-9-skylos-style-verification--submodule-contract-checking-proposal)'s Phase 9 — adapted from an unapproved internal verification proposal, not an approved product decision like §6 above._
+
+- Adapts [Skylos](https://github.com/duriantaco/skylos)'s deterministic pre-flight verification and tri-state (`pass`/`fail`/`incomplete`) proof model into weave-graph's own graph — never a code port, and never LLM-evaluated.
+- Git submodule discovery and automatic submodule contract boundaries, consumer-scoped drift filtering (blocking only when a parent-repo call site actually consumes the drifted symbol); a `weave verify` CLI command and a `weave_verify` MCP tool for phantom-symbol/boundary-leak checks before an AI-agent edit is presented; declarative `.weave/contracts.yml` submodule/hallucination rules, kept separate in scope from the existing `.weave/policy.yaml` boundary linter.
+- Also closes six deferred-capability gaps (`POL-04`, `RBAC-01`, `POL-05`, `POL-02`, `FED-01`, `HUB-03`) as smallest-extension additions to existing `rbac`/`policy-lint`/`federation`/`hub` code — no new subsystem.
+- Rides entirely on the existing `rbac`/`policy-lint`/`federation`/`hub` features already bundled into the `custom` build tier; adds no new Cargo feature flag and changes nothing in the default `weave` binary.
+- **Status**: done (2026-09-24) — see [impl.md](impl.md#9-phase-9-skylos-style-verification--submodule-contract-checking-proposal) for the full per-milestone breakdown. Still an unapproved proposal in name only: every checklist item is implemented and tested, pending the human sign-off required before default-tier promotion.
+
+---
+
+## Phase 10: Competitive Feature Adoption
+
+_Feature description for [impl.md](impl.md#10-phase-10-competitive-feature-adoption)'s Phase 10 — recommendations from an unapproved internal competitive review against Trail Graft, the Sourcegraph public snapshot, and CodeGraph, not yet an approved product decision._
+
+- **P0 (highest value):** close the full-pipeline 500k-symbol memory-bounded-indexing gap before broadening anything else; a budgeted `weave_explore` MCP tool alongside the existing four narrow tools; a first-class `weave_check_freshness` contract; exhaustive `weave_find_all` symbol-aware search; per-edge provenance/confidence so heuristic edges are never presented as compiler-certain.
+- **P1 (behind optional features):** an explicit-request-only SCIP/LSP precision importer (never a bundled language server); composable `path:`/`lang:`/`kind:`/`visibility:`/`edge:` query-grammar filters; one feature-gated framework route/handler adapter pilot; container-aware Rayon scheduling and a pinned agent-effectiveness benchmark gate before any token/speed/correctness marketing claim.
+- **Declined for the core profile:** a default/bundled LLM or embedding model, a dense one-call-only MCP interface, Sourcegraph's distributed service stack, an always-running mandatory daemon, default telemetry, and broad framework support before the P0 memory gap closes.
+- **Status**: mostly done (2026-09-24) — see [impl.md](impl.md#10-phase-10-competitive-feature-adoption) for the full per-milestone breakdown, including the two items left honestly partial (Linux-specific memory verification, an agent-effectiveness benchmark needing real LLM runs) and the one left unstarted by deliberate choice (SCIP/LSP import, pending a safe dependency or fixture path).

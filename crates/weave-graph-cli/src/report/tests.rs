@@ -23,6 +23,8 @@ fn edge(source_id: NodeId, target_id: NodeId) -> Edge {
         target_id,
         kind: "CALLS_EXACT".into(),
         weight: 1.0,
+        extractor: None,
+        resolution_kind: None,
     }
 }
 

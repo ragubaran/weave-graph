@@ -80,6 +80,7 @@ fn github_identity_from_json(body: &str) -> Option<Identity> {
     Some(Identity {
         subject: format!("github:{}:{}", user.login, user.id),
         roles: vec!["github".to_string()],
+        path_scope: Vec::new(),
     })
 }
 
@@ -175,10 +176,12 @@ pub(crate) fn guard_for(root: &Path, as_subject: Option<&str>) -> RbacGuard {
         users.insert(subject, user_config);
     }
 
-    // Convert to the simplified roles-only map for the static auth provider
-    let role_users: HashMap<String, Vec<String>> = users
+    // RBAC-01: carry each subject's `path_scope` alongside its roles —
+    // `with_path_scopes` behaves identically to the old roles-only `new`
+    // path when every entry's scope is empty.
+    let role_users: HashMap<String, (Vec<String>, Vec<String>)> = users
         .into_iter()
-        .map(|(subject, user_config)| (subject, user_config.roles))
+        .map(|(subject, user_config)| (subject, (user_config.roles, user_config.path_scope)))
         .collect();
 
     #[cfg(feature = "github-auth")]
@@ -216,9 +219,11 @@ pub(crate) fn guard_for(root: &Path, as_subject: Option<&str>) -> RbacGuard {
             }
             identity
         })
-        .unwrap_or_else(|| StaticAuthProvider::new(role_users.clone()).resolve(as_subject));
+        .unwrap_or_else(|| {
+            StaticAuthProvider::with_path_scopes(role_users.clone()).resolve(as_subject)
+        });
     #[cfg(not(feature = "github-auth"))]
-    let identity: Identity = StaticAuthProvider::new(role_users).resolve(as_subject);
+    let identity: Identity = StaticAuthProvider::with_path_scopes(role_users).resolve(as_subject);
     RbacGuard::new(identity, is_public)
 }
 
@@ -263,7 +268,14 @@ fn parse_directory(content: &str) -> HashMap<String, UserConfig> {
 
             let token = token_val.map(String::from);
 
-            Some((subject.clone(), UserConfig { roles, token }))
+            Some((
+                subject.clone(),
+                UserConfig {
+                    roles,
+                    token,
+                    path_scope: Vec::new(),
+                },
+            ))
         })
         .collect()
 }
@@ -337,7 +349,14 @@ impl ScimDirectory {
                     return Err("userName must not be empty".to_string());
                 }
                 let mut users = load_directory(&self.file);
-                users.insert(subject.clone(), UserConfig { roles, token: None });
+                users.insert(
+                    subject.clone(),
+                    UserConfig {
+                        roles,
+                        token: None,
+                        path_scope: Vec::new(),
+                    },
+                );
                 save_directory(&self.file, &users)?;
                 Ok(ScimResponse(201, format!("{{\"id\":\"{subject}\"}}")))
             }
@@ -361,9 +380,10 @@ impl AuthProvider for ScimDirectory {
         match credential
             .and_then(|subject| self.snapshot.get(subject).map(|roles| (subject, roles)))
         {
-            Some((subject, roles)) => Identity {
+            Some((subject, user_config)) => Identity {
                 subject: subject.to_string(),
-                roles: roles.roles.clone(),
+                roles: user_config.roles.clone(),
+                path_scope: user_config.path_scope.clone(),
             },
             None => Identity::anonymous(),
         }

@@ -30,6 +30,7 @@ mod query;
 #[cfg(feature = "rbac")]
 mod rbac;
 mod report;
+mod resource_budget;
 #[cfg(feature = "slm")]
 mod rules;
 #[cfg(feature = "fts")]
@@ -41,6 +42,8 @@ mod storage_location;
 mod sync;
 #[cfg(feature = "otel")]
 mod traces;
+#[cfg(feature = "federation")]
+mod verify;
 #[cfg(feature = "viz")]
 mod viz;
 mod waiver;
@@ -261,6 +264,28 @@ enum Commands {
         /// Audit reason for --allow-drift/--allow-drift-for (mandatory when either is passed)
         #[arg(long)]
         reason: Option<String>,
+        /// Report each registered Git submodule's verification state instead
+        /// of the linked-repo contract check (no `linked_repos` required)
+        #[arg(long)]
+        submodules: bool,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Deterministic pre-flight verification: phantom symbols, submodule
+    /// encapsulation violations, stale submodule references (feature: federation)
+    Verify {
+        /// Scope to one indexed file (relative path, as stored in the graph)
+        #[arg(long)]
+        file: Option<String>,
+        /// Line range within --file, e.g. "100:180" — requires --file
+        #[arg(long)]
+        range: Option<String>,
+        /// Only run submodule-relevant checks (encapsulation + stale references)
+        #[arg(long)]
+        submodules: bool,
+        /// "text" (default) or "json"
+        #[arg(long, default_value = "text")]
+        format: String,
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
@@ -348,6 +373,18 @@ enum PolicyAction {
         /// If true, fail the lint if any edges were masked by RBAC (meaning violations might be hidden)
         #[arg(long)]
         fail_on_masked: bool,
+        /// Waive one violation by rule id ("<kind>:<from>-><to>", as
+        /// printed); repeatable. Requires --reason and the `allow-drift`
+        /// role (same gate as `weave check-contracts`/`weave blast`)
+        #[arg(long = "waive")]
+        waive: Vec<String>,
+        /// Audit reason for --waive (mandatory when --waive is passed)
+        #[arg(long)]
+        reason: Option<String>,
+        /// Lint across every `[federation] linked_repos` peer instead of
+        /// just `path` (feature: federation)
+        #[arg(long)]
+        federated: bool,
     },
     /// Report architecture drift: dependency cycles, orphaned files
     Drift {
@@ -605,12 +642,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(feature = "federation")]
         Commands::CheckContracts {
+            submodules, path, ..
+        } if submodules => contracts::cmd_check_contracts_submodules(&path)?,
+        #[cfg(feature = "federation")]
+        Commands::CheckContracts {
             diff,
             scoped,
             allow_drift,
             allow_drift_for,
             warn_only,
             reason,
+            submodules: _,
             path,
         } => {
             let skip_env = std::env::var("WEAVE_SKIP_CONTRACTS").ok();
@@ -636,6 +678,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::CheckContracts { .. } => {
             feature_not_compiled("weave check-contracts", "federation")
         }
+        #[cfg(feature = "federation")]
+        Commands::Verify {
+            file,
+            range,
+            submodules,
+            format,
+            path,
+        } => cmd_verify(
+            &path,
+            file.as_deref(),
+            range.as_deref(),
+            submodules,
+            &format,
+        )?,
+        #[cfg(not(feature = "federation"))]
+        Commands::Verify { .. } => feature_not_compiled("weave verify", "federation"),
         #[cfg(feature = "hub")]
         Commands::Sync {
             action:
@@ -706,7 +764,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             PolicyAction::Lint {
                 path,
                 fail_on_masked,
-            } => policy::cmd_policy_lint(&path, as_subject.as_deref(), fail_on_masked)?,
+                waive,
+                reason,
+                federated,
+            } => policy::cmd_policy_lint(
+                &path,
+                as_subject.as_deref(),
+                fail_on_masked,
+                &waive,
+                reason.as_deref(),
+                federated,
+            )?,
             PolicyAction::Drift { path } => policy::cmd_policy_drift(&path, as_subject.as_deref())?,
         },
         #[cfg(not(feature = "policy-lint"))]
@@ -762,6 +830,52 @@ fn slm_cmd_doctor() -> Result<(), Box<dyn std::error::Error>> {
     println!("{report}");
     if !outcome.pass() {
         std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// Parses `--range "100:180"` into `(100, 180)`. A plain, dependency-free
+/// split — the same "lightweight parsing, no heavy dependency" bar
+/// `docs/proposal-skylos.md` sets for `.gitmodules` parsing.
+#[cfg(feature = "federation")]
+fn parse_range(raw: &str) -> Result<(u32, u32), Box<dyn std::error::Error>> {
+    let (start, end) = raw
+        .split_once(':')
+        .ok_or_else(|| format!("--range must be \"start:end\", got {raw:?}"))?;
+    let start: u32 = start
+        .parse()
+        .map_err(|_| format!("--range start {start:?} is not a number"))?;
+    let end: u32 = end
+        .parse()
+        .map_err(|_| format!("--range end {end:?} is not a number"))?;
+    Ok((start, end))
+}
+
+/// `weave verify`: dispatches to [`verify::cmd_verify`], renders the
+/// report in the requested format, and exits with the tri-state code
+/// (`pass`=0, `fail`=1, `incomplete`=2) rather than the usual `Result`-only
+/// success/failure `main`'s own return type gives every other command.
+#[cfg(feature = "federation")]
+fn cmd_verify(
+    path: &Path,
+    file: Option<&str>,
+    range: Option<&str>,
+    submodules: bool,
+    format: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if range.is_some() && file.is_none() {
+        return Err("--range requires --file".into());
+    }
+    let range = range.map(parse_range).transpose()?;
+    let report = verify::cmd_verify(path, file, range, submodules)?;
+    if format == "json" {
+        println!("{}", serde_json::to_string_pretty(&report.to_json())?);
+    } else {
+        report.print_text();
+    }
+    let code = report.status.exit_code();
+    if code != 0 {
+        std::process::exit(code);
     }
     Ok(())
 }
