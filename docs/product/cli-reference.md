@@ -134,6 +134,20 @@ weave blast --base <ref> [--format md|json] [--out <file>] [--depth <n>] [--dire
 - `--direction callers|callees|both`: Direction to walk _(default: `callers`)_.
 - `--skip`: Waives the blast-radius computation entirely (`impl.md` M3.10) — requires `--reason <text>`; emits a warning banner + a Waiver Notice in the output and exits `0`. `WEAVE_SKIP_BLAST=1` does the same via CI env var (no `--reason` required — the env var itself is the audit trail). With `--features rbac` and a bound `--as <subject>`, the identity must hold the `"allow-drift"` role or the waiver is refused. **Omitting `--as` entirely** is only unrestricted when this repo's `[rbac.users]` config grants `"allow-drift"` to nobody; if it grants that role to anyone, an identity-less waiver is refused outright (`Use --as <subject> to authenticate`) — see `weave check-contracts` below for the same rule.
 
+### `weave hooks install` / `weave hooks uninstall`
+
+Writes (or removes) a local, offline `pre-push` git hook that runs `weave blast` and `weave check-contracts --submodules` before a push ever reaches CI — no network wait, no Cargo feature required.
+
+```bash
+weave hooks install [--base <ref>] [--force] [--path <dir>]
+weave hooks uninstall [--path <dir>]
+```
+
+- `--base <ref>`: Ref the installed hook passes to `weave blast --base`. Defaults to the detected default branch (`origin/HEAD` if a remote is configured, else local `main`/`master`); if neither can be detected, `install` fails with a clear error asking for `--base` explicitly.
+- `--force`: Overwrites a pre-existing `pre-push` hook that wasn't installed by this command. Without it, `install` refuses to touch a foreign hook.
+- The installed hook runs `weave blast --base <base> || true` (advisory — never blocks a push) followed by `weave check-contracts --submodules` (the one contract-check mode that safely no-ops when no submodules are registered, so the default hook never blocks a push on a repo that never configured federation).
+- `uninstall` only removes a hook it installed (detected via an embedded marker comment); a foreign hook, or nothing installed at all, is left untouched.
+
 ### `weave report`
 
 Generates architectural summary reports and visualization artifacts.

@@ -1,6 +1,14 @@
 # Release Notes
 
-## Unreleased — RBAC Hardening, Registry Auth & Provenance, Storage Trait Cleanup, New MCP Tools, Corrected Binary Sizes, Federated Query Persistence, Zero-Config MCP & Ignore Management
+## Unreleased — RBAC Hardening, Registry Auth & Provenance, Storage Trait Cleanup, New MCP Tools, Corrected Binary Sizes, Federated Query Persistence, Zero-Config MCP & Ignore Management, Local Pre-Push Gate
+
+### Local Pre-Push Gate (`weave hooks install`/`uninstall`)
+
+New base-CLI command, no Cargo feature required:
+
+- **`weave hooks install [--base <ref>] [--force]`**: writes a local, offline `pre-push` git hook running `weave blast --base <base> || true` (advisory) then `weave check-contracts --submodules` (safe no-op with no submodules registered, so the default install never blocks a push on a repo that never configured federation) — the same checks CI runs, before a push ever leaves the machine. `--base` defaults to the detected default branch (`origin/HEAD`, else local `main`/`master`); refuses to overwrite a pre-existing `pre-push` hook it didn't write unless `--force` is passed.
+- **`weave hooks uninstall`**: removes the hook, only if it still carries the marker this command wrote — a foreign hook, or nothing installed, is left untouched.
+- Hooks directory resolved via `git rev-parse --path-format=absolute --git-path hooks` (correct under worktrees, bare repos, and a customized `core.hooksPath`), not a hardcoded `.git/hooks` path.
 
 ### Zero-Config AI Agent MCP Integration & Smart Ignore Management (`weave init`)
 

@@ -136,6 +136,16 @@ itself never talks to GitHub; pipe the output into `gh pr comment` from
 CI. Requires `fetch-depth: 0` in the CI checkout (a shallow clone fails
 with a message naming the fix, not a confusing raw `git` error).
 
+## `weave hooks install`/`uninstall` (no feature flag — base CLI)
+
+A local, offline `pre-push` git hook that runs `weave blast --base <base> || true`
+(advisory) then `weave check-contracts --submodules` (the one contract-check
+mode that safely no-ops when no submodules are registered) before a push
+ever reaches CI — same checks, no network wait. `--base` defaults to the
+detected default branch (`origin/HEAD`, else local `main`/`master`); an
+explicit `--base <ref>` overrides it. Never overwrites or deletes a
+`pre-push` hook it didn't install unless `--force` is passed to `install`.
+
 ## `viz`
 
 An offline HTML viewer for `weave report`'s output — no server dependency

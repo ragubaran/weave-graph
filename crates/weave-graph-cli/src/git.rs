@@ -30,6 +30,34 @@ pub(crate) fn is_working_tree_clean(root: &Path) -> bool {
     run(root, &["status", "--porcelain"]).is_some_and(|s| s.trim().is_empty())
 }
 
+/// The repo's real hooks directory, via `git rev-parse` rather than a
+/// hardcoded `.git/hooks` guess — correct for worktrees, bare repos, and
+/// an already-customized `core.hooksPath`. `None` when `root` isn't a
+/// git repository (or `git` isn't on `PATH`).
+pub(crate) fn hooks_dir(root: &Path) -> Option<std::path::PathBuf> {
+    let raw = run(
+        root,
+        &["rev-parse", "--path-format=absolute", "--git-path", "hooks"],
+    )?;
+    Some(std::path::PathBuf::from(raw.trim()))
+}
+
+/// Best-effort default branch: `origin/HEAD`'s target first (the
+/// canonical answer once a remote is configured), else the first of
+/// `main`/`master` that actually exists as a local branch. `None` when
+/// neither resolves — the caller must ask for an explicit ref.
+pub(crate) fn default_branch(root: &Path) -> Option<String> {
+    if let Some(out) = run(root, &["symbolic-ref", "refs/remotes/origin/HEAD"])
+        && let Some(name) = out.trim().strip_prefix("refs/remotes/origin/")
+    {
+        return Some(name.to_string());
+    }
+    ["main", "master"]
+        .into_iter()
+        .find(|candidate| run(root, &["rev-parse", "--verify", "--quiet", candidate]).is_some())
+        .map(str::to_string)
+}
+
 /// Paths touched since `sha` — committed and uncommitted changes plus new
 /// untracked files — deduped and sorted. `None` if `root` isn't a git repo
 /// or `sha` isn't a commit it has (fresh clone since, shallow history, etc.),

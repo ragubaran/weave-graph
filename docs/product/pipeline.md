@@ -37,6 +37,16 @@ flowchart TD
 > **2. Prefix-Fallback Cache Keys**  
 > An exact SHA cache key never hits on a new pull request branch. Use prefix fallback keys (`weave-${{ runner.os }}-${{ github.ref_name }}-` and `weave-${{ runner.os }}-main-`) so the job restores the latest graph and only parses changed files.
 
+### Local Pre-Push Gate (Before CI)
+
+`weave hooks install` writes a local, offline `pre-push` git hook so the same blast-radius/contract checks CI runs are also available before a push ever leaves the machine — no network wait, no Cargo feature required:
+
+```bash
+weave hooks install [--base <ref>]
+```
+
+The installed hook runs `weave blast --base <base> || true` (advisory, never blocks the push) followed by `weave check-contracts --submodules` (safe no-op when no submodules are registered, so the default install never blocks a push on a repo that hasn't configured federation). `--base` defaults to the detected default branch (`origin/HEAD`, else local `main`/`master`). `weave hooks uninstall` removes it; both commands refuse to touch a `pre-push` hook they didn't create unless `--force` is passed to `install`. See the [CLI Reference](cli-reference.md) for the full flag list.
+
 ---
 
 ## 2. Single Mode Workflows (`mode = "single"`)

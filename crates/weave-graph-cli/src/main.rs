@@ -15,6 +15,7 @@ mod export;
 #[cfg(feature = "federation")]
 mod federation;
 mod git;
+mod hooks;
 mod index;
 #[cfg(feature = "slm")]
 mod journal;
@@ -337,6 +338,35 @@ enum Commands {
     Rbac {
         #[command(subcommand)]
         action: RbacAction,
+    },
+    /// Manage a local `pre-push` git hook running `weave blast`/`weave
+    /// check-contracts --submodules` before a push, offline
+    Hooks {
+        #[command(subcommand)]
+        action: HooksAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum HooksAction {
+    /// Write the `pre-push` hook (refuses to overwrite a hook this
+    /// command didn't create, unless `--force` is given)
+    Install {
+        /// Ref for the installed hook's `weave blast --base` (defaults
+        /// to the detected default branch: `origin/HEAD`, else local
+        /// `main`/`master`)
+        #[arg(long)]
+        base: Option<String>,
+        /// Overwrite an existing `pre-push` hook not installed by this command
+        #[arg(long)]
+        force: bool,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Remove the `pre-push` hook, only if `weave hooks install` wrote it
+    Uninstall {
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
     },
 }
 
@@ -785,6 +815,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => rbac::cmd_serve_scim(&path, port)?,
         #[cfg(not(feature = "rbac"))]
         Commands::Rbac { .. } => feature_not_compiled("weave rbac", "rbac"),
+        Commands::Hooks { action } => match action {
+            HooksAction::Install { base, force, path } => {
+                hooks::cmd_hooks_install(&path, base.as_deref(), force)?
+            }
+            HooksAction::Uninstall { path } => hooks::cmd_hooks_uninstall(&path)?,
+        },
     }
 
     Ok(())

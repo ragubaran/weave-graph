@@ -246,3 +246,95 @@ fn submodule_state_is_uninitialized_before_checkout() {
         SubmoduleState::Uninitialized
     );
 }
+
+#[test]
+fn hooks_dir_points_at_the_real_git_hooks_directory() {
+    let dir = init_repo();
+    let hooks = hooks_dir(dir.path()).unwrap();
+    assert!(hooks.is_absolute(), "{hooks:?}");
+    // Compare canonicalized paths, not raw ones — `dir.path()` may itself
+    // resolve through a symlinked temp directory (e.g. macOS `/tmp` ->
+    // `/private/tmp`), which `git`'s own absolute-path output already
+    // resolves through.
+    let expected = dir.path().join(".git").join("hooks");
+    assert_eq!(
+        hooks.canonicalize().unwrap_or(hooks),
+        expected.canonicalize().unwrap_or(expected)
+    );
+}
+
+#[test]
+fn hooks_dir_is_none_outside_a_git_repo() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(hooks_dir(dir.path()).is_none());
+}
+
+#[test]
+fn default_branch_falls_back_to_a_local_main_or_master_with_no_remote() {
+    let dir = init_repo();
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    commit_all(dir.path(), "first");
+
+    // A fresh `git init` may name its initial branch `main` or `master`
+    // depending on the local/CI `init.defaultBranch` setting — either is
+    // a correct answer here, since there's no `origin` to prefer.
+    let branch = default_branch(dir.path()).unwrap();
+    assert!(branch == "main" || branch == "master", "{branch}");
+    assert_eq!(Some(branch), current_branch(dir.path()));
+}
+
+#[test]
+fn default_branch_prefers_origin_head_over_a_same_named_local_branch() {
+    let upstream = init_repo();
+    fs::write(upstream.path().join("a.rs"), "fn a() {}\n").unwrap();
+    commit_all(upstream.path(), "first");
+    let upstream_branch = current_branch(upstream.path()).unwrap();
+
+    let dir = init_repo();
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    commit_all(dir.path(), "first");
+    // Give the local repo its own differently-named branch too, so a
+    // correct implementation must be reading `origin/HEAD`, not just
+    // "the first of main/master that exists locally".
+    Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["branch", "-m", "trunk"])
+        .status()
+        .unwrap();
+    Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["remote", "add", "origin", upstream.path().to_str().unwrap()])
+        .status()
+        .unwrap();
+    Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["fetch", "-q", "origin"])
+        .status()
+        .unwrap();
+    Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["remote", "set-head", "origin", &upstream_branch])
+        .status()
+        .unwrap();
+
+    assert_eq!(default_branch(dir.path()), Some(upstream_branch));
+}
+
+#[test]
+fn default_branch_is_none_with_no_remote_and_no_main_or_master() {
+    let dir = init_repo();
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    commit_all(dir.path(), "first");
+    Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["branch", "-m", "trunk"])
+        .status()
+        .unwrap();
+
+    assert_eq!(default_branch(dir.path()), None);
+}

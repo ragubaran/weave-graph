@@ -82,6 +82,13 @@ weave status                  # Summary: files, symbols, edges, and pending mark
 
 Every `weave index` run takes an advisory file lock (`.weave/index.lock`). If two processes run concurrently (e.g. pre-commit hook and an IDE agent), the second process safely **blocks and waits its turn**. Reads (`weave query`, `weave serve --mcp`) run concurrently without blocking via SQLite WAL mode.
 
+Optionally, run `weave hooks install` once to gate your own `git push` on `weave blast`/`weave check-contracts` locally, offline, before CI ever sees the push:
+
+```bash
+weave hooks install     # writes a pre-push hook, no CI wait
+weave hooks uninstall    # removes it
+```
+
 ---
 
 ## 2. Multiple Repository Mode — Federation Across Local Repos
