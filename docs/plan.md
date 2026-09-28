@@ -366,7 +366,7 @@ flowchart TD
 ### 2.2 Cryptographic Provenance _(feature: `provenance`)_
 
 - **`ProvenanceProvider` Trait, Not a Named Dependency**:
-  - The core defines a `ProvenanceProvider` trait; **Lodestone Nexus (`/Users/ragu/Code/LoadstoneNexus`) is one implementation of it**, not the interface. If that project's API changes or it is retired, `weave-graph` keeps working and another provider can be supplied.
+  - The core defines a `ProvenanceProvider` trait; **Lodestone Nexus is one implementation of it**, not the interface. If that project's API changes or it is retired, `weave-graph` keeps working and another provider can be supplied.
   - `weave-graph-core` remains consumable as a plain Rust crate by any external host, including `lodestone-core`.
 - **Provenance Linking**:
   - Optionally connect code nodes to Merkle-signed notes (`[doc_id:commit_hash]`) through a deployment-supplied provider, letting AI agents trace an architectural rule to its verified author, timestamp, and commit. Core indexing and querying remain independent of that provider.

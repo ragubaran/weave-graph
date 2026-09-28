@@ -134,7 +134,7 @@ Do not implement a proposed flag or backend enum solely from this appendix.
 #### CORE-01: Concrete `SqliteStorage` Coupling in CLI and MCP Server
 
 - **⚠️ Investigated, still open (2026-09-13) — the original remediation is unsafe to build as written**: this pass set out to implement exactly the remediation below (a `StorageBackend` enum + `Deref<Target = dyn Storage>`) as part of Phase 3. Before wiring it into `open_storage_for_read`/`McpHandler`, a cross-compat check was run: open a `SqliteStorage` connection, then open a `TursoStorage` connection in the _same process_. It panics — `crates/weave-graph-store-turso/tests/cross_compat.rs::opening_turso_after_sqlite_in_the_same_process_panics` reproduces it every time, on unrelated files, even fully in-memory. Root cause: `weave-graph-store-sqlite` (`rusqlite`, feature `bundled`) and `weave-graph-store-turso` (`libsql`, feature `core`) each statically link their **own vendored `sqlite3.c`**. The two bundled libraries' symbols collide at link time (`ld: duplicate symbol '_sqlite3_prepare_v2'` and dozens more — macOS `ld` tolerates this with a warning, silently picking one), and at runtime the second library to actually open a connection hits libsql's own threading-configuration self-check and panics: `"libsql was configured with an incorrect threading configuration"`. This is not a config problem on one machine — it is data about how the two crates' native dependencies are built, confirmed by an isolated experiment before assuming it was a fluke. Because `weave-graph-cli`'s indexing/write path calls `SqliteStorage::open` unconditionally (never gated by `turso`), **any single `weave` binary that also links `weave-graph-store-turso` carries this landmine** — not a corner case, a guaranteed panic the moment any code path in that one process opens both. Shipping the `StorageBackend`/`Deref` wiring as originally described would compile clean, pass review, and then crash the first time an operator actually flips `storage.backend = turso` on. Moved to §9 Phase 4 as a decision item (needs a build-matrix choice, not just code) rather than left as ready-to-build Phase 3 w...
-- **Location**: [`crates/weave-graph-cli/src/main.rs:L1272-1291`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/main.rs#L1272-L1291), [`crates/weave-graph-mcp/src/handler.rs:L64-85`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-mcp/src/handler.rs#L64-L85), and [`crates/weave-graph-store-turso/tests/cross_compat.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-store-turso/tests/cross_compat.rs) (the new regression test proving the conflict)
+- **Location**: [`crates/weave-graph-cli/src/main.rs:L1272-1291`](crates/weave-graph-cli/src/main.rs#L1272-L1291), [`crates/weave-graph-mcp/src/handler.rs:L64-85`](crates/weave-graph-mcp/src/handler.rs#L64-L85), and [`crates/weave-graph-store-turso/tests/cross_compat.rs`](crates/weave-graph-store-turso/tests/cross_compat.rs) (the new regression test proving the conflict)
 - **Root Cause**:
   The product design specifies that both Standard and Self-Hosted tiers support either SQLite WAL or Turso libSQL storage. However, `open_storage_for_read` in CLI and `McpHandler` in MCP server hardcode concrete `SqliteStorage` initialization (`Result<(SqliteStorage, PathBuf), ...>` and `RefCell<SqliteStorage>`). Neither uses the `Box<dyn Storage>` trait or a `StorageBackend` dynamic dispatcher, rendering `--features turso` completely inoperative at runtime.
 - **Dual-Tier Impact**:
@@ -174,7 +174,7 @@ document's own deferred-claim inventory.
 
 - **✅ Fixed (2026-09-13)**: `search_symbols`/`search_vector` moved from inherent `SqliteStorage` methods to `impl Storage for SqliteStorage` overrides; the trait itself now declares both with a default "unsupported" body (mirroring `upsert_trace_span`'s existing shape), so `TursoStorage` and any future backend compile with zero stub work. See §9 Phase 3 row 6 for the full change list and tests. (Note: this does _not_ mean `TursoStorage` can safely coexist with `SqliteStorage` in one process — see CORE-01's own section for that separate, unresolved finding. This trait declaration is real and useful independent of that: it also gives `weave-graph-mcp`'s new `weave_search_semantic` tool — §9 Phase 3 row 7 — a way to call `search_vector` through `&dyn Storage` without ever needing a concrete `SqliteStorage` type.)
 - **✅ Verified (2026-09-13)**: confirmed — `search_symbols` (`backend.rs:217`) and `search_vector` (`backend.rs:240`) are `pub fn` inherent methods on `SqliteStorage`, not declared anywhere on the `Storage` trait (`weave-graph-core/src/storage.rs:10`). Real gap.
-- **Location**: [`crates/weave-graph-core/src/storage.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-core/src/storage.rs) vs [`crates/weave-graph-store-sqlite/src/backend.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-store-sqlite/src/backend.rs)
+- **Location**: [`crates/weave-graph-core/src/storage.rs`](crates/weave-graph-core/src/storage.rs) vs [`crates/weave-graph-store-sqlite/src/backend.rs`](crates/weave-graph-store-sqlite/src/backend.rs)
 - **Root Cause**:
   The product design defines Symbol Search (BM25) and Semantic Search (1-bit ANN + int8 rescore) as core search capabilities. However, `search_symbols` (FTS5) and `search_vector` (`vec0`) are defined solely as inherent methods on `SqliteStorage` rather than on the `Storage` trait. As a result, non-SQLite backends (such as `TursoStorage`) cannot fulfill search queries through the storage abstraction.
 - **Dual-Tier Impact**:
@@ -190,7 +190,7 @@ document's own deferred-claim inventory.
 
 - **✅ Fixed (2026-09-13)**: `McpHandler::handle_tools_list`/`handle_tools_call` now register `weave_search_semantic` (feature `vector`) and `weave_policy_lint` (feature `policy-lint`), following the exact `#[cfg(feature = "notes")]` pattern the existing `weave_pin_note`/`weave_recall_notes` pair already used. See §9 Phase 3 row 7 for the full change list and tests.
 - **✅ Verified (2026-09-13)**: confirmed — `McpHandler::handle_tools_list` (`crates/weave-graph-mcp/src/handler.rs`) hardcodes exactly 4 tools (6 with `notes`); no `weave_search_semantic` or `weave_policy_lint` tool exists at all, `vector`/`policy-lint` features or not. Real gap. Note the original "Self-Hosted Tier bundles vector/policy" framing this was raised under is itself imprecise (those are independent Cargo features available in any tier, not exclusive to a "Self-Hosted Tier" as a monolithic switch) — but the underlying MCP tool-surface gap is real regardless of that framing.
-- **Location**: [`crates/weave-graph-mcp/src/tools.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-mcp/src/tools.rs) & [`crates/weave-graph-mcp/src/handler.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-mcp/src/handler.rs)
+- **Location**: [`crates/weave-graph-mcp/src/tools.rs`](crates/weave-graph-mcp/src/tools.rs) & [`crates/weave-graph-mcp/src/handler.rs`](crates/weave-graph-mcp/src/handler.rs)
 - **Root Cause**:
   The product design notes that while Standard Tier exposes 4 baseline tools, Self-Hosted Tier (`weave-custom`) bundles vector and policy linting. However, `McpHandler::list_tools` statically returns only 4 tools (`repo_map`, `file_api`, `trace_calls`, `impact_radius`), lacking conditional compile-time registration (`#[cfg(feature = "vector")]`, `#[cfg(feature = "policy-lint")]`) to expose `weave_search_semantic` and `weave_policy_lint`.
 - **Dual-Tier Impact**:
@@ -207,7 +207,7 @@ document's own deferred-claim inventory.
 
 - **✅ Fixed (2026-09-13)**: `vector::search` now filters stage-2 reranked candidates by an optional visibility predicate before `truncate(limit)`, not after — see §9 Phase 2 row 5 for the full change list and tests.
 - **✅ Verified (2026-09-13)**: confirmed — `run_semantic` (`search.rs:74-90`) calls `storage.search_vector(&embedder, query, limit, OVERSAMPLE)` (`OVERSAMPLE = 4`, `search.rs:71`) and then filters the returned set through `visible` (`search.rs:86`) _after_ retrieval already truncated to `limit` candidates. Masked hits are dropped, never backfilled from beyond the oversample window. Real gap, accurately described.
-- **Location**: [`crates/weave-graph-cli/src/search.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/search.rs) (`run_semantic`)
+- **Location**: [`crates/weave-graph-cli/src/search.rs`](crates/weave-graph-cli/src/search.rs) (`run_semantic`)
 - **Root Cause**:
   The product design specifies a 3-stage funnel (1-bit ANN oversample -> int8 rescore -> `RbacGuard` visibility filter). In `search.rs`, `storage.search_vector(&embedder, query, limit, OVERSAMPLE)` performs candidate retrieval unconditionally on the global `vec_chunks` table, returning the top `limit` raw `NodeId`s. The post-query loop filters nodes _after_ truncation:
   ```rust
@@ -227,7 +227,7 @@ document's own deferred-claim inventory.
 #### SEC-02: Unrestricted Code Chunk Embeddings in Shared Database Snapshots
 
 - **✅ Verified (2026-09-13)**: no `[vector.exclude]` (or any per-path exclusion) config exists anywhere in `crates/weave-graph-cli/src/config.rs` or its callers — confirmed by the same `config::get_key` call-site audit done for `docs/product/configuration.md` this session. Real gap: `weave sync push` ships the whole `graph.db` including `vec_chunks`, unconditionally.
-- **Location**: [`crates/weave-graph-cli/src/index.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/index.rs) (`build_vector_chunks`) & [`crates/weave-graph-store-sqlite/src/vector.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-store-sqlite/src/vector.rs)
+- **Location**: [`crates/weave-graph-cli/src/index.rs`](crates/weave-graph-cli/src/index.rs) (`build_vector_chunks`) & [`crates/weave-graph-store-sqlite/src/vector.rs`](crates/weave-graph-store-sqlite/src/vector.rs)
 - **Root Cause**:
   The product design details that `weave index` populates `vec_chunks` and `weave sync push` distributes `.tar.zst` snapshots to Hub. `build_vector_chunks` slices raw source spans for all symbols across the entire repository and stores quantized embeddings in `vec_chunks` without checking `[vector.exclude]` or RBAC visibility rules, embedding proprietary text into shared database artifacts.
 - **Invariant & Security Impact**:
@@ -244,7 +244,7 @@ document's own deferred-claim inventory.
 
 - **✅ Fixed (2026-09-13)**: landed together with CORE-02 (same change). `search_vector`'s new trait signature takes `Option<&dyn Fn(&Node) -> bool>` for `visible`, exactly as this issue's own feasibility note recommended — not `Identity`, so `weave-graph-core`'s `vector` feature still carries no dependency on its `rbac` feature. See §9 Phase 3 row 6.
 - **✅ Verified (2026-09-13)**: same underlying fact as CORE-02 (`search_vector`/`rebuild_vector_index` are inherent `SqliteStorage` methods) — real gap, correctly cross-referenced from a different angle (masking-abstraction consistency rather than backend portability).
-- **Location**: [`crates/weave-graph-core/src/storage.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-core/src/storage.rs) vs [`crates/weave-graph-store-sqlite/src/backend.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-store-sqlite/src/backend.rs)
+- **Location**: [`crates/weave-graph-core/src/storage.rs`](crates/weave-graph-core/src/storage.rs) vs [`crates/weave-graph-store-sqlite/src/backend.rs`](crates/weave-graph-store-sqlite/src/backend.rs)
 - **Root Cause**:
   The product design requires that storage and query masking remain unified across backends. However, `search_vector` and `rebuild_vector_index` are implemented as inherent methods on `SqliteStorage`, bypassing the backend-agnostic `Storage` trait and preventing pluggable backends (such as Turso) from implementing vector search.
 - **Invariant & Architectural Impact**:
@@ -260,7 +260,7 @@ document's own deferred-claim inventory.
 
 - **✅ Fixed (2026-09-13)**: landed together with CORE-03 (same change). `weave_search_semantic` (`crates/weave-graph-mcp/src/search_semantic.rs`) is wrapped with the session's bound `RbacGuard` exactly as this issue's remediation asked — same `self.rbac_guard.as_ref().map(|g| move |n: &Node| g.visible(n))` pattern every other masked tool in this handler already uses, and it lands _after_ SEC-01's pre-truncation fix (Phase 2), so it never shipped the Top-K starvation bug. See §9 Phase 3 row 7.
 - **✅ Verified (2026-09-13)**: same underlying fact as CORE-03, restated for the vector-specific case. Real gap.
-- **Location**: [`crates/weave-graph-mcp/src/tools.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-mcp/src/tools.rs) & [`crates/weave-graph-mcp/src/handler.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-mcp/src/handler.rs)
+- **Location**: [`crates/weave-graph-mcp/src/tools.rs`](crates/weave-graph-mcp/src/tools.rs) & [`crates/weave-graph-mcp/src/handler.rs`](crates/weave-graph-mcp/src/handler.rs)
 - **Root Cause**:
   The product design defines Semantic Search as an accessible intelligence capability. However, `crates/weave-graph-mcp` does not declare a `weave_search_semantic` tool schema or dispatch handler in `McpHandler::call_tool`, leaving AI agents unable to trigger vector search over MCP even when the binary is compiled with `--features vector`.
 - **Impact**:
@@ -277,7 +277,7 @@ document's own deferred-claim inventory.
 
 - **✅ Fixed (2026-09-13, narrower form)**: `weave serve --mcp` gained `--require-as` and `[rbac] require_identity` (`.weave/config.toml`) — when either is set and `--as` is omitted, the server refuses to start (`crates/weave-graph-cli/src/main.rs::cmd_serve`). This is the narrower recommendation below, not the literal "always construct a guard" remediation (which would have reproduced the M3.0 regression this issue's own Verified note describes) — every other RBAC-gated command's existing "no `--as` == unmasked" behavior is untouched. See §9 Phase 4 row 8.
 - **⚠️ Verified (2026-09-13) — real behavior, but reconsider "Critical"/"loophole" framing**: the mechanism is accurately described (`as_subject: None` → `guard`/`mask` both `None` → full unmasked access). But `docs/impl.md`'s M3.0 entry documents this as the _deliberate, tested_ fix, not a defect: an earlier build masked the anonymous identity by default, which broke every existing command the moment `rbac` was compiled in — regardless of whether anyone had opted into enforcement — and was reverted on purpose ("masking only engages when `--as <subject>` is actually supplied; an omitted `--as` runs byte-identical to a `not(feature = "rbac")` build"), with a named regression test (`test_cli_query_export_report_and_reindex_fast_path`) guarding exactly this behavior. For a human running `weave` locally against their own checkout, "no `--as` == full access" is correct (they already have raw filesystem access to every symbol; masking would add no real boundary). The real, narrower risk this issue is pointing at: an operator standing up a **shared** `weave serve --mcp` or CI runner for multiple identities who forgets to pass `--as` gets an unmasked session — that's an operational/deployment footgun worth documenting prominently, not a code loophole to patch by inverting the default (inverting it would reproduce the exact regression M3.0 already fixed once). Recommend re-titling/re-scoping this issue as a deployment-hardening doc gap rather than a "Critical" code defect, unless the remediation is something narrower than "always construct a guard" (e.g., a `weave serve --mcp` startup warning when `--as` is omitted and `rbac` is compiled in, which doesn't touch every other RBAC-gated command's existing, tested, intentional behavior).
-- **Location**: [`crates/weave-graph-cli/src/main.rs:L1304-1391`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/main.rs#L1304-L1391) (`cmd_query`, `cmd_report`, `cmd_export`)
+- **Location**: [`crates/weave-graph-cli/src/main.rs:L1304-1391`](crates/weave-graph-cli/src/main.rs#L1304-L1391) (`cmd_query`, `cmd_report`, `cmd_export`)
 - **Root Cause**:
   The product design establishes that Self-Hosted Tier (`weave-custom`) runs under mandatory query-layer RBAC masking. In `main.rs`, RBAC masking is wired via:
   ```rust
@@ -299,7 +299,7 @@ document's own deferred-claim inventory.
 
 - **✅ Fixed (2026-09-13, narrower form)**: `waiver::authorize` (`crates/weave-graph-cli/src/waiver.rs`) now rejects an anonymous waiver (`as_subject: None`) only when this repo's own `[rbac.users]` config actually grants the `"allow-drift"` role to at least one subject — read via the existing `config::read_rbac_users` helper, no new config surface. A repo that never configured `allow-drift` for anyone keeps today's behavior byte-for-byte. Tests: `waiver::tests::rbac_gated::authorize_accepts_anonymous_waiver_when_config_lacks_allow_drift`, `authorize_rejects_anonymous_waiver_when_config_grants_allow_drift`. See §9 Phase 4 row 8.
 - **⚠️ Verified (2026-09-13) — same design tradeoff as SEC-05, by explicit intent**: `waiver.rs::authorize` was written this session (`impl.md` M3.10) specifically mirroring M3.0's own precedent: "a no-op whenever `rbac` isn't compiled in, or `--as` was never given... following M3.0's own feature-isolation precedent exactly." This was a deliberate choice, not an oversight — the alternative (waivers always require `rbac` + an authorized `--as`, even in builds/repos that never opted into RBAC at all) would make `--allow-drift`/`--skip` silently start requiring an identity the moment `rbac` is compiled in, for every consumer of this CLI, which is the exact kind of surprise regression M3.0's own history warns against. The real risk is narrower and correctly named in the Impact bullet: a repo that _has_ configured `[rbac.users]` with role-gated waivers, and expects that to be enforced, must remember to invoke `weave check-contracts --allow-drift --as <subject>` (not bare `--allow-drift`) in every CI job — that's a real footgun worth a prominent doc callout (e.g., in `self-hosted.md`'s waiver section) rather than a code defect. If the intent is genuinely "once any role is configured for `allow-drift` anywhere in this repo's config, bare `--allow-drift` must always be rejected," that's a real, narrow, implementable change — distinct from "reject all identity-less waivers unconditionally," which would break every non-RBAC repo's existing `--allow-drift` usage.
-- **Location**: [`crates/weave-graph-cli/src/waiver.rs:L21-35`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/waiver.rs#L21-L35)
+- **Location**: [`crates/weave-graph-cli/src/waiver.rs:L21-35`](crates/weave-graph-cli/src/waiver.rs#L21-L35)
 - **Root Cause**:
   The product design specifies that contract waivers in Self-Hosted Tier are strictly authorized only if `--as <subject>` possesses the `"allow-drift"` role. However, `waiver::authorize` explicitly returns `Ok(())` if `as_subject` is `None`:
   ```rust
@@ -324,7 +324,7 @@ document's own deferred-claim inventory.
 #### SEC-07: MCP Stdio Transport Lacks Per-Request Authentication
 
 - **✅ Verified (2026-09-13)**: confirmed — `McpHandler::with_identity` binds one `RbacGuard` for the process's entire lifetime (`handler.rs`), called once at `cmd_serve` startup; nothing in `handle_message`/`handle_tools_call` inspects a per-call identity. Real, and an accurate statement of the one-process-one-identity model this handler deliberately uses (matches the CLI's own "one session, one identity" precedent) — genuinely a gap only for a _multi-tenant proxy in front of one `weave serve` process_, which isn't this server's stated design point.
-- **Location**: [`crates/weave-graph-cli/src/main.rs:L1474-1480`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/main.rs#L1474-L1480) & [`crates/weave-graph-mcp/src/handler.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-mcp/src/handler.rs)
+- **Location**: [`crates/weave-graph-cli/src/main.rs:L1474-1480`](crates/weave-graph-cli/src/main.rs#L1474-L1480) & [`crates/weave-graph-mcp/src/handler.rs`](crates/weave-graph-mcp/src/handler.rs)
 - **Root Cause**:
   The product design states that in Self-Hosted Tier, the MCP server masks responses through the session identity. However, `weave serve --mcp` accepts a single `--as <subject>` flag at process launch and initializes a static `RbacGuard`. The MCP stdio/HTTP protocol handler does not inspect per-request JSON-RPC headers or metadata, locking the entire server instance to a single caller identity.
 - **Impact**:
@@ -341,7 +341,7 @@ document's own deferred-claim inventory.
 
 - **✅ Fixed (2026-09-13)**: `provision_request` accepts flat strings and RFC 7643 object arrays for both `roles` and `groups`, preserving groups as `group:<value>` markers for downstream mappings. See §9 Phase 2 row 4.
 - **Historical verification (superseded)**: the earlier audit described the pre-fix zero-role behavior. Current regression tests cover flat/object roles and groups, and RBAC-02 verifies group markers are translated into configured capabilities.
-- **Location**: [`crates/weave-graph-cli/src/rbac.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/rbac.rs) (`provision_request`)
+- **Location**: [`crates/weave-graph-cli/src/rbac.rs`](crates/weave-graph-cli/src/rbac.rs) (`provision_request`)
 - **Root Cause**:
   The product design specifies that `weave rbac serve-scim` ingests user and group provisioning from enterprise IdPs (Okta, Azure AD, Google Workspace). However, `provision_request` deserializes `roles` and `groups` assuming a non-standard flat JSON string array (`["internal"]`). Enterprise IdPs conforming to RFC 7643 send complex object arrays (`[{"value": "internal", "primary": true}]`), causing JSON deserialization errors and defaulting synced users to unprivileged `reader`.
 - **Impact**:
@@ -360,7 +360,7 @@ document's own deferred-claim inventory.
 
 - **✅ Fixed (2026-09-13)**: `ScimServer`/`weave rbac serve-scim` now support an optional `[rbac.scim] token` requiring `Authorization: Bearer` on every request. See §9 Phase 1 row 2.
 - **✅ Verified (2026-09-14)**: configured `[rbac.scim] token` is checked before mutation/read dispatch, and a real TCP test proves unauthorized requests are rejected while authorized requests succeed. An unset token retains the loopback-only compatibility mode.
-- **Location**: [`crates/weave-graph-cli/src/rbac.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/rbac.rs) (`ScimServer`)
+- **Location**: [`crates/weave-graph-cli/src/rbac.rs`](crates/weave-graph-cli/src/rbac.rs) (`ScimServer`)
 - **Root Cause**:
   The product design specifies SCIM directory synchronization for secure user management. `ScimServer` binds a loopback HTTP socket and optionally validates an `Authorization: Bearer <token>` header before processing mutation endpoints (`POST /Users`, `POST /sync`).
 - **Impact**:
@@ -373,7 +373,7 @@ document's own deferred-claim inventory.
 #### RBAC-01: Binary Role Model Collapse
 
 - **✅ Verified (2026-09-13) — accurate, and now the documented reality everywhere else too**: `Identity::is_internal`/`Identity::can_waive` (`weave-graph-core/src/rbac.rs`) are the only two role strings this engine reads differently from any other; this was independently confirmed and is now stated plainly across `docs/product/{configuration,self-hosted,features,cli-reference}.md` after this session's doc-accuracy pass (they previously described a fictional per-role `mask = [...]` permission system). Whether this is a "gap" to fix or the intended minimal design is a real product decision, not a bug in the code matching its own docs — but the current docs and this issue now agree on what the code actually does.
-- **Location**: [`crates/weave-graph-core/src/rbac.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-core/src/rbac.rs) (`RbacGuard::visible`)
+- **Location**: [`crates/weave-graph-core/src/rbac.rs`](crates/weave-graph-core/src/rbac.rs) (`RbacGuard::visible`)
 - **Root Cause**:
   The product design establishes that `RbacGuard` manages visibility across distinct roles. However, `RbacGuard::visible` implements a binary evaluation: `self.identity.is_internal() || (self.is_public)(node)`. The engine only recognizes `"internal"` and `"allow-drift"`, collapsing all custom roles (`contractor`, `billing-team`, `security-auditor`) into unprivileged `anonymous` visibility without path-prefix scoping.
 - **Impact**:
@@ -389,7 +389,7 @@ document's own deferred-claim inventory.
 #### RBAC-02: Lack of Enterprise Group-to-Capability Mapping
 
 - **✅ Fixed (2026-09-14)**: `[rbac.group_mappings]` is parsed and applied during guard construction. Direct roles remain intact, mapped roles are deduplicated, malformed entries are ignored, and focused ingestion/authorization tests pass.
-- **Location**: [`crates/weave-graph-cli/src/config.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/config.rs) (`read_rbac_users`)
+- **Location**: [`crates/weave-graph-cli/src/config.rs`](crates/weave-graph-cli/src/config.rs) (`read_rbac_users`)
 - **Root Cause**:
   The product design notes that SCIM synchronizes IdP user/group memberships into `.weave/rbac-directory.toml`. Direct `[rbac.users]` assignments are now supplemented by a group-mapping translation layer that maps directory markers to Weave roles.
 - **Impact**:
@@ -404,7 +404,7 @@ document's own deferred-claim inventory.
 #### POL-01: Masked CI Policy Linting Yields False Negatives
 
 - **✅ Verified (2026-09-13) — real, mechanism confirmed; remediation cites a flag that doesn't exist**: read `visible_view` (`policy.rs:197-224`) directly — it drops hidden nodes AND any edge touching one from _both_ endpoints' visible-id set, so a `disallow` rule can never see an edge crossing into a masked module; `cmd_policy_lint` then genuinely reports "✓ no boundary violations" in that case. Confirmed real. However, the proposed remediation ("treat `skipped_edges > 0` as inconclusive when `--strict` is passed") references a `--strict` flag on `weave policy lint` that does not exist — today `weave policy lint` always exits non-zero on any violation and has no severity-mode flag at all (confirmed: zero `--strict` anywhere in `main.rs`'s `Commands::PolicyAction` or `policy.rs`). Rephrase the remediation as "add a mode/flag" (net-new), not "when `--strict` is passed" (implying one already exists).
-- **Location**: [`crates/weave-graph-cli/src/policy.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/policy.rs) (`cmd_policy_lint`)
+- **Location**: [`crates/weave-graph-cli/src/policy.rs`](crates/weave-graph-cli/src/policy.rs) (`cmd_policy_lint`)
 - **Root Cause**:
   The product design specifies that Self-Hosted Tier boundary linting evaluates policy rules over the visible graph while tracking skipped counts. However, when running `weave policy lint --as <contractor>`, `cmd_policy_lint` filters edges through `RbacGuard` before checking `BoundaryRule::Disallow` / `Require`. Edges connecting to or from hidden nodes are skipped:
   ```rust
@@ -425,7 +425,7 @@ document's own deferred-claim inventory.
 #### POL-02: Structural Policy Boundaries Blind to High Semantic Coupling
 
 - **✅ Verified (2026-09-13)**: confirmed — `BoundaryRule`/`lint` (`weave-graph-core/src/policy.rs`) only ever inspect `Edge` records (real AST call/import/reference edges); there is no code path from `policy.rs` into `vec_chunks` or any embedding distance computation. Real, accurately-scoped gap (a genuinely new capability, not a bug).
-- **Location**: [`crates/weave-graph-core/src/policy.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-core/src/policy.rs) (`lint`)
+- **Location**: [`crates/weave-graph-core/src/policy.rs`](crates/weave-graph-core/src/policy.rs) (`lint`)
 - **Root Cause**:
   The product design defines both boundary linting and vector embedding capabilities in the Self-Hosted Tier. However, `BoundaryRule::Disallow` in `policy.rs` checks only explicit syntactic AST references (`Edge::kind` = call, import, ref). It does not interface with the vector embeddings in `vec_chunks` to detect semantic drift or high conceptual coupling across forbidden architectural boundaries.
 - **Architectural Impact**:
@@ -440,7 +440,7 @@ document's own deferred-claim inventory.
 
 - **✅ Fixed (2026-09-13)**: `cmd_policy_drift` now annotates orphans that only appear because masking severed their real inbound edges. See §9 Phase 2 row 3.
 - **✅ Verified (2026-09-13)**: same `visible_view` mechanism confirmed for POL-01 applies identically to `cmd_policy_drift` (it calls the same `visible_view` helper before `find_cycles`/`orphan_files`) — a real public utility whose only callers sit in a masked module will show 0 visible inbound edges to a non-`internal` identity, exactly as described. Real gap. Note `weave policy drift` is always advisory (never fails CI, no exit-code implication either way) — this affects the _signal's accuracy_, not a false CI pass, which is a materially smaller-severity version of the risk POL-01 describes.
-- **Location**: [`crates/weave-graph-core/src/policy.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-core/src/policy.rs) (`find_cycles`, `orphan_files`)
+- **Location**: [`crates/weave-graph-core/src/policy.rs`](crates/weave-graph-core/src/policy.rs) (`find_cycles`, `orphan_files`)
 - **Root Cause**:
   The product design states that Architecture Drift (`weave policy drift`) computes Tarjan SCC cycles and orphan files over the visible subgraph. In `policy.rs`, `find_cycles` and `orphan_files` execute after `RbacGuard` pruning. Severing masked internal edges breaks closed cycle paths and leaves public symbols with only private callers showing 0 in-degree, generating false orphan alerts.
 - **Impact**:
@@ -455,7 +455,7 @@ document's own deferred-claim inventory.
 #### POL-04: Architectural Policies Lack Role Ownership & Role Exemptions
 
 - **✅ Verified (2026-09-13)**: confirmed — `BoundaryRule`/`Boundary` (`weave-graph-core/src/policy.rs`) have exactly two fields, `from`/`to` path strings; no `owner_role`/`allowed_roles` field exists on any policy type, nor in the YAML parser (`policy.rs`'s `RuleEntry`/`BoundaryYaml` in the CLI crate). Real, net-new capability gap.
-- **Location**: [`crates/weave-graph-core/src/policy.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-core/src/policy.rs) (`BoundaryRule`) & [policy.rs](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/policy.rs)
+- **Location**: [`crates/weave-graph-core/src/policy.rs`](crates/weave-graph-core/src/policy.rs) (`BoundaryRule`) & [policy.rs](crates/weave-graph-cli/src/policy.rs)
 - **Root Cause**:
   The product design specifies role-aware boundary evaluation. However, `BoundaryRule` in `crates/weave-graph-core/src/policy.rs` is defined strictly via path string prefixes (`from: "src/ui", to: "src/db"`). It lacks fields for `allowed_roles` or `owner_role`, preventing teams from declaring authorized cross-boundary exceptions for specific engineering roles.
 - **Impact**:
@@ -470,7 +470,7 @@ document's own deferred-claim inventory.
 #### POL-05: Waiver Role Hierarchy & Environment Bypass Audit Gaps
 
 - **✅ Verified (2026-09-13) — real behavior, but remediation names a nonexistent env var**: confirmed — `require_reason` (`waiver.rs`) is only invoked on the CLI-flag path (`--allow-drift`/`--allow-drift-for`/`--skip`); the `WEAVE_SKIP_CONTRACTS`/`WEAVE_SKIP_BLAST`/`WEAVE_ALLOW_DRIFT_REPOS` env-var paths never call it. This is stated as a deliberate scope line in `impl.md` M3.10 ("env-var-triggered waivers don't need one — the env var itself is the audit trail"), not an oversight, but the tradeoff is real and worth this issue's scrutiny. Two corrections to the specifics: the actual env var is `WEAVE_ALLOW_DRIFT_REPOS` (a repo allow-list), not a boolean `WEAVE_ALLOW_DRIFT`; and there is no `WEAVE_WAIVER_REASON` env var anywhere in the code — `require_reason` only ever reads a CLI `--reason` value. If mandatory-reason-for-env-var-waivers is wanted, it needs a new env var, not wiring an existing one.
-- **Location**: [`crates/weave-graph-cli/src/waiver.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/waiver.rs) (`authorize`, `require_reason`)
+- **Location**: [`crates/weave-graph-cli/src/waiver.rs`](crates/weave-graph-cli/src/waiver.rs) (`authorize`, `require_reason`)
 - **Root Cause**:
   The product design specifies that waivers require both the `allow-drift` role and an explicit reason, whether invoked via CLI flags (`--reason`) or environment variables (`WEAVE_WAIVER_REASON`). In `waiver.rs`, `require_reason` is only executed when parsing the `--allow-drift` CLI flag. When `WEAVE_ALLOW_DRIFT=1` is set, the CLI skips reason validation, omitting audit trails in automated CI environments.
 - **Impact**:
@@ -484,7 +484,7 @@ document's own deferred-claim inventory.
 #### FED-01: Cross-Repo Boundary Rules Blind in Multiple Mode
 
 - **✅ Verified (2026-09-13)**: confirmed — `cmd_policy_lint`/`cmd_policy_drift` (`policy.rs`) both call only `crate::open_storage_for_read(root)`, the single local repo's own storage; no `federation::open_federated_storage` call or `[federation] linked_repos` read anywhere in `policy.rs`. Real gap, net-new scope (not a regression).
-- **Location**: [`crates/weave-graph-cli/src/policy.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-cli/src/policy.rs) (`cmd_policy_lint`)
+- **Location**: [`crates/weave-graph-cli/src/policy.rs`](crates/weave-graph-cli/src/policy.rs) (`cmd_policy_lint`)
 - **Root Cause**:
   The product design describes Multiple Mode as federating sibling directories configured in `[federation] linked_repos`. However, `cmd_policy_lint` in `policy.rs` opens only the single local repository database via `open_storage_for_read(root)`, ignoring linked repository graphs and cross-repo monikers during policy evaluation.
 - **Mode & Architectural Impact**:
@@ -499,7 +499,7 @@ document's own deferred-claim inventory.
 
 - **✅ Fixed (2026-09-13)**: the design decision this issue's own feasibility note called for — "a registry-side config knob for a deployment-supplied verifier/key" — is made and implemented: `Registry::with_provenance_verifier(Arc<dyn SnapshotProvenanceVerifier>)` (new builder method, `crates/weave-graph-hub/src/registry.rs`) lets a deployment bind its own secret via `MockSnapshotProvenanceVerifier::with_key(<secret>)` (never the mock's own well-known default key — `with_key` already existed for exactly this). `push_complete` now verifies the spooled payload against the configured verifier _before_ the head/rate-limit state advances (new `PushDecision::SignatureInvalid`, mapped to HTTP `400` in `server.rs`); a signature is hex-encoded bytes over the wire (`decode_hex`), matching the raw `Vec<u8>` `sign_snapshot` already returns. `weave-registry` gained a new `--provenance-key <secret-u64>` flag (mirroring `--auth-token`'s HUB-02 precedent exactly) — omitting it keeps every push unverified, byte-identical to before. Tests: 7 in `registry::tests::provenance_gated` (correct signature accepted; missing/wrong-key/wrong-payload/malformed-hex signatures rejected; a rejected push never advances the head or commits) plus 2 real-TCP tests in `server::tests` (`push_with_a_missing_signature_returns_400_when_a_verifier_is_configured`, `push_with_a_valid_signature_is_accepted_when_a_verifier_is_configured`) and 1 in `weave-registry`'s own `tests::parse_args_accepts_an_optional_provenance_key`. Default (no `--provenance-key`) behavior confirmed unchanged: the full `weave-graph-hub` suite (59 tests) and `weave-registry` binary tests pass identically with and without the flag. **Scope note**: this closes the "hub server accepts uploads without verifying" gap honestly — it does not, and cannot, provide non-repudiation (a shared secret key, not an asymmetric signature); that distinction is now stated plainly in the CLI flag's own help text rather than implied away.
 - **✅ Verified (2026-09-13)**: confirmed — `grep -rn "verify_snapshot" crates/weave-graph-hub/src/*.rs` finds only the trait/impl definitions in `provenance.rs`; zero call sites in `server.rs` or `registry.rs`. `push_complete`/`commit_job` persist whatever `X-Weave-Signature` value arrives as an opaque `.sig` sidecar and never check it. This is distinct from — and not fixed by — this session's M3.6 work, which added the _client-side_ `weave sync push --signature` seam (a caller can now attach a signature) but never touched server-side verification; this issue's finding stands exactly as written. Real, confirmed gap, high severity is justified. Terminology note: `provenance.rs`'s own `merkle_root()` function is a two-stage FNV-1a hash chain (`fnv1a(&bytes, 0)` then `fnv1a(payload, that)`), not an actual Merkle tree (no branching/leaf hierarchy, no partial-proof capability) — "Merkle" here is this codebase's own internal naming choice for a flat combined-hash signature, worth knowing before assuming Merkle-tree properties (e.g. proving one chunk without the whole payload) are available.
-- **Location**: [`crates/weave-graph-hub/src/server.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-hub/src/server.rs) & [`registry.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-hub/src/registry.rs)
+- **Location**: [`crates/weave-graph-hub/src/server.rs`](crates/weave-graph-hub/src/server.rs) & [`registry.rs`](crates/weave-graph-hub/src/registry.rs)
 - **Root Cause**:
   The product design defines Snapshot Provenance as verifying Merkle root cryptographic signatures over incoming `(repo, sha, payload)` archives. `SnapshotProvenanceVerifier` is implemented in `crates/weave-graph-hub/src/provenance.rs`, but `RegistryServer` request handlers and `Registry::push` never call `verify_snapshot` on `POST /snapshots/{repo_id}/{sha}.tar.zst` payloads before committing them to disk spools.
 - **Mode & Security Impact**:
@@ -514,7 +514,7 @@ document's own deferred-claim inventory.
 
 - **✅ Fixed (2026-09-14)**: `CanvasAuthorizer` now runs before serialization for both single-repository and mesh canvas routes. Mesh requests apply an optional repository gate and module-label filter while constructing bands, so denied repositories and modules never enter the response. A real TCP integration test covers both gates and verifies the serialized body contains neither denied repo nor module data.
 - **Historical verification (superseded)**: the original implementation read raw nodes and edges without a visibility boundary. The callback boundary below replaces that behavior without coupling the Hub crate to CLI RBAC types.
-- **Location**: [`crates/weave-graph-hub/src/canvas.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-hub/src/canvas.rs)
+- **Location**: [`crates/weave-graph-hub/src/canvas.rs`](crates/weave-graph-hub/src/canvas.rs)
 - **Root Cause**:
   The product design requires that architecture exports in Self-Hosted Tier emit LOD 1 diagrams with masked private subgraphs. The Hub keeps storage and policy implementations decoupled, so `RegistryServer` accepts an injected `CanvasAuthorizer` and applies it at the response boundary for both single-repository and mesh routes.
 - **Mode & Security Impact**:
@@ -529,7 +529,7 @@ document's own deferred-claim inventory.
 
 - **✅ Fixed (2026-09-13)**: `weave-registry --auth-token` now gates every route on `Authorization: Bearer`; `HubClient`/`weave sync` attach it via `.weave/config.toml`'s `[hub] token`. See §9 Phase 1 row 1.
 - **✅ Verified (2026-09-14)**: bearer validation is now performed in `handle_connection` before request bodies are read. `RegistryServer::bind_with_token` makes the gate opt-in, while the existing loopback-only unauthenticated mode remains available for local deployments. Client configuration passes the same token on sync requests.
-- **Location**: [`crates/weave-graph-hub/src/server.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-hub/src/server.rs)
+- **Location**: [`crates/weave-graph-hub/src/server.rs`](crates/weave-graph-hub/src/server.rs)
 - **Root Cause**:
   The product design specifies token-authenticated HTTP communication for Centralized Hub operations. The registry now validates an optional bearer token at the request boundary; deployments that omit the token retain the loopback-only compatibility mode.
 - **Mode & Security Impact**:
@@ -542,7 +542,7 @@ document's own deferred-claim inventory.
 #### HUB-03: Lack of Centralized Mesh Policy Linting
 
 - **✅ Verified (2026-09-13)**: confirmed — `server.rs`'s routing (`handle_connection`) only recognizes snapshot (`/snapshots/...`), canvas (`/repos/{id}/canvas`, `/mesh/canvas/...`, added this session), and webhook (`/repos/{id}/webhook`, added this session) paths; no policy-related route exists. Real, net-new capability gap — and note it would need FED-01's cross-repo policy-lint capability to exist client-side first (or a from-scratch server-side re-implementation), since today's `weave policy lint` has no federated/multi-repo mode to expose remotely.
-- **Location**: [`crates/weave-graph-hub/src/server.rs`](file:///Users/ragu/Code/weave-graph/crates/weave-graph-hub/src/server.rs)
+- **Location**: [`crates/weave-graph-hub/src/server.rs`](crates/weave-graph-hub/src/server.rs)
 - **Root Cause**:
   The product design specifies macro-mesh policy linting across multiple repositories ingested into the centralized Hub. However, `weave-graph-hub/src/server.rs` only defines routes for snapshot sync, webhooks, and canvas rendering, lacking a `/mesh/policy-lint` HTTP endpoint to evaluate global `policy.yaml` boundary rules across the aggregate multi-repo graph.
 - **Mode & Governance Impact**:
