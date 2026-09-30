@@ -36,6 +36,8 @@ fn parse_args_accepts_all_required_flags() {
             canvas_exclude: vec![],
             #[cfg(feature = "hub-provenance")]
             provenance_key_file: None,
+            #[cfg(feature = "hub-provenance")]
+            provenance_provider: weave_graph_hub::ProvenanceProviderKind::Hmac,
         }
     );
 }
@@ -62,6 +64,55 @@ fn parse_args_accepts_an_optional_provenance_key_file() {
         parsed.provenance_key_file.as_deref(),
         Some(Path::new("/run/secrets/weave-provenance"))
     );
+    assert_eq!(
+        parsed.provenance_provider,
+        weave_graph_hub::ProvenanceProviderKind::Hmac
+    );
+}
+
+#[cfg(feature = "hub-provenance")]
+#[test]
+fn parse_args_accepts_an_explicit_ed25519_provenance_provider() {
+    let parsed = parse_args(args(&[
+        "--bind",
+        "127.0.0.1:8080",
+        "--data-dir",
+        "/tmp/registry-data",
+        "--max-queue-depth-per-repo",
+        "50",
+        "--max-pushes-per-minute-per-repo",
+        "20",
+        "--max-snapshot-bytes",
+        "10485760",
+        "--provenance-provider",
+        "ed25519",
+    ]))
+    .unwrap();
+    assert_eq!(
+        parsed.provenance_provider,
+        weave_graph_hub::ProvenanceProviderKind::Ed25519
+    );
+}
+
+#[cfg(feature = "hub-provenance")]
+#[test]
+fn parse_args_rejects_an_unknown_provenance_provider() {
+    let err = parse_args(args(&[
+        "--bind",
+        "127.0.0.1:8080",
+        "--data-dir",
+        "/tmp/registry-data",
+        "--max-queue-depth-per-repo",
+        "50",
+        "--max-pushes-per-minute-per-repo",
+        "20",
+        "--max-snapshot-bytes",
+        "10485760",
+        "--provenance-provider",
+        "rsa",
+    ]))
+    .unwrap_err();
+    assert!(err.contains("unknown provenance provider"), "got: {err}");
 }
 
 #[test]
@@ -304,6 +355,8 @@ fn resolve_canvas_exclude_reads_the_config_when_the_flag_is_absent() {
         canvas_exclude: vec![],
         #[cfg(feature = "hub-provenance")]
         provenance_key_file: None,
+        #[cfg(feature = "hub-provenance")]
+        provenance_provider: weave_graph_hub::ProvenanceProviderKind::Hmac,
     };
     assert_eq!(
         resolve_canvas_exclude(&args).unwrap(),
@@ -328,6 +381,8 @@ fn provenance_status_names_the_verification_mode() {
         canvas_exclude: vec![],
         #[cfg(feature = "hub-provenance")]
         provenance_key_file: None,
+        #[cfg(feature = "hub-provenance")]
+        provenance_provider: weave_graph_hub::ProvenanceProviderKind::Hmac,
     };
     let _ = provenance_status(&args);
     #[cfg(feature = "hub-provenance")]
@@ -351,6 +406,8 @@ fn build_server_opens_a_real_registry_and_binds_a_real_loopback_port() {
         canvas_exclude: vec![],
         #[cfg(feature = "hub-provenance")]
         provenance_key_file: None,
+        #[cfg(feature = "hub-provenance")]
+        provenance_provider: weave_graph_hub::ProvenanceProviderKind::Hmac,
     };
     let server = build_server(&args).unwrap();
     assert!(server.local_addr().unwrap().port() > 0);
@@ -372,11 +429,63 @@ fn build_server_reads_a_strong_provenance_secret_from_a_file() {
         config_path: None,
         canvas_exclude: vec![],
         provenance_key_file: Some(key_file),
+        #[cfg(feature = "hub-provenance")]
+        provenance_provider: weave_graph_hub::ProvenanceProviderKind::Hmac,
     };
 
     let server = build_server(&args).unwrap();
 
     assert!(server.local_addr().unwrap().port() > 0);
+}
+
+#[cfg(feature = "hub-provenance")]
+#[test]
+fn build_server_wires_the_ed25519_provider() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_file = dir.path().join("provenance.key");
+    std::fs::write(&key_file, [9u8; 32]).unwrap();
+    let args = Args {
+        bind: "127.0.0.1:0".to_string(),
+        data_dir: dir.path().join("registry"),
+        max_queue_depth_per_repo: 10,
+        max_pushes_per_minute_per_repo: 10,
+        max_snapshot_bytes: 10_485_760,
+        auth_token: None,
+        config_path: None,
+        canvas_exclude: vec![],
+        provenance_key_file: Some(key_file),
+        provenance_provider: weave_graph_hub::ProvenanceProviderKind::Ed25519,
+    };
+
+    let server = build_server(&args).unwrap();
+
+    assert!(server.local_addr().unwrap().port() > 0);
+}
+
+#[cfg(feature = "hub-provenance")]
+#[test]
+fn build_server_rejects_an_ed25519_key_of_the_wrong_length() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_file = dir.path().join("provenance.key");
+    std::fs::write(&key_file, [9u8; 31]).unwrap();
+    let args = Args {
+        bind: "127.0.0.1:0".to_string(),
+        data_dir: dir.path().join("registry"),
+        max_queue_depth_per_repo: 10,
+        max_pushes_per_minute_per_repo: 10,
+        max_snapshot_bytes: 10_485_760,
+        auth_token: None,
+        config_path: None,
+        canvas_exclude: vec![],
+        provenance_key_file: Some(key_file),
+        provenance_provider: weave_graph_hub::ProvenanceProviderKind::Ed25519,
+    };
+
+    let error = build_server(&args)
+        .err()
+        .expect("expected a key-length error");
+
+    assert!(error.contains("exactly 32 bytes"), "{error}");
 }
 
 #[cfg(feature = "hub-provenance")]
@@ -395,6 +504,8 @@ fn build_server_rejects_a_weak_provenance_secret_file() {
         config_path: None,
         canvas_exclude: vec![],
         provenance_key_file: Some(key_file),
+        #[cfg(feature = "hub-provenance")]
+        provenance_provider: weave_graph_hub::ProvenanceProviderKind::Hmac,
     };
 
     let error = build_server(&args)
@@ -420,6 +531,8 @@ fn build_server_reports_a_clear_error_for_an_unbindable_address() {
         canvas_exclude: vec![],
         #[cfg(feature = "hub-provenance")]
         provenance_key_file: None,
+        #[cfg(feature = "hub-provenance")]
+        provenance_provider: weave_graph_hub::ProvenanceProviderKind::Hmac,
     };
     let err = build_server(&args).err().expect("expected a bind error");
     assert!(err.contains("failed to bind"), "got: {err}");
@@ -456,6 +569,8 @@ fn the_flag_overrides_the_config_file_for_canvas_exclude() {
         canvas_exclude: vec!["from-flag".to_string()],
         #[cfg(feature = "hub-provenance")]
         provenance_key_file: None,
+        #[cfg(feature = "hub-provenance")]
+        provenance_provider: weave_graph_hub::ProvenanceProviderKind::Hmac,
     };
     assert_eq!(
         resolve_canvas_exclude(&args).unwrap(),

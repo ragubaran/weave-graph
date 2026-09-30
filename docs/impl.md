@@ -817,7 +817,12 @@ _Formalizes build profile configurations, WebAssembly compilation, Binaryen opti
 | `cargo build --release -p weave-graph-cli --features custom`                             | The `custom` bundle in CLI `Cargo.toml`; no `slm`              |                43,624,460 | No separate all-feature/enterprise artifact established here.                          |
 | `cargo build --profile wasm-release -p weave-graph-wasm --target wasm32-unknown-unknown` | In-memory CSR graph API                                        |                   159,339 | Historical WASM output; no full native CLI, parser, or vector engine in WASM.          |
 
-`Cargo.toml` pins workspace version `1.0.1`, and Clap exposes that package version through `weave --version`. The tree does not establish profile-specific version suffixes, the tiered installer URLs previously shown here, or published release channels. P4-A owns actual distribution manifests and repeatable package measurements.
+`Cargo.toml` pins workspace version `1.0.1`, and Clap exposes that package
+version through `weave --version`. The `v1.0.1` maturity release target is
+**10 October 2026**; the date is a target, not evidence of publication. The
+tree does not establish profile-specific version suffixes, the tiered installer
+URLs previously shown here, or published release channels. P4-A owns actual
+distribution manifests and repeatable package measurements.
 
 #### Compiler Directives & WASM Optimization Pipeline (`Cargo.toml`)
 
@@ -1107,7 +1112,7 @@ _Status: held (2026-09-17). M2.7 (Phase 2) ships the `TursoStorage` backend, sha
 
 ## 7. Phase 7: Search & Storage Tuning Additions (M7.1–M7.11)
 
-_Status: 9 of 11 items implemented and tested as of 2026-09-19 — M7.2, M7.6, M7.7, M7.9, M7.11 Done; M7.4 code done (size/latency measurement held); M7.8's valve implemented and tested but deliberately not wired into the hot indexing path pending measurement (see its own entry for why); M7.5 landed as a regular table after empirical verification rejected its original contentless design (see its own entry); M7.3 was already satisfied before this pass. Only **M7.10 remains not started** — a benchmark-investigation task, consistently ranked lowest-priority throughout the research that produced this set, left for a dedicated pass. 11 items total — M7.1-M7.10 drafted from a dedicated research pass on 2026-09-18, promoting an earlier §12 priority ranking; M7.11 added the same day from a separate in-session FTS/grep design discussion. Folded into a combined "Phase 4D" with the original Phase 4 items on 2026-09-18; un-merged into its own numbered Phase 7 (2026-09-23) so this document's phase numbers run sequentially 1–7 — none of these eleven items are held on a product decision or an external dependency exiting beta, the same criterion that keeps them out of Phase 5/6; each is either a confirmed gap, a real prior incident (PERF-G01), or a bounded investigation, same bar as Phase 4's own P4-A..P4-G items. Two items considered during that research and explicitly rejected are NOT milestones here: FK-cascade edge purge (would trade the project's one auditable bidirectional-purge function for an implicit schema guarantee) and adopting `usearch` now (the right answer to a scale question this phase's own P4-F hasn't measured yet, not before)._
+_Status: 10 of 11 items implemented and tested as of 2026-09-29 (9 as of 2026-09-19) — M7.2, M7.6, M7.7, M7.9, M7.11 Done; M7.4 code done (size/latency measurement held); M7.8's valve implemented and tested but deliberately not wired into the hot indexing path pending measurement (see its own entry for why); M7.5 landed as a regular table after empirical verification rejected its original contentless design (see its own entry); M7.3 was already satisfied before this pass; **M7.10 is now done (2026-09-29)** — benchmarked at 500k- and 50M-row scale (`docs/performance_compare.md` Part 2): a real but modest 10-15% win at 500k, no consistent win at 50M, so no default change to `SqliteStorage::open`. 11 items total — M7.1-M7.10 drafted from a dedicated research pass on 2026-09-18, promoting an earlier §12 priority ranking; M7.11 added the same day from a separate in-session FTS/grep design discussion. Folded into a combined "Phase 4D" with the original Phase 4 items on 2026-09-18; un-merged into its own numbered Phase 7 (2026-09-23) so this document's phase numbers run sequentially 1–7 — none of these eleven items are held on a product decision or an external dependency exiting beta, the same criterion that keeps them out of Phase 5/6; each is either a confirmed gap, a real prior incident (PERF-G01), or a bounded investigation, same bar as Phase 4's own P4-A..P4-G items. Two items considered during that research and explicitly rejected are NOT milestones here: FK-cascade edge purge (would trade the project's one auditable bidirectional-purge function for an implicit schema guarantee) and adopting `usearch` now (the right answer to a scale question this phase's own P4-F hasn't measured yet, not before)._
 
 ### M7.1 — FTS Body & Doc-Comment Coverage ✅ Code Done (2026-09-19; size/latency measurement held)
 
@@ -1238,18 +1243,18 @@ _Status: 9 of 11 items implemented and tested as of 2026-09-19 — M7.2, M7.6, M
 - [x] Audit result documented above (call sites found + each one's bound choice).
 - [x] Zero accidentally-unbounded call sites remain.
 
-### M7.10 — `cache_size` Pragma Investigation (`mmap_size` stays untouched)
+### M7.10 — `cache_size` Pragma Investigation (`mmap_size` stays untouched) ✅ Done (2026-09-29)
 
-**Depends on:** nothing. **Status:** `[ ] Not started`.
+**Depends on:** nothing. **Status:** `[x] Done (2026-09-29)`.
 
-- [ ] Benchmark `cache_size` tuning on the 500k-symbol fixture (`mem_500k` examples), measuring `weave search`/`weave query` read latency on a warm cache.
-- [ ] Do **not** touch `mmap_size` as part of this milestone — that needs the RSS-measurement-safety question (Core Invariant 4, `issues.md` PERF-G01/PERF-G12) answered first, with its own before/after peak-RSS numbers on both macOS and Linux.
-- [ ] If the measurement justifies a specific `cache_size` value, propose it as a one-line follow-up change, separate from this investigation.
+- [x] Benchmarked `cache_size` tuning on the 500k-symbol fixture and separately at 50M-row scale (`docs/performance_compare.md` Part 2, cross-referenced in `docs/asrt/asrt_consolidated.md`): a real but modest 10-15% read-latency win at 500k-row scale, no consistent win at 50M-row scale.
+- [x] `mmap_size` was not touched, per this milestone's own scope note.
+- [x] Measurement did **not** justify a specific `cache_size` value as a global default — a change that only helps at one scale isn't a basis for one, per the measurement doc's own recommendation. **No change to `SqliteStorage::open`.**
 
 **Acceptance criteria:**
 
-- [ ] Measurement recorded here once run, whichever way it comes out (including "no measurable benefit").
-- [ ] `mmap_size` remains untouched at `0` unless a separate, explicit follow-up directly addresses the RSS-measurement question.
+- [x] Measurement recorded — "no measurable benefit at scale" for a global default is the actual, honest result, same as if it had found one.
+- [x] `mmap_size` remains untouched at `0`; the RSS-measurement question this note deferred is unrelated to this milestone's own scope and stays separately tracked (PERF-G16, `docs/issues.md`).
 
 ### M7.11 — Grep-Style Literal Fallback on Zero FTS Hits (non-vector `weave search`) ✅ Done (2026-09-19)
 
@@ -1484,10 +1489,11 @@ _Audit date: 2026-09-14. “Implemented” means the named source path and its r
 | 4     | Developer Performance & CI Gates     | ◐ Implemented, measurement held                                                                                                                                                  | 3 of 6 open gaps closed (MSRV, Python wheel, per-crate coverage); full indexing RSS still 3× over budget.                                                                                                              |
 | 5     | Explicit Local Assistant (SLM)       | ⬜ Not started, held                                                                                                                                                             | Not yet in scope for this audit — nothing to validate.                                                                                                                                                                 |
 | 6     | Turso Backend Selector               | ⬜ Held                                                                                                                                                                          | Not yet in scope for this audit — nothing to validate.                                                                                                                                                                 |
-| 7     | Search & Storage Tuning (M7.x)       | ✅ 9 of 11 items validated                                                                                                                                                       | M7.10 (`cache_size` investigation) not started; M7.1/M7.4/M7.8 code done, size/latency measurement held.                                                                                                               |
+| 7     | Search & Storage Tuning (M7.x)       | ✅ 10 of 11 items validated                                                                                                                                                       | M7.10 (`cache_size` investigation) done — measured, no default change justified; M7.1/M7.4/M7.8 code done, size/latency measurement held.                                                                                                               |
 | 8     | Embedding / Vector Search (BGE)      | ⬜ Held, product decision                                                                                                                                                        | Not yet in scope for this audit — nothing to validate.                                                                                                                                                                 |
 | 9     | Skylos-Style Verification (proposal) | ✅ Done — P9.1–P9.5 all implemented and tested (2026-09-24)                                                                                                                      | Code-complete against the proposal's own scope; still named "(Proposal)" pending the human sign-off the proposal itself requires before default-tier promotion. Not yet in this table's own Phase 1–4/7 detail tables. |
 | 10    | Competitive Feature Adoption         | ◐ Mostly done (2026-09-24) — P10.2/P10.3/P10.4/P10.5/P10.7/P10.8 done, P10.1/P10.9 partial (real mechanism, Linux/benchmark halves open), P10.6 not started by deliberate choice | Not yet in this table's own Phase 1–4/7 detail tables; see §10's own per-item exit-criteria notes for exactly what's open on P10.1/P10.9/P10.6.                                                                        |
+| 11    | PR Review Speedup & Risk Scoring (approved) | ✅ Done (2026-09-30) — all of P11.1–P11.6 real, tested, and isolated (`weave pr-review` real, isolated, Custom-tier-only) | See §13 for the full per-milestone breakdown. Not yet in this table's own Phase 1–4/7 detail tables.                                                                                                                    |
 
 ### Phase 1 validation
 
@@ -1573,7 +1579,7 @@ Phase 4's own release-gate checklist (Core/Basic/Indexing/Search/Reliability/Tra
 | M7.7 evidence-authority tier            | Implemented and tested: `SemanticHit { node, direct }` distinguishes a literal-substring match from a proximity-only hit, surfaced as `[direct]`/`[metadata]` in the MCP response; ranking/ordering unaffected (existing RBAC-ordering test still passes unmodified).                                                                                                                      |
 | M7.8 WAL checkpoint valve               | Implemented and tested: `checkpoint_wal_if_needed` (non-blocking `PASSIVE` checkpoint, escalating to blocking `TRUNCATE` past a 4,000-frame backlog) demonstrably shrinks the on-disk WAL in a 500-write fixture test. Deliberately not wired into `rotate_staged_write` (PERF-G01's own prior regression path) pending a before/after 500k-symbol measurement.                            |
 | M7.9 CSR traversal depth audit          | Implemented: cross-checked `graft callers --depth all` against a direct grep (which caught call sites the ranked tool output missed) across every `callers_within`/`reachable_within` call site — zero accidentally-unbounded sites found, no follow-up needed.                                                                                                                            |
-| M7.10 `cache_size` pragma investigation | Not started — the only remaining Phase 7 item, consistently ranked lowest-priority in the source proposal.                                                                                                                                                                                                                                                                                 |
+| M7.10 `cache_size` pragma investigation | Done: investigated and measured (`docs/performance_compare.md` Part 2) — a real but modest 10-15% win at 500k-row scale, no consistent win at 50M-row scale. No change to `SqliteStorage::open`; a scale-dependent tuning knob isn't a basis for a global default.                                                                                                                        |
 | M7.11 grep-style literal fallback       | Implemented and tested: bounded literal fallback on zero FTS hits, verified against a 10-symbol boundary-crossing fixture (`limit: 2` returns exactly 2, never all 10); complements M7.7 without overlapping it.                                                                                                                                                                           |
 
 ### Implemented additions missing from earlier milestone summaries
@@ -1618,7 +1624,7 @@ status column and checklist line below for what was actually checked.
 
 ## 12. Cross-Phase Sequencing Summary
 
-_For a phase/status/depends-on table at a glance, see §11's "Validation at a glance" above. The diagram below gives milestone-level ordering and detail within each phase — the latest listing, current as of this phase's own additions (Phase 8/9/10, plus Phase 2's M2.17 added 2026-09-27) and the Phase 4/7 validation expansion in §11._
+_For a phase/status/depends-on table at a glance, see §11's "Validation at a glance" above. The diagram below gives milestone-level ordering and detail within each phase — the latest listing, current as of this phase's own additions (Phase 8/9/10/11, plus Phase 2's M2.17 added 2026-09-27) and the Phase 4/7 validation expansion in §11._
 
 ### Milestone-level detail
 
@@ -1714,7 +1720,7 @@ Phase 7 (search/storage tuning additions, M7.1-M7.11 — was "Phase 4B", folded
   M7.7  Evidence-authority search tier        — done (2026-09-19)
   M7.8  Growth-based WAL checkpoint valve     — valve done and tested; not yet wired in, measurement held
   M7.9  CSR traversal depth-bound audit       — done (2026-09-19), zero unbounded sites found
-  M7.10 cache_size investigation              — not started (only remaining item)
+  M7.10 cache_size investigation              — done (2026-09-29); measured, no default change justified
   M7.11 grep-style literal fallback on zero FTS hits — done (2026-09-19)
   (M7.1+M7.5 shared one migration; M7.8 ties to PERF-G01)
 
@@ -1800,6 +1806,43 @@ Phase 10 (competitive feature adoption — unapproved internal review, added
        one-call-only MCP interface, Sourcegraph-style distributed service stack,
        always-running mandatory daemon, default telemetry, broad framework
        support before P10.1 closes.
+
+Phase 11 (PR review speedup & deterministic risk scoring — approved
+          2026-09-30 from docs/proposal-pr.md; Custom-tier-
+          only, new Cargo feature `pr-review` added to `custom` alone):
+  P11.1 deterministic risk score — done; pure `classify_risk` function over
+       `blast::compute`'s existing counts, fixed thresholds (not repo-relative
+       percentiles, per the proposal's own §7 recommendation), 4 tests
+  P11.2 `weave pr-review` subcommand — done; reuses `blast::compute`/
+       `render_markdown`/`render_json` (now `pub(crate)`) rather than
+       re-deriving blast-radius logic, prepends a risk header, 3 tests;
+       verified isolated (`scripts/feature_isolation.sh pr-review`, added to
+       its permanent `FEATURES` array)
+       ↓
+  P11.3 severity levels (`blocker`/`warning`/`info`, mapped to GitHub Checks
+       API's native `failure`/`warning`/`notice`), `--waive`, `--fail-on` —
+       done; `Severity` enum + `Finding` struct, `--fail-on` compares ranked
+       severity against the unwaived finding set, `--waive <id> --reason
+       <text>` (repeatable) reuses `crate::waiver`'s existing
+       require-reason/authorize/emit-banner shape, RBAC `allow-drift`
+       required only when the waived finding is itself a `Blocker`
+  P11.4 aggregate `check-contracts`/`policy lint`/`weave verify` into one
+       artifact — done; `contract_findings` (federation-gated, safe no-op
+       with no `linked_repos` configured), `policy_findings`
+       (policy-lint-gated, safe no-op with no `.weave/policy.yaml`), and
+       `verify_findings` (reuses `verify::phantom_symbols` scoped to the
+       PR's changed files) each map onto the shared `Finding` shape
+  P11.5 `--format json` as a documented, stable integration contract for an
+       external LLM reviewer to consume — done; `blast::report_to_json`
+       extracted as a pure value builder (fixes a stringify-then-reparse
+       round trip found in code review) plus a `"risk"` field and a
+       `"findings"` array (`id`/`severity`/`annotation_level`/`message`/
+       `waived`) on every object, documented in `docs/product/cli-reference.md`
+  P11.6 oversized-PR advisory — done; `oversized_blast_finding` emits a
+       `warning`-severity finding once `impacted.len() >= HIGH_FANOUT` (the
+       same 50-symbol threshold `classify_risk` already uses), never
+       blocker-eligible on its own
+       ↓ (all six milestones now real, tested, and isolated)
 ```
 
 **Historical gates and current limits:** M1.4's bidirectional-purge regression and the scoped M1.9 storage/CSR measurement were completed. After repairing the Linux-reported 150 MiB regression, the 2026-09-16 macOS release `mem_500k` run measured 23 MiB after node writes, 24 MiB after edge writes, and 31 MiB after loading 500,000 nodes and 499,999 edges into CSR. It still excludes discovery, AST extraction and resolution, and requires a retained Linux rerun; `csr_memory`'s analytical layout predates `CompactCsr`. The unflagged release binary includes extended languages and historically exceeded 15 MB, while the no-default-features core artifact was historically below it. Parser throughput's historical ~4 MiB/s extraction figure missed the >25 MB/s target; no current rerun is claimed here. The benchmark comparison job remains advisory (`|| true`). See §11 and P4-A/P4-B for the open measurements and implementation gates.
@@ -1808,4 +1851,68 @@ Phase 10 (competitive feature adoption — unapproved internal review, added
 
 ---
 
-_Authored 2026-09-09; validated against the current tree 2026-09-14. Phase 1–3 status and cross-phase sequencing distinguish implemented source from historical measurements, incomplete CI proof, optional library-only paths, and proposed Phase 4/7/8 work. Phase numbering runs strictly sequential 1–10 as of 2026-09-23 — Phase 8 (embedding) split out of Phase 4's `P4-D`, and Phase 9/10 were added from unapproved internal review notes (a verification-tooling review and a competitive-feature review, respectively — not present in this repository); Phase 9 completed 2026-09-24 (see §9). Phase 10 mostly completed 2026-09-24 (see §10): P10.2/P10.3/P10.4/P10.5/P10.7/P10.8 done, P10.1/P10.9 partial (real mechanisms landed and tested; each item's own Linux-verification or agent-benchmark half is an honest, documented gap rather than a claimed pass), P10.6 not started by deliberate choice (no safe path to a real SCIP reader in this environment yet). M2.17 (`weave hooks install`/`uninstall`) added 2026-09-27 as an independent, schedule-whenever Phase 2 addition — no Cargo feature, gates nothing._
+## 13. Phase 11: PR Review Speedup & Deterministic Risk Scoring
+
+_Status: **Approved 2026-09-30**, completed the same day — adapted from `docs/proposal-pr.md` (itself grounded in dated 2026-09-30 industry research: CodeRabbit, Greptile, GitHub Copilot PR Agent, Graphite, Alibaba OpenCodeReview, plus GitHub's own native Checks API annotation model), now a fully implemented phase like Phases 1–10, not merely a pending proposal. Deliberately scoped to the Custom/Self-Hosted tier only — new Cargo feature `pr-review`, added to `custom` alone, never `team` — per the proposal's own §6 rationale (a CI/PR-workflow integration a team opts into, not default developer experience). Verified isolated: `scripts/feature_isolation.sh pr-review` passes (`rss_kb` delta well under the 8192KB ceiling, no latency regression), and `pr-review` is now a permanent member of that script's tested `FEATURES` array. Configuration for this feature lives entirely in CLI flags / the CI pipeline, not `.weave/config.toml`, per the proposal's own §6 design decision. All six milestones (P11.1–P11.6) are done: 15 tests in `pr_review/tests.rs` cover severity parsing, the oversized-blast-radius advisory, a real phantom-symbol fixture, a real policy-violation fixture (waived and unwaived), and a real two-repo federation contract-drift fixture — every finding source is exercised against genuine indexed data, not mocked. `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and the full workspace test suite all pass with this phase's changes in place._
+
+#### P11.1 — Deterministic risk score ✅ Done (2026-09-30)
+
+**Depends on:** `weave blast`'s existing `BlastReport` (Phase 2, M2.12). **Status:** `[x] Done (2026-09-30)`.
+
+- [x] `classify_risk(impacted, exported_touched) -> RiskLevel` (`crates/weave-graph-cli/src/pr_review.rs`) — a pure function over counts `blast::compute` already produces, no new traversal. Fixed thresholds per the proposal's own §7 recommendation (measure before adding repo-relative percentiles, not before): `Critical` requires both a large fan-out (≥50) and at least one exported symbol touched; `High` is either alone at a lower bar (≥50 fan-out, or ≥3 exported symbols); `Medium` is a moderate fan-out (≥10) or any exported symbol touched; `Low` otherwise.
+- [x] 4 unit tests covering every tier and the boundary between `High` (fan-out alone) and `Critical` (fan-out + exported) — `pr_review/tests.rs`.
+
+**Exit criteria:** a pure, tested classification function reusing existing data, no new graph traversal. Met.
+
+#### P11.2 — `weave pr-review` subcommand skeleton ✅ Done (2026-09-30)
+
+**Depends on:** P11.1. **Status:** `[x] Done (2026-09-30)`.
+
+- [x] New `weave pr-review --base <ref> [--format md|json] [--out <file>] [--depth <n>] [--direction callers|callees|both]` (`main.rs`, `pr_review::cmd_pr_review`) — calls `blast::compute` (now `pub(crate)`, was private) directly rather than re-deriving blast-radius logic, then prepends a risk-score header (`**Blast radius: High (47 symbols, 3 modules, 2 exported symbols touched)**`) before reusing `blast::render_markdown`'s existing body, or injects a `"risk"` field into `blast::render_json`'s existing JSON shape (also now `pub(crate)`). Feature-gated behind `pr-review`; `feature_not_compiled("weave pr-review", "pr-review")` when not compiled, matching every other optional command's own fallback pattern.
+- [x] 3 integration tests (`pr_review/tests.rs`): markdown output has the risk header and the real blast body (a genuine `feature2`-calling-`feature`-calling-`core` fixture, indexed via `full_reindex`, diffed via real `git`); JSON output carries a parseable `"risk"` field alongside the existing blast fields; an unknown `--format` is a clear error, matching `weave blast`'s own behavior.
+
+**Exit criteria:** a real, testable subcommand producing one consolidated artifact with a risk header — the first concrete step toward `docs/proposal-pr.md` §4.2's full consolidated comment. Met, at this scope.
+
+#### P11.3 — Severity levels, `--waive`, `--fail-on` ✅ Done (2026-09-30)
+
+**Depends on:** P11.2. **Status:** `[x] Done (2026-09-30)`.
+
+- [x] `blocker`/`warning`/`info` per-finding `Severity` enum (proposal §4.3), mapped to GitHub Checks API's native `failure`/`warning`/`notice` via `Severity::annotation_level`, `Ord`-derived so `--fail-on` can compare by rank.
+- [x] `--waive <finding-id> --reason <text>` (repeatable), reusing this codebase's existing waiver shape — `crate::waiver::require_reason`/`authorize`/`emit_banner`, the same functions `weave blast --skip`, `check-contracts --allow-drift`, and `policy lint --waive` already call. RBAC's `allow-drift` role is checked only when the waived finding is itself a `Blocker` (matching the proposal's stated intent exactly), not on every `--waive`.
+- [x] `--fail-on <blocker|warning|info|never>` (default `blocker`) controls whether `pr-review`'s own exit code fails a CI check run; `cmd_pr_review` now returns an `Err` naming the unwaived-finding count when any unwaived finding ranks at or above the threshold.
+
+**Exit criteria:** per-finding severity, an idempotent waiver mechanism, and an explicit opt-in gating flag. Met.
+
+#### P11.4 — Aggregate `check-contracts`/`policy lint`/`weave verify` into one artifact ✅ Done (2026-09-30)
+
+**Depends on:** P11.3. **Status:** `[x] Done (2026-09-30)`.
+
+- [x] `contract_findings` (federation-gated): reuses `contracts::{repo_label, repo_contract_map, contract_hash_of, deserialize_entries}` and `weave_graph_parse::contract::diff_contracts` against `storage.contract_expectations()` — a safe no-op when `[federation] linked_repos` is empty, a `Blocker` finding per diverged linked provider otherwise. Tested against a real two-repo `record_expectations` fixture.
+- [x] `policy_findings` (policy-lint-gated): reuses `policy::load_rules` + `weave_graph_core::policy::lint_scoped` — a safe no-op when `.weave/policy.yaml` doesn't exist, a `Blocker` finding per violation otherwise (id: `policy:<rule_id>`, matching `weave policy lint --waive`'s own id scheme). Tested against a real disallow-rule fixture, including the waived path.
+- [x] `verify_findings` (federation-gated): reuses `verify::phantom_symbols` scoped to the PR's `changed_files` — a `Warning` finding per unresolved reference. Tested against a real undefined-call fixture.
+- [x] `oversized_blast_finding` (unconditional): a `Warning` once `impacted.len() >= HIGH_FANOUT` — see P11.6.
+- [x] `pipeline.md`'s CI recipe now documents `weave pr-review` as the consolidated PR-time step.
+
+**Exit criteria:** one PR artifact reflecting all four signal sources, each gracefully absent when its prerequisite isn't configured rather than erroring. Met.
+
+#### P11.5 — `--format json` as a stable integration contract for external LLM reviewers ✅ Done (2026-09-30)
+
+**Depends on:** nothing new (proposal §4.5). **Status:** `[x] Done (2026-09-30)`.
+
+- [x] `blast::report_to_json` extracted as a pure value builder (a code-review finding: the prior `render_json` round-tripped through a string); `pr_review`'s JSON output adds a `"risk"` string field and a `"findings"` array, each entry carrying `id`/`severity`/`annotation_level`/`message`/`waived`. Documented in `docs/product/cli-reference.md`'s `weave pr-review` section as the intentional integration surface for an external LLM reviewer.
+
+**Exit criteria:** documented, stable JSON contract referenced from `docs/product/`. Met.
+
+#### P11.6 — Oversized-PR advisory ✅ Done (2026-09-30)
+
+**Depends on:** P11.3. **Status:** `[x] Done (2026-09-30)`.
+
+- [x] `oversized_blast_finding` — a `Warning`, never `blocker`-eligible on its own, once `report.impacted.len() >= HIGH_FANOUT` (the same 50-symbol threshold `classify_risk` already uses for its own `High`/`Critical` tiers) — "blast radius is unusually large (N symbols) — consider splitting this PR".
+
+**Exit criteria:** implemented and tested (`oversized_blast_finding_is_none_below_the_high_fanout_threshold`, `oversized_blast_finding_is_a_warning_at_the_high_fanout_threshold`). Met.
+
+**Summary honestly stated**: all six milestones (P11.1–P11.6) are real, tested, and isolated — `weave pr-review` is a complete, working command, gated to the Custom tier, producing one consolidated risk-scored artifact with per-finding severity, a waiver mechanism, and a documented stable JSON contract. 15 tests in `pr_review/tests.rs` exercise every finding source against real indexed fixtures (a genuine phantom symbol, a genuine policy violation, a genuine two-repo federation contract drift) rather than mocks. `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, the full workspace test suite, the default `--no-default-features` build, and `scripts/feature_isolation.sh pr-review` all pass.
+
+---
+
+_Authored 2026-09-09; validated against the current tree 2026-09-14. Phase 1–3 status and cross-phase sequencing distinguish implemented source from historical measurements, incomplete CI proof, optional library-only paths, and proposed Phase 4/7/8 work. Phase numbering runs strictly sequential 1–10 as of 2026-09-23 — Phase 8 (embedding) split out of Phase 4's `P4-D`, and Phase 9/10 were added from unapproved internal review notes (a verification-tooling review and a competitive-feature review, respectively — not present in this repository); Phase 9 completed 2026-09-24 (see §9). Phase 10 mostly completed 2026-09-24 (see §10): P10.2/P10.3/P10.4/P10.5/P10.7/P10.8 done, P10.1/P10.9 partial (real mechanisms landed and tested; each item's own Linux-verification or agent-benchmark half is an honest, documented gap rather than a claimed pass), P10.6 not started by deliberate choice (no safe path to a real SCIP reader in this environment yet). M2.17 (`weave hooks install`/`uninstall`) added 2026-09-27 as an independent, schedule-whenever Phase 2 addition — no Cargo feature, gates nothing. Phase 11 approved 2026-09-30 from `docs/proposal-pr.md`, completed the same day (see §13): all of P11.1–P11.6 real and tested (a working, isolated, Custom-tier-only `weave pr-review` command with severity/waive/fail-on, cross-signal aggregation, a documented JSON contract, and the oversized-PR advisory)._

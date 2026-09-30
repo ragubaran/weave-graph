@@ -4,7 +4,10 @@
 
 `weave` is available via package managers or can be built directly from source:
 
-For a version-pinned Homebrew or release-archive smoke test, use [Test-install 1.0.1](install-1.0.1-testing.md).
+The `v1.0.1` maturity release target is **10 October 2026**. For its
+version-pinned Homebrew or release-archive smoke test, use
+[Test-install 1.0.1](install-1.0.1-testing.md); those channels are not treated
+as available until the release artifacts are published.
 
 ### Package Managers
 
@@ -176,9 +179,9 @@ Outputs every file, line number, and consuming symbol across all linked reposito
 
 ---
 
-## 3. Self-Hosted & Enterprise Custom Mode
+## 3. Self-Hosted & Enterprise Custom Tier
 
-For centralized team infrastructure, private cloud VPCs, or compliance environments, Weave Graph provides the **Custom Mode Profile** (`--features custom`).
+For centralized team infrastructure, private cloud VPCs, or compliance environments, Weave Graph provides the **`weave-custom` build tier** (`--features custom`) — a separate compiled artifact, not a `weave init --mode` value.
 
 - **Role-Based Access Control (RBAC)**: Query-layer security masking across CLI, reports, and MCP tools. Identity comes from `.weave/config.toml`'s `[rbac.users]`, loopback SCIM provisioning, or (with the optional `github-auth` feature) a GitHub token in `WEAVE_GITHUB_TOKEN`.
 - **Architectural Policy Linting**: Declare architectural layers in `.weave/policy.yaml` and gate CI pull requests with `weave policy lint`.

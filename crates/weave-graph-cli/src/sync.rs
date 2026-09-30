@@ -13,8 +13,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "hub-provenance")]
-use weave_graph_hub::{HmacSnapshotProvenanceVerifier, SnapshotProvenanceVerifier};
 use weave_graph_hub::{HubClient, PullOutcome, PushOutcome};
 use weave_graph_store_sqlite::SqliteStorage;
 
@@ -206,6 +204,7 @@ fn push_signature(
     snapshot_path: &Path,
     supplied: Option<&str>,
     key_file: Option<&Path>,
+    #[cfg_attr(not(feature = "hub-provenance"), allow(unused_variables))] provider: &str,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     if supplied.is_some() && key_file.is_some() {
         return Err("use either --signature or --provenance-key-file, not both".into());
@@ -220,8 +219,9 @@ fn push_signature(
     }
     #[cfg(feature = "hub-provenance")]
     {
+        let kind = provider.parse::<weave_graph_hub::ProvenanceProviderKind>()?;
         let key = fs::read(key_file)?;
-        let verifier = HmacSnapshotProvenanceVerifier::new(key)?;
+        let verifier = weave_graph_hub::build_verifier(kind, key)?;
         let payload = fs::read(snapshot_path)?;
         let signature = verifier.sign_snapshot(&repo_label(root), commit_sha, &payload);
         Ok(Some(
@@ -237,6 +237,7 @@ pub(crate) fn cmd_sync_push(
     root: &Path,
     supplied_signature: Option<&str>,
     provenance_key_file: Option<&Path>,
+    provenance_provider: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let branch = crate::git::current_branch(root);
     match branch.as_deref() {
@@ -268,6 +269,7 @@ pub(crate) fn cmd_sync_push(
         &snapshot.path,
         supplied_signature,
         provenance_key_file,
+        provenance_provider,
     )?;
 
     let outcome = push_with_backoff(

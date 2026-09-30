@@ -79,6 +79,10 @@ vector = ["fts", "weave-graph-core/vector", "weave-graph-store-sqlite/vector", "
 # variants (docs/deploy.md §1): no new code, just a named shorthand for the
 # feature list a `weave`/`weave-custom` build actually needs.
 viz = []
+# `federation` is a hard dependency: check-contracts/weave-verify
+# aggregation needs those modules, both gated on it. `policy-lint` is an
+# optional add-on (unlocks one more finding source), not forced.
+pr-review = ["federation"]
 team = ["docs", "federation", "fts", "vector"]
-custom = ["team", "hub", "hub-provenance", "provenance", "rbac", "otel", "policy-lint", "fts", "vector"]
+custom = ["team", "hub", "hub-provenance", "provenance", "rbac", "otel", "policy-lint", "fts", "vector", "pr-review"]
 watch = ["dep:notify"]

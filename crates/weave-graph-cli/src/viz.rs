@@ -3,7 +3,7 @@
 //! offline, zero server dependencies) that renders the `.canvas` files
 //! `weave report` already produces. This static-file path is the default —
 //! a live loopback server exists only as the secondary path behind
-//! `[viz] mode = "server"`, and binds loopback only.
+//! `[viz] report_type = "server"`, and binds loopback only.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -66,10 +66,10 @@ fn wants_open(root: &Path, flag: bool) -> bool {
     flag || config::get_key(&config_path(root), "report.auto_open").as_deref() == Some("true")
 }
 
-/// `[viz] mode`: `"static"` (default) opens the local HTML bundle via
+/// `[viz] report_type`: `"static"` (default) opens the local HTML bundle via
 /// `file://`; `"server"` starts a loopback-only static file server.
-fn viz_mode(root: &Path) -> &'static str {
-    match config::get_key(&config_path(root), "viz.mode").as_deref() {
+fn viz_report_type(root: &Path) -> &'static str {
+    match config::get_key(&config_path(root), "viz.report_type").as_deref() {
         Some("server") => "server",
         _ => "static",
     }
@@ -149,7 +149,7 @@ pub(crate) fn cmd_viz(
         .collect();
     emit_html(&out_dir, &canvas_files)?;
 
-    match viz_mode(root) {
+    match viz_report_type(root) {
         "server" => {
             let stop = Arc::new(AtomicBool::new(false));
             let url = serve_report(&out_dir, port, Arc::clone(&stop))?;
@@ -192,7 +192,7 @@ fn content_type(path: &str) -> &'static str {
     }
 }
 
-/// Minimal loopback-only static file server for `[viz] mode = "server"`.
+/// Minimal loopback-only static file server for `[viz] report_type = "server"`.
 /// Binds `127.0.0.1` explicitly (Core Invariant 6's localhost-only rule
 /// applies just as much to a viewer as to the MCP server); requests are
 /// sanitized to refuse path traversal. `stop` ends the loop; the caller

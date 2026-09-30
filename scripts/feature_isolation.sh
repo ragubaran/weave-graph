@@ -29,13 +29,15 @@ case "$BUILD_PROFILE" in
         exit 2
         ;;
 esac
-# slm/hub/turso excluded: slm shells out to external model weights, hub's
-# sync verbs hit a configured hub URL, turso swaps the storage backend
-# (its isolation is asserted by its own suite). The pure read/query
-# features are the ones L8's "no change to default-build latency/RSS"
-# claim covers.
+# hub/turso excluded: hub's sync verbs hit a configured hub URL, turso
+# swaps the storage backend (its isolation is asserted by its own suite,
+# and it isn't even a weave-graph-cli feature — library-only, no CLI
+# selector). slm IS included below: its model-invoking code path
+# (`weave ask`/`weave slm doctor`) is never exercised by this script's
+# `status`/`serve --mcp` measurements, so what's actually measured is
+# slm's idle/compiled-in cost, exactly what this gate covers.
 if [ "$#" -eq 0 ]; then
-    FEATURES=(docs federation provenance notes watch viz rbac fts vector slm)
+    FEATURES=(docs federation provenance notes watch viz rbac fts vector slm http-compression github-auth pr-review)
 else
     FEATURES=("$@")
 fi
@@ -45,10 +47,13 @@ build() {
     if [ "$BUILD_PROFILE" = release ]; then
         cargo_profile=(--release)
     fi
+    # `${arr[@]}` on an empty array trips `set -u` on bash <4.4 (macOS's
+    # stock /bin/bash is 3.2) — `${arr[@]+"${arr[@]}"}` is the standard
+    # defensive idiom that expands to nothing instead of erroring.
     if [ "$1" = default ]; then
-        cargo build -q -p weave-graph-cli "${cargo_profile[@]}" --bin weave
+        cargo build -q -p weave-graph-cli ${cargo_profile[@]+"${cargo_profile[@]}"} --bin weave
     else
-        cargo build -q -p weave-graph-cli "${cargo_profile[@]}" --features "$1" --bin weave
+        cargo build -q -p weave-graph-cli ${cargo_profile[@]+"${cargo_profile[@]}"} --features "$1" --bin weave
     fi
 }
 

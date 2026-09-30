@@ -29,8 +29,9 @@ pub use canvas::Canvas;
 pub use client::{HubClient, HubError, PullOutcome, PushOutcome};
 #[cfg(feature = "hub-provenance")]
 pub use provenance::{
-    HmacSnapshotProvenanceVerifier, MockSnapshotProvenanceVerifier, ProvenanceError,
-    SnapshotProvenanceVerifier,
+    Ed25519SnapshotProvenanceVerifier, HmacSnapshotProvenanceVerifier,
+    MockSnapshotProvenanceVerifier, ProvenanceError, ProvenanceProviderKind,
+    SnapshotProvenanceVerifier, build_verifier,
 };
 pub use registry::{PullResult, PushDecision, Registry, RegistryConfig};
 #[cfg(feature = "hub-canvas")]

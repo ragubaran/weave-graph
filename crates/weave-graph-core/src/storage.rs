@@ -47,6 +47,11 @@ pub trait Storage {
         Ok(self.all_edges()?.len())
     }
 
+    /// Counts nodes without forcing callers to retain the complete graph.
+    fn node_count(&self) -> Result<usize, StorageError> {
+        Ok(self.all_nodes()?.len())
+    }
+
     /// Streams every node to `f` instead of materializing a `Vec<Node>`.
     /// Default forwards to `all_nodes` for backends that don't override it;
     /// `weave-graph-store-sqlite` overrides this to stream row-by-row —

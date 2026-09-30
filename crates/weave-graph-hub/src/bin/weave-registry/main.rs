@@ -33,16 +33,22 @@ struct Args {
     canvas_exclude: Vec<String>,
     #[cfg(feature = "hub-provenance")]
     provenance_key_file: Option<PathBuf>,
+    #[cfg(feature = "hub-provenance")]
+    provenance_provider: weave_graph_hub::ProvenanceProviderKind,
 }
 
 const USAGE: &str = "Usage: weave-registry --bind <host:port> --data-dir <path> \\\n  \
      --max-queue-depth-per-repo <n> --max-pushes-per-minute-per-repo <n> \\\n  \
-     --max-snapshot-bytes <n> [--auth-token <token>] [--config <path>] [--provenance-key-file <path>]\n\n\
+     --max-snapshot-bytes <n> [--auth-token <token>] [--config <path>] \\\n  \
+     [--provenance-key-file <path>] [--provenance-provider hmac|ed25519]\n\n\
      Both rate limits are required and must match the deployment's measured load. \
      Non-loopback binds require --auth-token. --canvas-exclude is an optional \
      comma-separated module list. With feature hub-provenance, --provenance-key-file \
-     reads a secret of at least 32 bytes and verifies hex-encoded HMAC-SHA-256 \
-     snapshot signatures; omitting it leaves snapshot verification disabled.";
+     reads a secret and verifies hex-encoded snapshot signatures; omitting it leaves \
+     snapshot verification disabled. --provenance-provider selects which signature \
+     scheme the key is used with: \"hmac\" (default, key >= 32 bytes, HMAC-SHA-256) \
+     or \"ed25519\" (key exactly 32 bytes, EdDSA) — must match what the pushing \
+     client used.";
 
 fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut bind = None;
@@ -55,6 +61,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut canvas_exclude = Vec::new();
     #[cfg(feature = "hub-provenance")]
     let mut provenance_key_file = None;
+    #[cfg(feature = "hub-provenance")]
+    let mut provenance_provider = weave_graph_hub::ProvenanceProviderKind::Hmac;
 
     let mut args = args;
     while let Some(flag) = args.next() {
@@ -88,6 +96,12 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             #[cfg(feature = "hub-provenance")]
             "--provenance-key-file" => provenance_key_file = Some(PathBuf::from(value()?)),
+            #[cfg(feature = "hub-provenance")]
+            "--provenance-provider" => {
+                provenance_provider = value()?
+                    .parse()
+                    .map_err(|e: weave_graph_hub::ProvenanceError| e.to_string())?;
+            }
             other => return Err(format!("unrecognized argument: {other}")),
         }
     }
@@ -119,6 +133,8 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Args, String> {
         canvas_exclude,
         #[cfg(feature = "hub-provenance")]
         provenance_key_file,
+        #[cfg(feature = "hub-provenance")]
+        provenance_provider,
     };
     validate_auth_boundary(&parsed)?;
     Ok(parsed)
@@ -173,10 +189,10 @@ fn build_server(args: &Args) -> Result<RegistryServer, String> {
         Some(path) => {
             let key = fs::read(path)
                 .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-            registry.with_provenance_verifier(std::sync::Arc::new(
-                weave_graph_hub::HmacSnapshotProvenanceVerifier::new(key)
+            registry.with_provenance_verifier(
+                weave_graph_hub::build_verifier(args.provenance_provider, key)
                     .map_err(|error| error.to_string())?,
-            ))
+            )
         }
         None => registry,
     };

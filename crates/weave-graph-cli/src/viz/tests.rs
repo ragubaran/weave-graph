@@ -68,7 +68,7 @@ fn report_format_config_gates_html_emission() {
     assert!(report_format_wants_html(root));
 }
 
-/// `[viz] mode = "server"`: minimal loopback-only static server serves
+/// `[viz] report_type = "server"`: minimal loopback-only static server serves
 /// the report files and refuses path traversal.
 #[test]
 fn server_mode_serves_report_files_on_loopback_and_refuses_traversal() {

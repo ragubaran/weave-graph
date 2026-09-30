@@ -4,31 +4,36 @@ Everything beyond the deterministic core is an off-by-default Cargo feature.
 The pages below describe implemented interfaces; package, memory, latency,
 and semantic-quality targets remain subject to the gates in the internal audit.
 
-| Tier / Profile                       | Feature                                 | Flag                     | Description                                                                                                           |
-| :----------------------------------- | :-------------------------------------- | :----------------------- | :-------------------------------------------------------------------------------------------------------------------- |
-| **Base Tier (Core)**                 | Core Engine                             | `--no-default-features`  | Core-language Tree-sitter indexing, CSR graph, incremental reindex, loopback MCP server, `weave query`, `weave blast` |
-| **Team Profile**                     | [`docs`](#docs)                         | `--features docs`        | Markdown/Obsidian ingestion, wikilinks, backtick code rationales, JSON Canvas export                                  |
-|                                      | [`federation`](#federation)             | `--features federation`  | Multi-repo graph composition, cross-repo cycles, contract hashing & CI verification                                   |
-| **Knowledge & DX Tier**              | [`notes`](#notes)                       | `--features notes`       | Pinned symbol notes, ephemeral (24h TTL) and crystallized tiers, moniker reattachment                                 |
-|                                      | [`watch`](#watch)                       | `--features watch`       | Auto-sync file watcher, debounce queue, blast-radius safety ceiling                                                   |
-|                                      | [`viz`](#viz)                           | `--features viz`         | Offline standalone HTML viewer, loopback static report server                                                         |
-| **Custom / Self-Hosted Tier**        | [`rbac`](#rbac)                         | `--features rbac`        | Query-layer role-based masking, SCIM 2.0 provisioning server, IdP directory sync                                      |
-| **GitHub token identity (optional)** | [`github-auth`](#github-token-identity) | `--features github-auth` | GitHub API identity lookup from `WEAVE_GITHUB_TOKEN`                                                                  |
-|                                      | [`policy-lint`](#policy-lint)           | `--features policy-lint` | YAML architectural boundaries, dependency linting, architectural drift analytics                                      |
-|                                      | [`otel`](#otel)                         | `--features otel`        | OTLP JSON trace import, node-level latency percentiles and error metrics                                              |
-|                                      | [`hub`](#hub)                           | `--features hub`         | Centralized snapshot registry, `weave sync pull/push`, delta sync, CI hydration                                       |
-|                                      | [`fts`](#fts)                           | `--features fts`         | BM25 full-text symbol search with AST synonym expansion (`weave search`)                                              |
-|                                      | [`vector`](#vector)                     | `--features vector`      | Vector embeddings with `sqlite-vec` virtual tables for semantic symbol retrieval                                      |
-|                                      | [`slm`](#slm)                           | `--features slm`         | Natural-language terminal query router (`weave ask`), model management, ADR review                                    |
-|                                      | [`provenance`](#provenance)             | `--features provenance`  | Optional note and document provenance primitives                                                                      |
-| **Extensibility & Runtimes**         | [`turso`](#turso)                       | Library feature only     | Embedded libSQL `Storage` implementation; not available through `weave` commands                                      |
-|                                      | [`python`](#python)                     | `--features python`      | PyO3 Python bindings wheel (`weave-graph-python`) for offline graph analytics                                         |
+**Correction (this pass):** this table previously grouped `fts`/`vector`/`hub`/`policy-lint`/`otel`/`slm`/`provenance` all under one merged "Custom / Self-Hosted Tier" cell — but `fts`/`vector` are actually part of `team` (the Standard `weave` binary), not Custom-exclusive. Rebuilt with an explicit **Tier** column and a **Default or Optional** column so tier membership and default-compiled status are each their own fact, not folded into one ambiguous label. See [`docs/mode_matrix.md`](../mode_matrix.md) for the full cross-reference, including which of the shared (both-tier) features behave differently once RBAC is active.
+
+| Feature | Tier | Default or Optional | Flag | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| Core Engine | Both (core) | **Default** in every build | `--no-default-features` still includes it | Core-language Tree-sitter indexing, CSR graph, incremental reindex, loopback MCP server, `weave query`, `weave blast` |
+| [`docs`](#docs) | Standard + Custom | **Default** in both (`team`) | `--features docs` only if built without `team`/`custom` | Markdown/Obsidian ingestion, wikilinks, backtick code rationales, JSON Canvas export |
+| [`federation`](#federation) | Standard + Custom | **Default** in both (`team`) | `--features federation` only if built without `team`/`custom` | Multi-repo graph composition, cross-repo cycles, contract hashing & CI verification |
+| [`fts`](#fts) | Standard + Custom | **Default** in both (`team`) | `--features fts` only if built without `team`/`custom` | BM25 full-text symbol search with AST synonym expansion (`weave search`) |
+| [`vector`](#vector) | Standard + Custom | **Default** in both (`team`; implies `fts`) | `--features vector` only if built without `team`/`custom` | Vector embeddings with `sqlite-vec` virtual tables for semantic symbol retrieval |
+| [`rbac`](#rbac) | Custom only | **Default** in `weave-custom`; **Optional** (from-source) on Standard | `--features rbac` | Query-layer role-based masking, SCIM 2.0 provisioning server, IdP directory sync |
+| [`policy-lint`](#policy-lint) | Custom only | **Default** in `weave-custom`; **Optional** on Standard | `--features policy-lint` | YAML architectural boundaries, dependency linting, architectural drift analytics |
+| [`otel`](#otel) | Custom only | **Default** in `weave-custom`; **Optional** on Standard | `--features otel` | OTLP JSON trace import, node-level latency percentiles and error metrics |
+| [`hub`](#hub) | Custom only | **Default** in `weave-custom`; **Optional** on Standard | `--features hub` | Centralized snapshot registry, `weave sync pull/push`, delta sync, CI hydration |
+| `hub-provenance` | Custom only | **Default** in `weave-custom`; **Optional** on Standard | `--features hub-provenance` (implies `hub`) | HMAC/Ed25519 snapshot signing for hub sync |
+| [`provenance`](#provenance) | Custom only | **Default** in `weave-custom`; **Optional** on Standard | `--features provenance` | Optional note and document provenance primitives |
+| [`notes`](#notes) | Neither — standalone | **Optional** on both; not in any prebuilt binary | `--features notes` | Pinned symbol notes, ephemeral (24h TTL) and crystallized tiers, moniker reattachment |
+| [`watch`](#watch) | Neither — standalone | **Optional** on both; not in any prebuilt binary | `--features watch` | Auto-sync file watcher, debounce queue, blast-radius safety ceiling |
+| [`viz`](#viz) | Neither — standalone | **Optional** on both; not in any prebuilt binary | `--features viz` | Offline standalone HTML viewer, loopback static report server |
+| [`slm`](#slm) | Neither — standalone | **Optional** on both; not in any prebuilt binary | `--features slm` | Natural-language terminal query router (`weave ask`), model management, ADR review — see [`docs/slm_status.md`](../slm_status.md) |
+| `http-compression` | Neither — standalone | **Optional** on both; not in any prebuilt binary | `--features http-compression` | MCP HTTP transport gzip negotiation |
+| [`github-auth`](#github-token-identity) | Structurally Custom-only (hard dependency on `rbac`) | **Optional** even on `weave-custom` — not in its prebuilt binary | `--features github-auth` (pulls in `rbac` via Cargo feature unification) | GitHub API identity lookup from `WEAVE_GITHUB_TOKEN` |
+| [`pr-review`](#pr-review) | Custom only | **Default** in `weave-custom` | `--features pr-review` | Consolidated, risk-scored PR review artifact (`weave pr-review`) with severity/waive/fail-on — approved and fully built; see [`docs/proposal-pr.md`](../proposal-pr.md) |
+| [`python`](#python) | Separate artifact | N/A — its own build | `--features python` | PyO3 Python bindings wheel (`weave-graph-python`) for offline graph analytics |
+| [`turso`](#turso) | Not a `weave-graph-cli` feature at all | N/A | Library crate only, no `--features` flag exists for it | Embedded libSQL `Storage` implementation; not available through `weave` commands |
 
 ### Feature Profiles (Cargo Bundles)
 
 - **Core artifact**: The current macOS `--no-default-features` build is 10,141,152 bytes (9.67 MiB) — verified via `scripts/verify_envelope.sh`. The vector profile is 10,254,208 bytes (9.77 MiB); the <15 MB target applies to the explicitly built core artifact. The 500k-symbol indexing RSS passes on macOS (24 MiB peak); a Linux rerun remains open.
 - **Team Profile (`--features team`)**: `docs` + `federation` + `fts` (BM25 search) + `vector` (semantic search). Multi-repo linking, contract checking, Markdown knowledge integration, and code search.
-- **Custom Mode / Self-Hosted Profile (`--features custom`)**: `team` + `hub` + `hub-provenance` + `provenance` + `rbac` + `otel` + `policy-lint` + `fts` + `vector`. Enables the compiled enterprise feature set. Review each capability's authentication and verification status before deployment; this profile is not a certification of every enterprise control.
+- **Custom Tier / Self-Hosted Profile (`--features custom`)** — a build tier and separate shipped artifact (`weave-custom`), not a `weave init --mode` value: `team` + `hub` + `hub-provenance` + `provenance` + `rbac` + `otel` + `policy-lint` + `fts` + `vector`. Enables the compiled enterprise feature set. Review each capability's authentication and verification status before deployment; this profile is not a certification of every enterprise control.
 
 ---
 
@@ -136,6 +141,37 @@ itself never talks to GitHub; pipe the output into `gh pr comment` from
 CI. Requires `fetch-depth: 0` in the CI checkout (a shallow clone fails
 with a message naming the fix, not a confusing raw `git` error).
 
+## `pr-review`
+
+`weave pr-review --base <ref> [--format md|json] [--out <file>] [--fail-on
+blocker|warning|info|never] [--waive <finding-id>]... [--reason <text>]`
+(Custom tier only, part of the `custom` bundle, never `team`): reuses
+`weave blast`'s own diff/traversal (`blast::compute`, now `pub(crate)`)
+rather than re-deriving it, prepends a deterministic, fixed-threshold risk
+header — `Low`/`Medium`/`High`/`Critical` — computed from the impacted-
+symbol and exported-symbol-touched counts `weave blast` already produces,
+then aggregates a consolidated findings list: an oversized-blast-radius
+advisory, `check-contracts`-style contract drift against linked partners
+(`federation`), `.weave/policy.yaml` boundary violations (`policy-lint`),
+and `weave verify`'s phantom-symbol check scoped to the PR's changed
+files — each gracefully absent when its prerequisite isn't configured.
+`--format json` injects a `"risk"` string and a `"findings"` array
+(`id`/`severity`/`annotation_level`/`message`/`waived`) alongside `weave
+blast`'s existing JSON shape — a documented, stable contract for an
+external LLM reviewer or a CI annotation step to consume. Verified
+feature-isolated (`scripts/feature_isolation.sh pr-review`).
+
+**Approved and fully built** (`docs/proposal-pr.md`, `impl.md` §13 Phase
+11): all six milestones (P11.1–P11.6) are real and tested. Per-finding
+`blocker`/`warning`/`info` severity maps to GitHub's own Checks API
+annotation levels; `--waive <finding-id> --reason <text>` (repeatable)
+reuses this codebase's existing waiver shape (`weave blast --skip`,
+`check-contracts --allow-drift`, `policy lint --waive`), requiring the
+`"allow-drift"` RBAC role only when waiving a `blocker`-severity finding;
+`--fail-on` (default `blocker`) controls the command's exit code.
+Configuration lives in CLI flags and the CI pipeline, never
+`.weave/config.toml`, by design.
+
 ## `weave hooks install`/`uninstall` (no feature flag — base CLI)
 
 A local, offline `pre-push` git hook that runs `weave blast --base <base> || true`
@@ -151,7 +187,7 @@ explicit `--base <ref>` overrides it. Never overwrites or deletes a
 An offline HTML viewer for `weave report`'s output — no server dependency
 by default. `weave report --html` renders a standalone bundle (canvas JSON
 embedded, rendered as SVG via vanilla JS) alongside the existing Markdown +
-`.canvas` files; `weave viz` re-opens it, or (`[viz] mode = "server"`)
+`.canvas` files; `weave viz` re-opens it, or (`[viz] report_type = "server"`)
 serves it from a loopback-only (`127.0.0.1`) static file server with
 path-traversal refused.
 
@@ -168,7 +204,7 @@ and the lightweight `weave-registry` standalone server daemon.
 - **Deduplicated Storage**: Content-addressed snapshot storage with configurable per-repo retention limits.
 - **Zero-Cloud Dependency**: Designed for private clouds, local VPCs, or self-hosted bare metal servers.
 - **Transport Authentication**: `weave-registry --auth-token <token>` requires a matching `Authorization: Bearer` header on every request; unset by default (loopback-trust only). Client-side: `[hub] token` in `.weave/config.toml`.
-- **Snapshot Verification (`hub-provenance`)**: `weave-registry --provenance-key <secret>` rejects a push whose `X-Weave-Signature` doesn't verify against that shared secret — never the bundled verifier's public default key. Unset by default (pushes unverified, as before this existed).
+- **Snapshot Verification (`hub-provenance`)**: `weave-registry --provenance-key-file <path> [--provenance-provider hmac|ed25519]` rejects a push whose `X-Weave-Signature` doesn't verify against that shared secret — `hmac` (default, >=32 bytes, HMAC-SHA-256) or `ed25519` (exactly 32 bytes, EdDSA, for interop with other open-source Ed25519 tooling) — the production verifiers have no default key or insecure fallback. Unset by default (pushes unverified, as before this existed).
 
 ## `slm`
 

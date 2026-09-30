@@ -37,12 +37,13 @@ Security and API-surface fixes from the Phase 3 issue audit, applied across `rba
 - **`weave check-contracts`/`weave blast` waivers**: an identity-less waiver (`--as` omitted) is now rejected outright if this repo's own `[rbac.users]` config grants the `"allow-drift"` role to _anyone_ — closing a bypass where a contractor blocked by `--as carol` could simply drop `--as` and waive unrestricted. A repo that never grants `"allow-drift"` to anyone sees no behavior change.
 - **`weave rbac serve-scim` bearer-token auth** (new): optional `[rbac.scim] token` in `.weave/config.toml` requires a matching `Authorization: Bearer` header on every request; unset keeps the previous unauthenticated loopback-trust behavior.
 - **`weave-registry --auth-token`** (new): requires `Authorization: Bearer <token>` on every registry request when set; client side reads `[hub] token`. Unset keeps the previous unauthenticated behavior.
-- **`weave-registry --provenance-key`** (new, feature `hub-provenance`): verifies a push's `X-Weave-Signature` (hex-encoded bytes) against a deployment-supplied secret (`MockSnapshotProvenanceVerifier::with_key`, never its public default key) _before_ the push is committed — a bad, missing, or tampered signature is rejected (`400`) and never advances the repo's head or consumes a rate-limit slot. Unset keeps every push unverified, as before.
+- **`weave-registry --provenance-key-file <path>`** (feature `hub-provenance`): verifies a push's `X-Weave-Signature` (hex-encoded bytes) against a deployment-supplied secret of at least 32 bytes, read from the given file (`HmacSnapshotProvenanceVerifier::new`, domain-separated HMAC-SHA-256 — no default key, no insecure fallback) _before_ the push is committed — a bad, missing, or tampered signature is rejected (`400`) and never advances the repo's head or consumes a rate-limit slot. Unset keeps every push unverified, as before. (The flag originally took the secret inline as `--provenance-key <secret-u64>`; it was renamed to a file-based flag to avoid exposing the secret in the process list.)
+- **`--provenance-provider hmac|ed25519`** (new flag, feature `hub-provenance`, on both `weave-registry` and `weave sync push`, default `hmac`): selects which built-in `SnapshotProvenanceVerifier` the key file is used with. `ed25519` (`Ed25519SnapshotProvenanceVerifier`, new) uses a 32-byte seed and EdDSA signatures instead of HMAC-SHA-256, for interoperability with existing open-source Ed25519 signing tooling — both sides of a deployment must select the same provider. `weave_graph_hub::build_verifier(kind, key)` is the shared factory both binaries call, so the two can't drift on what a provider name means.
 - **SCIM role parsing accepts RFC 7643 object arrays** (`[{"value": "internal", "primary": true}]`), not just the previous flat-string-array shape — real Okta/Azure AD/Google Workspace payloads previously resolved to silently-empty roles.
 - **`weave policy drift` orphan reports** now annotate an orphan with `(has hidden inbound edges)` when it's only an orphan because RBAC masking severed its real inbound edge — distinguishing a genuine orphan from a masking artifact.
 - **Semantic search (`weave search --semantic`, `weave_search_semantic`)**: the RBAC visibility filter is now applied to reranked candidates _before_ the result is truncated to `limit`, not after — a masked top hit can no longer starve a visible runner-up out of a size-capped result (previously: the top-K could be entirely masked, returning zero results even when visible matches existed further down).
 - **`search_symbols`/`search_vector` moved onto the `Storage` trait** (`weave-graph-core`), with a default "unsupported" implementation — any current or future backend gets both without stub work; previously these were inherent methods only `SqliteStorage` had.
-- **Two new MCP tools**: `weave_search_semantic` (feature `vector`) and `weave_policy_lint` (feature `policy-lint`), both masked through the same session-bound `RbacGuard` every other tool already uses. `weave serve --mcp` now advertises up to 8 tools (4 base + 2 `notes` + 1 `vector` + 1 `policy-lint`), up from 4–6.
+- **Two new MCP tools**: `weave_search_semantic` (feature `vector`) and `weave_policy_lint` (feature `policy-lint`), both masked through the same session-bound `RbacGuard` every other tool already uses. `weave serve --mcp` now advertises up to 12 tools (7 unconditional + 2 `notes` + 1 `vector` + 1 `policy-lint` + 1 `fts`) — see `docs/product/mcp-integration.md` §3 for the current full inventory, since later tools (`weave_check_freshness`, `weave_explore`, `weave_verify`, `weave_find_all`) landed after this entry was originally written.
 - **Documentation correction**: there is one CLI binary (`weave`), and
   `--features turso` only compiles the tested `weave-graph-store-turso`
   library alongside the default SQLite backend. The CLI never constructs
@@ -96,6 +97,9 @@ query` already supports, against that persisted cross-repo graph. No RBAC
 
 ## v1.0.1 — Packaging Tiers & Storage Engine Isolation (draft release notes)
 
+**Maturity release target:** **10 October 2026**. This remains a target until
+the Git tag, GitHub Release, artifacts, and checksum manifest are published.
+
 Previous release: `v1.0.0`.
 
 ### Changes & Packaging Tiers
@@ -135,9 +139,11 @@ except the two documented exceptions below.
   a purged-and-reinserted file.
 - `weave query` (`callers`/`callees`/`impact`/`path`), `weave report`
   (Markdown + `.canvas`), `weave export`.
-- A local MCP server (`weave serve --mcp`) with 4 base tools, loopback-only
-  by default, live reload on external reindex, and optional per-tool
-  `max_tokens` response budgeting.
+- A local MCP server (`weave serve --mcp`) with 7 unconditional base tools
+  (`weave_repo_map`, `weave_file_api`, `weave_trace_calls`,
+  `weave_impact_radius`, `weave_check_freshness`, `weave_explore`,
+  `weave_verify`), loopback-only by default, live reload on external
+  reindex, and optional per-tool `max_tokens` response budgeting.
 - `weave blast --base <ref>` — PR blast-radius comments, no GitHub
   networking from `weave` itself.
 

@@ -30,10 +30,10 @@ format = "canvas"                   # "canvas" (default) | "html" | "all"
 auto_open = false                   # Automatically launch browser on report generation
 
 [viz]                               # feature: viz
-mode = "static"                     # "static" (file:// bundle) | "server" (loopback HTTP server)
+report_type = "static"              # "static" (file:// bundle) | "server" (loopback HTTP server)
 
 # ==============================================================================
-# Part II: Custom Mode / Self-Hosted Enterprise Configuration (feature: custom)
+# Part II: `weave-custom` Build Tier / Self-Hosted Enterprise Configuration (feature: custom)
 # ==============================================================================
 [rbac]                               # feature: rbac
 require_identity = false            # true: `weave serve --mcp` refuses to start without `--as`
@@ -141,11 +141,11 @@ Used by `weave link`, `weave query-federated`, and `weave check-contracts` (requ
 
 - `[report] format`: Output format (`"canvas"`, `"html"`, or `"all"`). Markdown and JSON Canvas (`.canvas`) are always generated regardless.
 - `[report] auto_open`: Automatically launches the default web browser after generating an HTML report.
-- `[viz] mode`: Selects between `"static"` (standalone `file://` SVG viewer bundle) and `"server"` (loopback HTTP server on `127.0.0.1`).
+- `[viz] report_type`: Selects between `"static"` (standalone `file://` SVG viewer bundle) and `"server"` (loopback HTTP server on `127.0.0.1`). **Renamed from `[viz] mode`** — the old name collided with `weave init --mode` and other unrelated "mode" concepts in this codebase (see `docs/mode_matrix.md` §1).
 
 ---
 
-# Part II: Custom Mode / Self-Hosted Enterprise Configuration
+# Part II: `weave-custom` Build Tier / Self-Hosted Enterprise Configuration
 
 The sections below apply when Weave Graph is compiled with `--features custom` (or specific individual enterprise features). These options configure centralized security, compliance policies, runtime telemetry, and hub synchronization.
 
@@ -248,7 +248,7 @@ token = ""
 - `snapshot_retention` _(integer, default: `20`)_: Hint header sent during `weave sync push` specifying how many historical snapshots to retain per repository branch on the hub server.
 - `token` _(string, optional)_: Sent as `Authorization: Bearer <token>` on every request. Required only if the registry was started with `weave-registry --auth-token`; a registry started without one accepts requests with or without this key set.
 - **Atomic Hydration**: `weave sync pull` downloads canonical graph snapshots and applies them via atomic file swap (`.rebuild`), so a CI runner starts from a hydrated graph instead of a cold source-tree parse.
-- **Snapshot signatures** (`weave sync push --signature <hex>`, feature `hub-provenance`): a CLI flag, not a config key — `weave` computes no signature of its own. The registry only verifies it when started with `--provenance-key`; see the [Self-Hosted Guide](self-hosted.md) §6.0.
+- **Snapshot signatures** (`weave sync push --signature <hex>` or `--provenance-key-file <path> [--provenance-provider hmac|ed25519]`, feature `hub-provenance`): a CLI flag, not a config key. The registry only verifies it when started with its own matching `--provenance-key-file`/`--provenance-provider`; see the [Self-Hosted Guide](self-hosted.md) §6.0.
 
 ---
 

@@ -1,0 +1,163 @@
+name: SLM Real-Model Verification (Manual)
+
+# Advisory only, manual trigger only — never runs on push/PR, never gates
+# ci.yml or release.yml. Core Invariant 1 (Zero-LLM Core) keeps the required
+# CI gates deterministic and network-free; this job exists specifically to
+# exercise the one path that isn't (LlamaCliRouter + a real downloaded
+# model), so it lives outside that boundary entirely, same precedent as
+# ci.yml's `n-plus-one` job (continue-on-error, advisory).
+#
+# What this verifies (see docs/slm_status.md for the full architecture
+# review this job is based on):
+#   - `weave slm pull <model> --sha256 <digest>` downloads and checksum-
+#     verifies a real GGUF from the registry in `crates/weave-graph-cli/src/slm.rs`.
+#   - `weave slm doctor` runs the real `LlamaCliRouter` (llama.cpp's
+#     `llama-cli` binary) against the 8 fixed held-out prompts and reports
+#     tool-selection %, param-grounding %, and TTFT — this is the one thing
+#     `impl.md`'s own M2.4 tracking states was never measured with a real
+#     model in any environment so far.
+#   - `weave ask` against this repo's own indexed graph, as a real
+#     end-to-end smoke test beyond the fixed held-out set.
+#
+# Known unknowns, stated rather than guessed (no web access was available
+# to verify these at authoring time):
+#   - The exact `sha256` for a given model file is NOT hardcoded here —
+#     matching `slm.rs`'s own stated reasoning ("Checksums must be provided
+#     explicitly via --sha256 at pull time rather than hardcoded, preventing
+#     silent upstream model substitution"), you supply it yourself when you
+#     dispatch this workflow, from the publisher's own listed digest.
+#   - The llama.cpp build command below is a standard CMake Release build;
+#     llama.cpp's own CMake options may have changed since this was written
+#     and could need adjustment — if the build step fails, check llama.cpp's
+#     current README for its current minimal build invocation.
+#   - `llama_cpp_ref` defaults to `master` (a moving target, not pinned) so
+#     this doesn't silently reference a tag that may not exist — override it
+#     with a specific tag/commit for a reproducible run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model registry name (run 'weave slm list' locally for the current options)"
+        required: false
+        default: "qwen2.5-coder-0.5b"
+        type: string
+      sha256:
+        description: "Publisher SHA-256 digest for that model's GGUF file (weave slm pull refuses to run without one)"
+        required: true
+        type: string
+      llama_cpp_ref:
+        description: "llama.cpp git ref to build llama-cli from (branch, tag, or commit)"
+        required: false
+        default: "master"
+        type: string
+
+jobs:
+  slm-real-model-verify:
+    name: Real Model Verification (llama-cli + downloaded weights)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout weave-graph
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build weave (slm feature)
+        run: cargo build --release -p weave-graph-cli --features slm
+
+      # Cached across runs by model+digest so re-dispatching this workflow
+      # for the same model doesn't re-download several hundred MB to a few
+      # GB every time. A different model or digest gets its own cache entry.
+      - name: Cache model weights
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/weave/models
+          key: slm-model-${{ inputs.model }}-${{ inputs.sha256 }}
+
+      # Cached separately from the model — rebuilding llama-cli on every
+      # dispatch would dominate this job's wall time otherwise.
+      - name: Cache llama.cpp build
+        id: llama-cache
+        uses: actions/cache@v4
+        with:
+          path: llama.cpp/build
+          key: llama-cpp-${{ runner.os }}-${{ inputs.llama_cpp_ref }}
+
+      - name: Checkout llama.cpp
+        if: steps.llama-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ inputs.llama_cpp_ref }}
+          path: llama.cpp
+
+      - name: Build llama-cli
+        if: steps.llama-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+          cmake -B llama.cpp/build -S llama.cpp -DCMAKE_BUILD_TYPE=Release
+          cmake --build llama.cpp/build --config Release -j"$(nproc)" --target llama-cli
+
+      - name: Put llama-cli on PATH
+        run: |
+          bin_dir="$(dirname "$(find llama.cpp/build -name llama-cli -type f | head -n1)")"
+          echo "$bin_dir" >> "$GITHUB_PATH"
+
+      - name: Verify llama-cli is resolvable
+        run: llama-cli --version || llama-cli --help | head -n1
+
+      - name: Pull the model (checksum-verified)
+        env:
+          MODEL: ${{ inputs.model }}
+          SHA256: ${{ inputs.sha256 }}
+        run: ./target/release/weave slm pull "$MODEL" --sha256 "$SHA256"
+
+      - name: List registry + download status
+        run: ./target/release/weave slm list
+
+      # The 8-prompt held-out accuracy/TTFT report — exits 1 on any failure,
+      # so this step (and the job) goes red if the real model underperforms
+      # the deterministic FuzzyRouter baseline it's measured against.
+      - name: Run weave slm doctor
+        id: doctor
+        run: ./target/release/weave slm doctor | tee slm-doctor-report.txt
+
+      - name: Index this repo for a real weave ask smoke test
+        run: |
+          ./target/release/weave init --mode single
+          ./target/release/weave index
+
+      - name: Set the model for weave ask
+        env:
+          MODEL: ${{ inputs.model }}
+        run: printf '\n[slm]\nmodel = "%s"\n' "$MODEL" >> .weave/config.toml
+
+      - name: Smoke-test weave ask against this repo's real graph
+        run: |
+          ./target/release/weave ask "who calls cmd_ask?" --json | tee slm-ask-smoke.json
+
+      - name: Publish doctor report to job summary
+        if: always()
+        env:
+          MODEL: ${{ inputs.model }}
+        run: |
+          {
+            echo "## SLM Doctor Report — model: \`$MODEL\`"
+            echo '```'
+            cat slm-doctor-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slm-verification-${{ inputs.model }}
+          path: |
+            slm-doctor-report.txt
+            slm-ask-smoke.json

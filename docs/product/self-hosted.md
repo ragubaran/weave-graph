@@ -2,11 +2,11 @@
 
 Weave Graph is engineered from the ground up for **zero-cloud, private enterprise environments**. The entire core intelligence engine executes in pure Rust with zero network calls, zero third-party telemetry, zero external database services, and zero LLM dependencies.
 
-For teams running in private VPCs, on-premise data centers, or compliance-restricted air-gapped networks, Weave Graph provides the **Custom Mode Profile** (`--features custom`), enabling query-layer access controls, architectural policy checks, runtime trace import, and optional snapshot synchronization. It does not provide a built-in SSO/OIDC integration.
+For teams running in private VPCs, on-premise data centers, or compliance-restricted air-gapped networks, Weave Graph provides the **`weave-custom` build tier** (`--features custom`), enabling query-layer access controls, architectural policy checks, runtime trace import, and optional snapshot synchronization. It does not provide a built-in SSO/OIDC integration. **Note:** this is a compile-time build tier and separate shipped artifact — not a `weave init --mode` value; `--mode` only ever accepts `single`/`multiple` (see `docs/mode_matrix.md`).
 
 ---
 
-## 1. Custom Mode Profile (`--features custom`)
+## 1. `weave-custom` Build Tier (`--features custom`)
 
 The `custom` feature bundle builds the available enterprise feature set into a
 single native binary. It does not by itself certify authentication,
@@ -262,13 +262,14 @@ Both are opt-in, off by default, and layer independently on top of the loopback-
 | Flag | Config equivalent (client) | Default | Purpose |
 | :--- | :--- | :--- | :--- |
 | `weave-registry --auth-token <token>` | `.weave/config.toml`'s `[hub] token` | none — unauthenticated | Every request must carry a matching `Authorization: Bearer <token>`, or the registry rejects it. |
-| `weave-registry --provenance-key <secret-u64>` | `weave sync push --signature <hex>` | none — unverified | Every push's `X-Weave-Signature` (hex-encoded bytes) must verify against this secret before the registry commits it; a missing, wrong, or tampered signature is rejected with `400` and never advances the repo's head. |
+| `weave-registry --provenance-key-file <path> [--provenance-provider hmac\|ed25519]` (feature: `hub-provenance`) | `weave sync push --signature <hex>` or `weave sync push --provenance-key-file <path> [--provenance-provider hmac\|ed25519]` | none — unverified; `--provenance-provider` defaults to `hmac` | Every push's `X-Weave-Signature` (hex-encoded bytes) must verify against this secret, using the selected scheme, before the registry commits it; a missing, wrong, or tampered signature is rejected with `400` and never advances the repo's head. |
 
 ```bash
 weave-registry --bind 0.0.0.0:8080 --data-dir /data \
   --max-queue-depth-per-repo 1000 --max-pushes-per-minute-per-repo 600 \
   --auth-token "$(openssl rand -hex 32)" \
-  --provenance-key 8891273649102837465
+  --provenance-key-file /run/secrets/weave-provenance-key \
+  --provenance-provider ed25519
 ```
 
 ```toml
@@ -278,7 +279,12 @@ url = "https://weave-registry.internal.corp"
 token = "same bearer token the registry was started with"
 ```
 
-`--provenance-key` binds `MockSnapshotProvenanceVerifier::with_key(<secret>)` — a shared secret both sides must know, **never** the verifier's default key (that key is a public constant in the OSS binary; using it would look like verification while accepting anything). A deployment computes its own signature client-side — for example, an external Lodestone Nexus provenance service — and attaches it via `weave sync push --signature <hex>`; the registry only ever checks what it's configured to check. Omitting `--provenance-key` keeps every push unverified. Because the bundled verifier uses a symmetric key, this proves *integrity and shared-secret possession*, not non-repudiation or PKI; a deployment requiring Merkle/PKI trust must supply that external provider and verification service.
+`--provenance-provider` selects which built-in `SnapshotProvenanceVerifier` the key file is used with (`weave-graph-hub/src/provenance.rs`), and must match on both sides of the deployment:
+
+- `hmac` (default): `HmacSnapshotProvenanceVerifier` — domain-separated HMAC-SHA-256; the key file must be **at least 32 bytes**.
+- `ed25519`: `Ed25519SnapshotProvenanceVerifier` — EdDSA, interoperable with other open-source Ed25519 tooling; the key file must be **exactly 32 bytes** (the raw seed).
+
+Both read the *same* key file bytes on the registry and the client — this is still a shared-secret trust model either way (integrity and shared-secret possession, not PKI or non-repudiation), just backed by a different signature primitive. There is no default key and no insecure fallback in the production path for either scheme; a deployment that wants to plug in a different verifier entirely (e.g. a real PKI-backed one) can do so by writing Rust against the public `SnapshotProvenanceVerifier` trait and `Registry::with_provenance_verifier` — see that trait's own doc comment.
 
 ### 6.1 Ready-to-Use Deployment Manifests (`deploy/`)
 
@@ -310,7 +316,7 @@ docker compose up -d
 
 **Custom Response Header Forwarding**:
 Any reverse proxy (Nginx, Envoy, Traefik) terminating TLS in front of `weave-registry` must forward these custom response headers:
-- `X-Weave-Signature`: Carries the hex-encoded signature sidecar on `pull`, and (on `push`) is what the registry checks against `--provenance-key` when configured (see §6.0).
+- `X-Weave-Signature`: Carries the hex-encoded signature sidecar on `pull`, and (on `push`) is what the registry checks against `--provenance-key-file` when configured (see §6.0).
 - `Upload-Offset`: Enables resumable chunked snapshot uploads on `HEAD`.
 - `Retry-After`: Communicates backoff times when rate-limited.
 
@@ -466,7 +472,7 @@ weave blast --base origin/main --format md --out pr-comment.md
 
 ## 7. Complete CI/CD Pipeline Reference
 
-Below is a complete enterprise GitHub Actions workflow demonstrating the integration of Weave Graph Custom Mode features:
+Below is a complete enterprise GitHub Actions workflow demonstrating the integration of Weave Graph's `weave-custom` build-tier features:
 
 ```yaml
 name: Code Intelligence & Architecture Gates

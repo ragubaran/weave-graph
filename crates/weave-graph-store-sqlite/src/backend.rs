@@ -830,6 +830,13 @@ impl Storage for SqliteStorage {
             .map_err(backend_err)
     }
 
+    fn node_count(&self) -> Result<usize, StorageError> {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get::<_, i64>(0))
+            .map(|count| count as usize)
+            .map_err(backend_err)
+    }
+
     fn for_each_node(&self, f: &mut dyn FnMut(Node)) -> Result<(), StorageError> {
         let mut stmt = self
             .conn

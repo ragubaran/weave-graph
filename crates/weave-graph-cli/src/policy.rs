@@ -11,7 +11,7 @@ use serde::Deserialize;
 use weave_graph_core::policy::{Boundary, BoundaryRule, Violation};
 use weave_graph_core::{Edge, Node};
 
-const POLICY_FILE: &str = ".weave/policy.yaml";
+pub(crate) const POLICY_FILE: &str = ".weave/policy.yaml";
 
 #[derive(Deserialize)]
 struct PolicyFile {
@@ -138,7 +138,7 @@ pub(crate) fn load_semantic_coupling_rules(
 /// A violation's stable rule id for `--waive`: `<kind>:<from>-><to>`,
 /// exactly what the unwaived print path already renders — no separate ID
 /// scheme to keep in sync.
-fn rule_id(v: &Violation) -> String {
+pub(crate) fn rule_id(v: &Violation) -> String {
     format!("{}:{}->{}", v.kind, v.from, v.to)
 }
 

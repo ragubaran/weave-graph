@@ -686,6 +686,22 @@ fn test_cli_init_single_does_not_emit_ci_cache_snippet() {
     assert!(!root.join(".weave/ci-cache.yml").exists());
 }
 
+#[test]
+fn test_cli_init_rejects_an_unrecognized_mode() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--mode", "custom"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid value 'custom'"));
+
+    assert!(!root.join(".weave/config.toml").exists());
+}
+
 /// A scripted two-run CI simulation over the snippet the real binary
 /// generated — run 1 saves under its exact sha, run 2 misses the sha but
 /// takes the restore path via restore-keys.

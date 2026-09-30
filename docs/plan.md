@@ -9,6 +9,11 @@ against the current tree. The core <15 MB target is for
 `cargo build --release -p weave-graph-cli --no-default-features`, not the
 Cargo-default `lang-extended` build.
 
+**Release boundary:** `v1.0.1` is the maturity release target for
+**10 October 2026**. Until its tag, artifacts, and checksums are published,
+the version identifies the implementation target rather than an available
+release. After that boundary, product development moves into PR-review mode.
+
 > **`weave-graph` (CLI: `weave`) is a local, deterministic code-intelligence engine built from Rust, Tree-sitter, an embedded SQL store, and compact graph traversal.** Optional features add document, federation, semantic, and organizational workflows. Token savings are a measurement goal, not a universal percentage claim.
 >
 > **Advanced capabilities are compile-time features.** The minimal core is built with `--no-default-features`; Cargo defaults currently include extended-language grammars and are a different, larger artifact. See §0 and §6.
@@ -527,6 +532,7 @@ _Historical implementation summary (2026-09-13): many Phase 1–3 milestones wer
 | **Phase 8 (Embedding / vector search, held)**                | `vector`                                            | BGE semantic retrieval: portability spike, embedding fingerprint, checksum-verified install, held-out quality gate                                                                                       | Individual workstations opting into semantic search | Model weights outside core closure; RAM/quality measured separately |
 | **Phase 9 (Skylos-style verification, proposal)**             | `rbac`, `policy-lint`, `federation`, `hub`          | Submodule contract checking, tri-state `weave verify`, `.weave/contracts.yml`, `weave_verify` MCP tool                                                                                                   | `custom`-tier teams                                 | Same envelope as existing `custom` build; zero default-build impact |
 | **Phase 10 (Competitive feature adoption, proposal)**         | Existing `fts`/`vector` paths, no new flag           | Memory-bounded indexing, `weave_explore`/freshness/`find_all` MCP tools, edge provenance, optional SCIP/LSP import                                                                                        | Normal developers and agents                         | No new default-build dependency; each item measured before shipping |
+| **Phase 11 (PR review speedup, approved, done)**               | `pr-review` (new, `custom`-only)                    | Deterministic blast-radius risk score, `weave pr-review` subcommand with severity/waive/fail-on, contract/policy/phantom-symbol aggregation, oversized-PR advisory, documented JSON contract               | `custom`-tier teams, CI pipelines                    | New feature isolated (`feature_isolation.sh`), config lives in the CI pipeline, not `.weave/config.toml` |
 
 ---
 
@@ -765,3 +771,13 @@ _Feature description for [impl.md](impl.md#10-phase-10-competitive-feature-adopt
 - **P1 (behind optional features):** an explicit-request-only SCIP/LSP precision importer (never a bundled language server); composable `path:`/`lang:`/`kind:`/`visibility:`/`edge:` query-grammar filters; one feature-gated framework route/handler adapter pilot; container-aware Rayon scheduling and a pinned agent-effectiveness benchmark gate before any token/speed/correctness marketing claim.
 - **Declined for the core profile:** a default/bundled LLM or embedding model, a dense one-call-only MCP interface, Sourcegraph's distributed service stack, an always-running mandatory daemon, default telemetry, and broad framework support before the P0 memory gap closes.
 - **Status**: mostly done (2026-09-24) — see [impl.md](impl.md#10-phase-10-competitive-feature-adoption) for the full per-milestone breakdown, including the two items left honestly partial (Linux-specific memory verification, an agent-effectiveness benchmark needing real LLM runs) and the one left unstarted by deliberate choice (SCIP/LSP import, pending a safe dependency or fixture path).
+
+## Phase 11: PR Review Speedup & Deterministic Risk Scoring
+
+_Feature description for [impl.md](impl.md#13-phase-11-pr-review-speedup--deterministic-risk-scoring)'s Phase 11 — from `docs/proposal-pr.md`, grounded in dated industry research (CodeRabbit, Greptile, GitHub Copilot PR Agent, Graphite, Alibaba OpenCodeReview) and GitHub's own native Checks API annotation model. **Approved 2026-09-30.**_
+
+- Deterministic risk score (fixed thresholds, not a model) over `weave blast`'s already-computed blast-radius data; a `weave pr-review` subcommand consolidating blast radius, contract drift, policy violations, and phantom-symbol findings toward one risk-scored artifact.
+- **Deliberately Custom/Self-Hosted-tier only**: new Cargo feature `pr-review`, added to the `custom` bundle alone, never `team` — a CI/PR-workflow integration a team opts into, not default developer experience. Configuration lives in CLI flags / the CI pipeline, never `.weave/config.toml`.
+- Built: `blocker`/`warning`/`info` per-finding severity mapped to GitHub's own Checks API annotation levels (`failure`/`warning`/`notice`); a `--waive`/`--fail-on` bypass mechanism reusing this codebase's existing waiver pattern (`weave blast --skip`, `check-contracts --allow-drift`, `policy lint --waive`) rather than inventing a new one; aggregating `check-contracts`/`policy lint`/`weave verify` into the same artifact, each gracefully absent when its prerequisite isn't configured; an oversized-PR advisory; a documented, stable `--format json` contract for external LLM reviewers.
+- Explicitly declined: competing with CodeRabbit/Greptile/Copilot on free-form LLM-generated review comments (out of scope for a zero-LLM-core project by design); GitHub API polling for time-to-first-review tracking; automatic PR splitting; any new risk-scoring model or ML.
+- **Status**: approved and fully implemented (2026-09-30) — see [impl.md](impl.md#13-phase-11-pr-review-speedup--deterministic-risk-scoring) for the full per-milestone breakdown. All six milestones (P11.1–P11.6) are real, tested, and verified feature-isolated.

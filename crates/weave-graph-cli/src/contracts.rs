@@ -99,7 +99,7 @@ fn serialize_entries(map: &ContractMap) -> String {
 /// Inverse of [`serialize_entries`]. A blank blob (empty string, or a row
 /// written before the `entries_blob` column existed) decodes to an empty
 /// map rather than an error — see `contract_expectations`'s own `COALESCE`.
-fn deserialize_entries(blob: &str) -> ContractMap {
+pub(crate) fn deserialize_entries(blob: &str) -> ContractMap {
     blob.lines()
         .filter_map(|line| {
             let mut parts = line.splitn(5, '\x1f');
@@ -166,7 +166,7 @@ fn record_one_side(
     Ok(())
 }
 
-fn repo_label(root: &Path) -> String {
+pub(crate) fn repo_label(root: &Path) -> String {
     root.canonicalize()
         .unwrap_or_else(|_| root.to_path_buf())
         .file_name()

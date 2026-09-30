@@ -1,5 +1,9 @@
 # Test-installing Weave Graph 1.0.1
 
+**Maturity release target:** **10 October 2026**. These installation steps are
+pre-release verification instructions until the `v1.0.1` GitHub Release and
+its checksummed artifacts are published.
+
 Use this guide to test the `1.0.1` command-line binary before adopting it in a team workflow. Confirm the installed binary reports exactly `weave 1.0.1` before indexing a real repository.
 
 ## Homebrew

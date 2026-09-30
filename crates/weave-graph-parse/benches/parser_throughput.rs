@@ -22,7 +22,9 @@ fn corpus_dir() -> Option<PathBuf> {
 
 /// Repeats the fixture's lines until the source is at least `target_bytes`
 /// long, so throughput is measured against a file-sized input rather than
-/// a handful of lines dominated by parser setup cost.
+/// a handful of lines dominated by parser setup cost. Kotlin's grammar
+/// scales non-linearly on verbatim-repeated input specifically (not on
+/// varied source of the same size) — use `WEAVE_BENCH_CORPUS_DIR` for that language.
 fn tiled_to(source: &str, target_bytes: usize) -> String {
     let mut out = String::with_capacity(target_bytes + source.len());
     while out.len() < target_bytes {

@@ -18,7 +18,7 @@ fn git(root: &Path, args: &[&str]) {
 fn init_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     git(dir.path(), &["init", "-q", "-b", "main"]);
-    git(dir.path(), &["config", "user.email", "[EMAIL]"]);
+    git(dir.path(), &["config", "user.email", "test@example.com"]);
     git(dir.path(), &["config", "user.name", "Test"]);
     dir
 }

@@ -21,12 +21,13 @@ not yet release-certified.
 Initializes the repository for Weave Graph intelligence, registers the MCP server configuration for AI coding agents, and configures version control / search ignore rules.
 
 ```bash
-weave init [--mode single|multiple] [--path <dir>]
+weave init [--mode single|multiple]
 ```
 
 - `--mode single` _(default)_: Configures single-repository indexing in `.weave/config.toml`.
 - `--mode multiple`: Scaffolds a multi-repo `[federation]` configuration and CI cache templates.
-- `--path <dir>`: Target repository directory _(default: `.`)_.
+- **Correction (this pass):** there is no `--path` flag on `weave init` — the real `Init` clap variant (`crates/weave-graph-cli/src/main.rs`) has only `mode`; `weave init` always operates on the current directory. Removed from the synopsis, which previously listed it.
+- `--mode` is a `clap::ValueEnum` (`InitMode`) — any other value is a hard parse error, not a silent fallback to `single`.
 
 #### Actions Performed by `weave init`
 
@@ -134,6 +135,25 @@ weave blast --base <ref> [--format md|json] [--out <file>] [--depth <n>] [--dire
 - `--direction callers|callees|both`: Direction to walk _(default: `callers`)_.
 - `--skip`: Waives the blast-radius computation entirely (`impl.md` M3.10) — requires `--reason <text>`; emits a warning banner + a Waiver Notice in the output and exits `0`. `WEAVE_SKIP_BLAST=1` does the same via CI env var (no `--reason` required — the env var itself is the audit trail). With `--features rbac` and a bound `--as <subject>`, the identity must hold the `"allow-drift"` role or the waiver is refused. **Omitting `--as` entirely** is only unrestricted when this repo's `[rbac.users]` config grants `"allow-drift"` to nobody; if it grants that role to anyone, an identity-less waiver is refused outright (`Use --as <subject> to authenticate`) — see `weave check-contracts` below for the same rule.
 
+### `weave pr-review` (feature: `pr-review`, Custom tier only)
+
+Risk-scored, consolidated PR review artifact (`docs/proposal-pr.md`, `impl.md` §13 Phase 11 — all six milestones done): reuses `weave blast`'s own diff/traversal for a deterministic risk header, then aggregates `check-contracts`-style contract drift, `policy lint` violations, and `weave verify`'s phantom-symbol check into one severity-ranked findings list.
+
+```bash
+weave pr-review --base <ref> [--format md|json] [--out <file>] [--depth <n>] [--direction callers|callees|both] [--fail-on blocker|warning|info|never] [--waive <finding-id>]... [--reason <text>] [--path <dir>]
+```
+
+- `--base <ref>`, `--format`, `--out`, `--depth`, `--direction`: identical to `weave blast` above (same underlying `blast::compute`).
+- `--fail-on <blocker|warning|info|never>` _(default: `blocker`)_: minimum finding severity that exits non-zero. `never` never fails the command regardless of findings.
+- `--waive <finding-id>` (repeatable) + `--reason <text>` (mandatory once `--waive` is passed): marks a finding waived by its exact printed id (e.g. `policy:disallow:src/ui->src/db`, `oversized-blast-radius`, `contract:<provider-label>`) — reuses the same waiver mechanism as `weave blast --skip`/`check-contracts --allow-drift`/`policy lint --waive`. Waiving a `blocker`-severity finding requires the `"allow-drift"` RBAC role when `--features rbac` is compiled in and `[rbac.users]` grants that role to anyone (see `--as <subject>` under `weave blast` above); waiving `warning`/`info` findings never requires RBAC.
+- Findings, one per line, each tagged `[blocker]`/`[warning]`/`[info]`:
+  - `oversized-blast-radius` _(warning)_ — blast radius ≥50 symbols, unconditional.
+  - `contract:<provider-label>` _(blocker, needs `federation`)_ — this repo's public contract diverged from a linked partner's recorded expectation; a safe no-op with no `[federation] linked_repos` configured.
+  - `policy:<rule-id>` _(blocker, needs `policy-lint`)_ — a `.weave/policy.yaml` boundary violation; a safe no-op with no policy file.
+  - `phantom:<file>:<message>` _(warning, needs `federation`)_ — an unresolved reference in a changed file, reusing `weave verify`'s own check.
+- Output: one markdown/JSON artifact — a `**Blast radius: Low|Medium|High|Critical** (...)` header, a `### Findings` list (markdown) or `"risk"` string + `"findings"` array of `{id, severity, annotation_level, message, waived}` (JSON, `annotation_level` being GitHub Checks API's own `failure`/`warning`/`notice`) — a stable, documented contract for wiring into an external LLM reviewer or a `gh pr comment`/Checks annotation step.
+- Configuration lives in CLI flags / the CI pipeline, never `.weave/config.toml`, by design.
+
 ### `weave hooks install` / `weave hooks uninstall`
 
 Writes (or removes) a local, offline `pre-push` git hook that runs `weave blast` and `weave check-contracts --submodules` before a push ever reaches CI — no network wait, no Cargo feature required.
@@ -211,24 +231,41 @@ weave report-federated <repo-a> <repo-b> [--out <file>]
 Validates public API contracts between linked repositories in CI pipelines.
 
 ```bash
-weave check-contracts [--diff] [--scoped] [--allow-drift | --allow-drift-for <repo>] [--warn-only] [--reason <text>] [--path <dir>]
+weave check-contracts [--diff] [--scoped] [--submodules] [--allow-drift | --allow-drift-for <repo>] [--warn-only] [--reason <text>] [--path <dir>]
 ```
 
 - `--diff`: Displays symbol-level added, modified, and removed breakdown upon contract divergence.
 - `--scoped`: Enforces failure only for symbols actually imported by the consuming repository, ignoring untouched provider exports.
+- `--submodules`: Reports each registered Git submodule's verification state instead of the linked-repo federation check above — a distinct check, not a modifier on the others.
 - Controlled by `[federation] staleness_policy` (`warn`, `strict`, `ignore`).
 - `--allow-drift`: Waives drift across every linked repo (`impl.md` M3.10); `--allow-drift-for <repo>` waives just one named peer. Both require `--reason <text>`; a waived repo's drift is still reported but never fails the exit code.
 - `--warn-only`: Downgrades a `strict`-policy failure to advisory (never hides _which_ repos drifted) — no `--reason` needed, since it doesn't waive anything, just softens the exit code.
 - CI env-var equivalents (no `--reason` required — the env var is its own audit trail): `WEAVE_SKIP_CONTRACTS=1` skips the check entirely; `WEAVE_STALENESS_POLICY_OVERRIDE=warn|ignore` overrides the configured policy; `WEAVE_ALLOW_DRIFT_REPOS=repo-a,repo-b` waives specific repos.
 - With `--features rbac` and a bound `--as <subject>`, any of the above waivers require the identity to hold the `"allow-drift"` role, or they're refused. **Omitting `--as`** behaves like a non-`rbac` build (unrestricted) _unless_ this repo's own `[rbac.users]` config already grants `"allow-drift"` to someone — in that case an anonymous waiver is rejected outright, so a repo that opted into role-gated waivers can't be bypassed by simply dropping `--as`. A repo that never configured `allow-drift` for anyone sees no change.
 
+### `weave verify` (feature: `federation`)
+
+Deterministic pre-flight check for phantom symbols (calls/references with no matching indexed symbol) before an edit is presented, plus submodule-relevant checks (the same phantom-symbol check `weave_verify`'s MCP tool exposes, but with local `git` subprocess access for the submodule/staleness checks the MCP handler doesn't have).
+
+```bash
+weave verify [--file <path>] [--range <start:end>] [--submodules] [--format text|json] [--path <dir>]
+```
+
+- `--file <path>`: Scope to one indexed file (relative path, as stored in the graph). Omitting it checks every indexed file.
+- `--range <start:end>`: Line range within `--file`, e.g. `"100:180"` — requires `--file`.
+- `--submodules`: Only run submodule-relevant checks (encapsulation + stale references), skipping the phantom-symbol scan.
+- `--format text|json` _(default: `text`)_.
+- **Correction (this pass): this command had no documentation at all** — added here for the first time; not previously a gap in an existing synopsis, a wholly missing section.
+
 ### `weave plan-migration`
 
 Generates a cross-repo migration plan for a deprecated or modified symbol.
 
 ```bash
-weave plan-migration --symbol <name> [--path <dir>]
+weave plan-migration <symbol> [--path <dir>]
 ```
+
+- **Correction (this pass):** the symbol was previously shown as a `--symbol <name>` flag. It's a positional argument in the real `PlanMigration` clap variant (`crates/weave-graph-cli/src/main.rs`) — real usage is `weave plan-migration AuthService.verify`, not `weave plan-migration --symbol AuthService.verify`.
 
 - Identifies every file, line, and downstream consumer across all linked repositories requiring updates.
 
@@ -269,7 +306,7 @@ Opens or serves the interactive architectural graph viewer.
 weave viz [--open <bool>] [--port <port>] [--path <dir>]
 ```
 
-- Operates in static `file://` mode or local HTTP server mode (`[viz] mode = "server"`).
+- Operates in static `file://` mode or local HTTP server mode (`[viz] report_type = "server"`).
 
 ---
 
@@ -305,11 +342,15 @@ weave rbac serve-scim [--port <port>] [--path <dir>]
 Enforces architectural layering rules defined in `.weave/policy.yaml`.
 
 ```bash
-weave policy lint [--path <dir>]
+weave policy lint [--path <dir>] [--fail-on-masked] [--waive <id>]... [--reason <text>] [--federated]
 weave policy drift [--path <dir>]
 ```
 
 - `lint`: Evaluates `disallow` and `require` boundary rules. Exits non-zero on violations to gate CI builds.
+  - `--fail-on-masked`: Fails the lint if any edges were masked by RBAC — a masked edge could be hiding a real violation from this identity's view.
+  - `--waive <id>`: Waives one violation by rule id (`"<kind>:<from>-><to>"`, as printed); repeatable. Requires `--reason`, and (with `--features rbac` and a bound `--as`) the `"allow-drift"` role — same gate as `weave check-contracts`/`weave blast`.
+  - `--reason <text>`: Mandatory audit reason when `--waive` is passed.
+  - `--federated` _(feature: `federation`)_: Lints across every `[federation] linked_repos` peer instead of just `path`.
 - `drift`: Analyzes structural divergence, detecting architectural dependency cycles and orphaned files.
 
 ### `weave traces import` (feature: `otel`)
@@ -329,11 +370,11 @@ Synchronizes graph snapshots with a centralized `weave-registry` server.
 
 ```bash
 weave sync pull [--commit <sha>] [--fallback-latest] [--path <dir>]
-weave sync push [--signature <sig>] [--path <dir>]
+weave sync push [--signature <sig> | --provenance-key-file <path> [--provenance-provider hmac|ed25519]] [--path <dir>]
 ```
 
 - `pull`: Hydrates the exact graph snapshot for a commit via atomic file swap, bypassing cold source parsing in CI runners.
-- `push`: Publishes a canonical graph snapshot from trunk branches upon merge. `--signature <hex>` carries a precomputed signature. With `hub-provenance`, `--provenance-key-file <path>` instead reads a secret of at least 32 bytes and computes the domain-separated HMAC-SHA-256 signature locally; the two flags are mutually exclusive. A registry started with its own matching `--provenance-key-file` verifies the signature before commit. An unconfigured registry accepts unsigned snapshots.
+- `push`: Publishes a canonical graph snapshot from trunk branches upon merge. `--signature <hex>` carries a precomputed signature. With `hub-provenance`, `--provenance-key-file <path>` instead reads a secret and computes a signature locally; the two flags are mutually exclusive. `--provenance-provider` selects the scheme: `hmac` (default, key >= 32 bytes, HMAC-SHA-256) or `ed25519` (key exactly 32 bytes, EdDSA). A registry started with its own matching `--provenance-key-file`/`--provenance-provider` verifies the signature before commit — both sides must use the same provider. An unconfigured registry accepts unsigned snapshots.
 
 ### `weave search` (feature: `fts` / `vector`)
 
@@ -355,13 +396,15 @@ weave search "<query>" [--limit <n>] [--semantic] [--path <dir>]
 Terminal natural-language query routing and local SLM management.
 
 ```bash
-weave ask "<natural language question>" [--dry-run] [--json]
+weave ask "<natural language question>" [--dry-run] [--json] [--path <dir>]
 weave slm pull <model> --sha256 <digest>
 weave slm list
 weave slm doctor
-weave slm review-rules [--confirm <idx>] [--reject <idx>]
-weave journal [--since <ref>]
+weave slm review-rules [--confirm <idx>] [--reject <idx>] [--path <dir>]
+weave journal [--since <ref>] [--path <dir>]
 ```
+
+- **Correction (this pass):** `weave ask`, `weave slm review-rules`, and `weave journal` each take a `--path <dir>` (default `.`) like every other command — previously missing from all three in this block.
 
 ---
 
@@ -373,7 +416,7 @@ weave journal [--since <ref>]
 |                         | `[storage]`          | `home = "/path/to/vault"` (also settable via `WEAVE_HOME`)                                                                                                                    |
 | **Team**                | `[federation]`       | `linked_repos = ["../repo-b"]`, `staleness_policy = "strict"` (`warn`/`strict`/`ignore`)                                                                                      |
 | **Knowledge**           | `[watch]`            | `enabled = true`, `debounce_ms = 2000`, `blast_radius_ceiling = 200`                                                                                                          |
-|                         | `[report]` / `[viz]` | `format = "all"`, `auto_open = false`, `mode = "static"`                                                                                                                      |
+|                         | `[report]` / `[viz]` | `format = "all"`, `auto_open = false`, `report_type = "static"`                                                                                                               |
 | **Custom / Enterprise** | `[rbac.users]`       | `<subject> = ["internal"]` bypasses masking; `["allow-drift"]` grants waiver permission; any other role name is an unprivileged label (see §6 in the Configuration Reference) |
 |                         | `[rbac]`             | `require_identity = true` — refuses to start `weave serve --mcp` without `--as` (same as `--require-as`)                                                                      |
 |                         | `[rbac.scim]`        | `token = "<secret>"` — requires a matching `Authorization: Bearer` header on every `weave rbac serve-scim` request                                                            |

@@ -2,6 +2,9 @@
 //! This is separate from document-link provenance because snapshots
 //! require authentication of repository, commit, and payload together.
 
+use std::sync::Arc;
+
+use ed25519_dalek::{Signer, Verifier};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -11,6 +14,12 @@ pub enum ProvenanceError {
     Tampered { repo_id: String, commit_sha: String },
     #[error("snapshot HMAC secret must contain at least 32 bytes")]
     WeakKey,
+    #[error("ed25519 key must be exactly 32 bytes, got {0}")]
+    InvalidEd25519KeyLength(usize),
+    #[error("ed25519 signature must be exactly 64 bytes, got {0}")]
+    InvalidEd25519SignatureLength(usize),
+    #[error("unknown provenance provider {0:?} — expected \"hmac\" or \"ed25519\"")]
+    UnknownProvider(String),
 }
 
 /// Corrects a gap in `hub_enhancement_external.md`'s original sketch: its
@@ -129,6 +138,98 @@ impl SnapshotProvenanceVerifier for HmacSnapshotProvenanceVerifier {
                 repo_id: repo_id.to_string(),
                 commit_sha: commit_sha.to_string(),
             })
+        }
+    }
+}
+
+/// Asymmetric alternative to the HMAC verifier above, for deployments that
+/// want to interoperate with existing open-source EdDSA tooling (e.g. a
+/// signature produced by `ssh-keygen -Y sign` or any other Ed25519 signer)
+/// instead of a bespoke HMAC scheme. Built from a 32-byte seed exactly like
+/// `HmacSnapshotProvenanceVerifier` is built from a shared secret — both
+/// sides of a `weave sync push`/`weave-registry` deployment hold the same
+/// seed file, so this is still a shared-secret trust model (integrity and
+/// shared-secret possession, not PKI or non-repudiation), just backed by a
+/// different, widely-interoperable signature primitive.
+#[derive(Clone, Debug)]
+pub struct Ed25519SnapshotProvenanceVerifier {
+    signing_key: ed25519_dalek::SigningKey,
+}
+
+impl Ed25519SnapshotProvenanceVerifier {
+    pub fn new(key: impl AsRef<[u8]>) -> Result<Self, ProvenanceError> {
+        let key = key.as_ref();
+        let seed: [u8; 32] = key
+            .try_into()
+            .map_err(|_| ProvenanceError::InvalidEd25519KeyLength(key.len()))?;
+        Ok(Self {
+            signing_key: ed25519_dalek::SigningKey::from_bytes(&seed),
+        })
+    }
+}
+
+impl SnapshotProvenanceVerifier for Ed25519SnapshotProvenanceVerifier {
+    fn sign_snapshot(&self, repo_id: &str, commit_sha: &str, payload: &[u8]) -> Vec<u8> {
+        let message = snapshot_message(repo_id, commit_sha, payload);
+        self.signing_key.sign(&message).to_bytes().to_vec()
+    }
+
+    fn verify_snapshot(
+        &self,
+        repo_id: &str,
+        commit_sha: &str,
+        payload: &[u8],
+        signature: &[u8],
+    ) -> Result<(), ProvenanceError> {
+        let tampered = || ProvenanceError::Tampered {
+            repo_id: repo_id.to_string(),
+            commit_sha: commit_sha.to_string(),
+        };
+        let sig_bytes: [u8; 64] = signature
+            .try_into()
+            .map_err(|_| ProvenanceError::InvalidEd25519SignatureLength(signature.len()))?;
+        let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
+        let message = snapshot_message(repo_id, commit_sha, payload);
+        self.signing_key
+            .verifying_key()
+            .verify(&message, &signature)
+            .map_err(|_| tampered())
+    }
+}
+
+/// Which built-in `SnapshotProvenanceVerifier` a deployment selects at
+/// runtime via `--provenance-provider`, on both `weave-registry` and
+/// `weave sync push` — kept in one place so the two binaries can't drift
+/// on what provider names mean.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProvenanceProviderKind {
+    Hmac,
+    Ed25519,
+}
+
+impl std::str::FromStr for ProvenanceProviderKind {
+    type Err = ProvenanceError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "hmac" => Ok(Self::Hmac),
+            "ed25519" => Ok(Self::Ed25519),
+            other => Err(ProvenanceError::UnknownProvider(other.to_string())),
+        }
+    }
+}
+
+/// Builds the selected verifier from a raw key file's bytes. Shared by
+/// `weave-registry` and `weave sync push` so provider selection can never
+/// mean something different on the two sides of a deployment.
+pub fn build_verifier(
+    kind: ProvenanceProviderKind,
+    key: impl AsRef<[u8]>,
+) -> Result<Arc<dyn SnapshotProvenanceVerifier>, ProvenanceError> {
+    match kind {
+        ProvenanceProviderKind::Hmac => Ok(Arc::new(HmacSnapshotProvenanceVerifier::new(key)?)),
+        ProvenanceProviderKind::Ed25519 => {
+            Ok(Arc::new(Ed25519SnapshotProvenanceVerifier::new(key)?))
         }
     }
 }

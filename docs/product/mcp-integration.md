@@ -157,7 +157,7 @@ To bind the agent session to a non-`internal` identity (sees only `pub`-visible 
 
 ## 3. Tool Specifications
 
-When initialized, `weave serve --mcp` advertises **4 base tools**, plus one more per optional feature compiled in: **+2** with `--features notes` (`weave_pin_note`/`weave_recall_notes`), **+1** with `--features vector` (`weave_search_semantic`), **+1** with `--features policy-lint` (`weave_policy_lint`) — up to **8 tools** with all three enabled (`--features custom,notes`; the `custom` bundle itself includes `vector` and `policy-lint` but not `notes`, so `--features custom` alone advertises 6).
+When initialized, `weave serve --mcp` advertises **7 unconditional tools** — no feature flag needed for any of them — plus one more per optional feature compiled in: **+2** with `--features notes` (`weave_pin_note`/`weave_recall_notes`), **+1** with `--features vector` (`weave_search_semantic`), **+1** with `--features policy-lint` (`weave_policy_lint`), **+1** with `--features fts` (`weave_find_all`) — up to **12 tools** with `--features custom,notes` (the `custom` bundle already includes `fts`, `vector`, and `policy-lint`, so `--features custom` alone advertises 10; `vector` itself pulls in `fts`).
 
 ```mermaid
 flowchart LR
@@ -166,7 +166,11 @@ flowchart LR
     MCP --> API[weave_file_api]
     MCP --> Trace[weave_trace_calls]
     MCP --> Blast[weave_impact_radius]
+    MCP --> Fresh[weave_check_freshness]
+    MCP --> Explore[weave_explore]
+    MCP --> Verify[weave_verify]
     MCP --> Notes[weave_pin_note / recall_notes]
+    MCP --> FindAll[weave_find_all]
     MCP --> Search[weave_search_semantic]
     MCP --> Lint[weave_policy_lint]
 ```
@@ -179,6 +183,10 @@ flowchart LR
 | `weave_file_api` | Base | Micro wiring cards of requested source files. | ~60 tokens/file |
 | `weave_trace_calls` | Base | Multi-hop inbound and outbound call chain traversal. | Adaptive |
 | `weave_impact_radius`| Base | Transitive topological blast radius of code edits. | Adaptive |
+| `weave_check_freshness` | Base | Reconciles the indexed graph against the live working tree (`Fresh`/`Behind`/`Dirty`/`Unknown`) before trusting other tools' answers. | Low |
+| `weave_explore` | Base | Composes repo map, file API, call trace, impact radius, and an exact source excerpt behind one token budget — an additional orientation tool, not a replacement for the four narrow ones. | Adaptive |
+| `weave_verify` | Base | Checks one file for phantom symbols (calls/references with no matching indexed symbol) before an edit is presented. | Low |
+| `weave_find_all` | Search (`fts`) | Exhaustive, deterministic text search over every indexed symbol's body/doc comment, grouped by enclosing symbol — never a ranked top-N. | Adaptive |
 | `weave_pin_note` | Knowledge (`notes`) | Pin persistent or ephemeral architectural context. | Low |
 | `weave_recall_notes` | Knowledge (`notes`) | Retrieve live pinned notes (expired notes filtered). | Low |
 | `weave_search_semantic` | Search (`vector`) | Optional vector similarity search over AST-bounded chunks. Learned semantic quality and ANN performance are not certified. | Adaptive |
@@ -218,7 +226,34 @@ Calculates the full blast radius of a change, determining every downstream symbo
   - `max_tokens` *(integer, optional)*: Sheds detail dynamically: full symbol list → file-level summary → module-level summary.
 - **RBAC Masking**: same as `weave_trace_calls` — masked nodes show as `<rbac: hidden>` with zero source spans or signatures leaked; the root symbol itself always resolves by name so the query stays answerable.
 
-#### 5. `weave_pin_note` *(Feature: `notes`)*
+#### 5. `weave_check_freshness`
+Reconciles the indexed graph against the live working tree before other tools' answers are trusted.
+- **Parameters**: none.
+- **Result**: one of `Fresh`, `Behind { indexed_sha, head_sha }`, `Dirty`, or `Unknown` per call — compares `.weave/last_indexed_sha` against `git rev-parse HEAD` and `git status --porcelain` (`.weave/` itself excluded so an un-gitignored `.weave/` never reads as dirty).
+
+#### 6. `weave_explore`
+Composes the repo map, file API, call trace, impact radius, and an exact source excerpt behind one token budget — an additional orientation tool, not a replacement for the four narrow ones above.
+- **Parameters**:
+  - `symbol` *(string, optional)*: Symbol to orient around; omit for a module-level repo overview.
+  - `max_tokens` *(integer, optional)*: Sheds the source excerpt, then the call trace, then the impact radius before reporting the actual resident size.
+
+#### 7. `weave_verify`
+Checks one file for phantom symbols (calls/references with no matching indexed symbol) before an edit is presented — the fast, storage-only slice of `weave verify`.
+- **Parameters**:
+  - `file` *(string, **required**)*: Indexed file path to verify.
+  - `range` *(array of integers, optional)*: `[start, end]` line range, display-only.
+
+#### 8. `weave_find_all` *(Feature: `fts`)*
+Exhaustive, deterministic text search over every indexed symbol's body/doc comment, grouped by enclosing symbol — never a ranked top-N.
+- **Parameters**:
+  - `pattern` *(string, **required**)*: Text to search for.
+  - `path` *(string, optional)*: Only symbols whose path starts with this prefix.
+  - `language` *(string, optional)*: Only symbols in a file of this language.
+  - `kind` *(string, optional)*: Only symbols of this exact kind.
+  - `limit` *(integer, optional, default: 50)*: Max hits to render — the full exhaustive count is always reported regardless.
+  - `max_tokens` *(integer, optional)*: Token-estimate ceiling on the rendered list.
+
+#### 9. `weave_pin_note` *(Feature: `notes`)*
 Leaves architectural hints, invariants, or refactoring warnings for future agent sessions.
 - **Parameters**:
   - `symbol` *(string, **required**)*: Target symbol name.
@@ -226,10 +261,10 @@ Leaves architectural hints, invariants, or refactoring warnings for future agent
   - `tier` *(string, optional, default: `"ephemeral"`)*: `"ephemeral"` (24-hour TTL) or `"crystallized"` (persisted permanently).
   - `kind` *(string, optional, default: `"note"`)*: Categorical tag (e.g. `"arch_decision"`, `"invariant"`, `"debt"`).
 
-#### 6. `weave_recall_notes` *(Feature: `notes`)*
+#### 10. `weave_recall_notes` *(Feature: `notes`)*
 Reads all active notes pinned to symbols across the workspace. Expired ephemeral notes are automatically excluded, and notes whose target symbols were deleted are flagged as orphaned.
 
-#### 7. `weave_search_semantic` *(Feature: `vector`)*
+#### 11. `weave_search_semantic` *(Feature: `vector`)*
 Optional vector similarity search over AST-bounded source chunks, using the
 same provider as `weave search --semantic`. The current provider is mock
 groundwork; this tool is not a learned-quality or ANN guarantee.
@@ -238,7 +273,7 @@ groundwork; this tool is not a learned-quality or ANN guarantee.
   - `limit` *(integer, optional, default: 5)*: Max hits to return.
 - **RBAC Masking**: the visibility filter is applied to reranked candidates *before* the `limit` cap, not after — a masked top hit can never starve a visible runner-up out of the result set.
 
-#### 8. `weave_policy_lint` *(Feature: `policy-lint`)*
+#### 12. `weave_policy_lint` *(Feature: `policy-lint`)*
 Evaluates the boundary rules declared in `.weave/policy.yaml` against the currently indexed graph — the same rule model and evaluation `weave policy lint` uses, exposed as an MCP tool.
 - **Parameters**: none.
 - **RBAC Masking**: nodes/edges are filtered through the session's bound identity first; a restricted identity's clean result means "no violations *it* could see," not a repo-wide compliance guarantee (the same caveat `weave policy lint --as <subject>` carries).
@@ -485,7 +520,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 ```bash
 echo '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | weave serve --mcp
 ```
-**Expected Response:** A JSON object containing the tool schemas for `weave_repo_map`, `weave_file_api`, `weave_trace_calls`, and `weave_impact_radius`.
+**Expected Response:** A JSON object containing the tool schemas for all 7 unconditional tools (`weave_repo_map`, `weave_file_api`, `weave_trace_calls`, `weave_impact_radius`, `weave_check_freshness`, `weave_explore`, `weave_verify`), plus any optional tools enabled at build time (§3).
 
 ### Test Calling `weave_repo_map`
 ```bash

@@ -5,11 +5,11 @@ only part of `docs/` that ships in the repository (everything else is
 internal planning/audit material, gitignored on purpose).
 
 - **[Getting Started](getting-started.md)** — install, initialize a repo, multi-repo federation, run queries.
-- **[Test-install 1.0.1](install-1.0.1-testing.md)** — verify Homebrew or release-archive installation before trying it on a repository.
+- **[Test-install 1.0.1](install-1.0.1-testing.md)** — prepare for the 10 October 2026 maturity release target and verify Homebrew or release-archive installation before trying it on a repository.
 - **[CLI Reference](cli-reference.md)** — every command and flag, divided by profile and tier.
 - **[Configuration Reference](configuration.md)** — `.weave/config.toml`, section by section across all tiers.
 - **[Features](features.md)** — optional Cargo features, profiles, and capabilities.
-- **[Self-Hosted & Custom Mode](self-hosted.md)** — enterprise deployment, RBAC, SCIM 2.0 identity provisioning, policy linting, telemetry, and snapshot registry.
+- **[Self-Hosted & Custom Tier](self-hosted.md)** — enterprise deployment, RBAC, SCIM 2.0 identity provisioning, policy linting, telemetry, and snapshot registry.
 - **[MCP Integration](mcp-integration.md)** — wiring `weave serve --mcp` into Claude, Cursor, or any MCP-speaking agent.
 - **[CI/CD Pipelines](pipeline.md)** — GitHub Actions integration, L1 cache setup, single mode, multiple mode, and enterprise gates.
 - **[Release Notes](release-notes.md)** — release history and quality gates.

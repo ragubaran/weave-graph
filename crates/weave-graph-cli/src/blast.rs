@@ -116,7 +116,7 @@ fn parse_depth(arg: &str) -> u32 {
 /// touched symbol's traversal — never a per-symbol reopen, which would
 /// scale open/parse cost with the number of touched symbols instead of
 /// staying constant.
-fn compute(
+pub(crate) fn compute(
     root: &Path,
     base: &str,
     depth: &str,
@@ -233,7 +233,7 @@ fn compute(
     })
 }
 
-fn render_markdown(report: &BlastReport) -> String {
+pub(crate) fn render_markdown(report: &BlastReport) -> String {
     let mut lines = Vec::new();
     lines.push(format!("## Weave blast radius: `{}`...`HEAD`", report.base));
     lines.push(format!(
@@ -311,8 +311,11 @@ fn render_markdown(report: &BlastReport) -> String {
     lines.join("\n")
 }
 
-fn render_json(report: &BlastReport) -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(&serde_json::json!({
+/// The `serde_json::Value` `render_json` serializes — split out so a
+/// caller wanting to add its own top-level fields (e.g. `pr_review`'s
+/// risk score) can do so without a stringify-then-reparse round trip.
+pub(crate) fn report_to_json(report: &BlastReport) -> serde_json::Value {
+    serde_json::json!({
         "base": report.base,
         "changed_files": report.changed_files,
         "impacted_symbols": report.impacted.iter()
@@ -328,7 +331,11 @@ fn render_json(report: &BlastReport) -> Result<String, serde_json::Error> {
         "exported_touched": report.exported_touched.iter()
             .map(|(s, p, l)| serde_json::json!({"symbol": s, "path": p, "line_start": l}))
             .collect::<Vec<_>>(),
-    }))
+    })
+}
+
+pub(crate) fn render_json(report: &BlastReport) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(&report_to_json(report))
 }
 #[cfg(test)]
 mod tests;

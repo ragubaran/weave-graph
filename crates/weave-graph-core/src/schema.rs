@@ -7,7 +7,7 @@
 
 /// Highest schema version any migration in `MIGRATIONS` brings a database
 /// to — round-trip tests assert against it.
-pub const LATEST_SCHEMA_VERSION: u32 = 10;
+pub const LATEST_SCHEMA_VERSION: u32 = 11;
 
 /// Base schema: `nodes`, `edges`, `doc_links`, `contracts`,
 /// `schema_version`. Unique indices on each table's natural key make
@@ -170,6 +170,13 @@ ALTER TABLE edges ADD COLUMN extractor TEXT;
 ALTER TABLE edges ADD COLUMN resolution_kind TEXT;
 ";
 
+/// The natural-key index has `symbol` third, not leading, so it can't serve
+/// a `symbol`-only lookup (`get_node_by_symbol`) — this is a narrow, single-
+/// column index, unlike V8's wider duplicate that V9 had to drop.
+pub const V11_NODE_SYMBOL_INDEX: &str = "
+CREATE INDEX idx_nodes_symbol ON nodes(symbol);
+";
+
 /// Versioned migration history shared by every storage backend.
 pub const MIGRATIONS: &[(u32, &str)] = &[
     (1, V1_CREATE_TABLES),
@@ -182,6 +189,7 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (8, V8_NODE_SEMANTIC_KEY),
     (9, V9_DROP_UNUSED_SEMANTIC_KEY_INDEX),
     (10, V10_EDGE_PROVENANCE),
+    (11, V11_NODE_SYMBOL_INDEX),
 ];
 
 /// Returns unapplied migrations in version order, independent of declaration order.

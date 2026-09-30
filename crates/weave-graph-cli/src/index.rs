@@ -69,8 +69,9 @@ pub(crate) fn rel_path(root: &Path, path: &Path) -> String {
 pub(crate) fn build_project_index_from_storage(
     storage: &dyn weave_graph_core::Storage,
 ) -> Result<(ProjectIndex, HashMap<u32, NodeId>), weave_graph_core::StorageError> {
-    let mut project_index = ProjectIndex::new();
-    let mut moniker_to_node_id = HashMap::new();
+    let symbol_count = storage.node_count()?;
+    let mut project_index = ProjectIndex::with_capacity(symbol_count);
+    let mut moniker_to_node_id = HashMap::with_capacity(symbol_count);
     storage.for_each_node(&mut |node| {
         let moniker = weave_graph_parse::moniker::build(&node.path, &node.symbol);
         let short_name = node

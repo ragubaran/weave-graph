@@ -323,6 +323,7 @@ The Enterprise build (`--features custom`) introduces strict governance tools:
 2. **`weave policy drift`**: Reports (advisory, never CI-failing) dependency cycles and orphaned files with no inbound cross-file dependency.
 3. **`weave traces import`**: Ingests OTLP JSON traces to surface performance anomalies and high-latency call paths during PR review.
 4. **`weave export --as <subject>`**: Generates sanitized graph exports respecting RBAC rules.
+5. **`weave pr-review --base <ref>`** (feature: `pr-review`, part of `custom`): a consolidated, risk-scored PR review artifact — approved and fully built (`docs/proposal-pr.md`, `impl.md` §13 Phase 11, all six milestones done). Reuses `weave blast`'s own diff/traversal for a fixed-threshold `Low`/`Medium`/`High`/`Critical` risk header, then aggregates an oversized-blast-radius advisory, contract drift against linked partners, `.weave/policy.yaml` boundary violations, and `weave verify`'s phantom-symbol check into one severity-ranked findings list — each source gracefully absent when its prerequisite isn't configured. `--fail-on <blocker|warning|info|never>` (default `blocker`) gates the exit code; `--waive <id> --reason <text>` bypasses individual findings. This one command now supersedes running the separate `weave check-contracts`/`weave policy lint` steps below for PR-time review; keep those steps for their own non-PR uses (submodule sync, drift analytics).
 
 ### Enterprise Governance Pipeline: `.github/workflows/weave-enterprise.yml`
 
@@ -346,7 +347,8 @@ jobs:
 
       - name: Install Weave (Enterprise Custom Profile)
         run: |
-          cargo install weave-graph-cli --features custom
+          # No crates.io publish exists yet — install directly from source.
+          cargo install --git https://github.com/ragubaran/weave-graph.git weave-graph-cli --features custom
 
       - name: Restore Index Cache
         uses: actions/cache@v4
@@ -377,6 +379,15 @@ jobs:
           # only reports dependency cycles and orphaned files (no inbound
           # cross-file dependency) to stdout.
           weave policy drift
+
+      - name: PR Review Risk Score
+        if: github.event_name == 'pull_request'
+        run: |
+          # Consolidated risk score + contract/policy/verify aggregation
+          # (docs/proposal-pr.md, impl.md §13). --fail-on defaults to
+          # blocker; post pr-review.md as a PR comment the same way §2's
+          # actions/github-script step posts pr-blast.md, if wanted.
+          weave pr-review --base origin/main --format md --out pr-review.md
 
       - name: Validate Telemetry Traces (Optional)
         if: hashFiles('.weave/traces/latest.json') != ''
@@ -453,6 +464,7 @@ rules:
 | `weave check-contracts --diff` | Quality Gate | Computes symbol delta across boundaries. | Exits `1` on drift only under `staleness_policy = "strict"` (config-dependent, waivable — see below) |
 | `weave check-contracts --scoped`| Quality Gate | Restricts contract failures to imported symbols only. | Same as above, only for the imported subset |
 | `weave blast --base <ref>` | PR Review | Computes downstream blast radius of PR diff. | `0` (writes Markdown/JSON) |
+| `weave pr-review --base <ref>` (feature: `pr-review`) | PR Review | Same diff/traversal as `weave blast`, a fixed-threshold risk header, plus consolidated contract/policy/verify findings. Approved and fully built. | Exit code driven by `--fail-on <blocker\|warning\|info\|never>` (default `blocker`) |
 | `weave policy lint` | Quality Gate | Enforces `.weave/policy.yaml` architectural rules. | Exits `1` on any boundary breach (unconditional, not config-gated) |
 | `weave policy drift` | Quality Gate | Detects dependency cycles and orphaned files. | Always exits `0` — advisory only, never fails the build |
 | `weave traces import <path>` | Observability | Ingests OTLP spans for runtime overlay. | `0` on valid JSON traces |

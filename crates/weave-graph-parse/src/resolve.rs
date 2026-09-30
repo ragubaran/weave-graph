@@ -81,6 +81,17 @@ pub struct StringInterner {
 }
 
 impl StringInterner {
+    /// Pre-sizes both backing collections so a known symbol count avoids
+    /// the doubling-growth reallocations that otherwise dominate peak RSS
+    /// (Core Invariant 4) — each symbol interns both its moniker and short
+    /// name, so `capacity` should be roughly double the expected symbol count.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            strings: Vec::with_capacity(capacity),
+            indices: HashMap::with_capacity(capacity),
+        }
+    }
+
     pub fn intern(&mut self, s: &str) -> u32 {
         if let Some(&id) = self.indices.get(s) {
             id
@@ -113,6 +124,16 @@ pub struct ProjectIndex {
 impl ProjectIndex {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Pre-sizes the interner and `by_short_name` table for a known total
+    /// symbol count, avoiding the unsized-growth allocations profiling
+    /// identified as the dominant driver of indexing peak RSS.
+    pub fn with_capacity(symbol_count: usize) -> Self {
+        Self {
+            interner: StringInterner::with_capacity(symbol_count * 2),
+            by_short_name: HashMap::with_capacity(symbol_count),
+        }
     }
 
     pub fn add_file(&mut self, file: &ParsedFile) {

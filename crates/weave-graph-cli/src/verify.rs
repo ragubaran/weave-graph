@@ -296,7 +296,7 @@ fn language_name(path: &str) -> Option<&'static str> {
 /// declared dependencies. File-granularity, not line-granularity — the
 /// `unresolved_refs` table records no line number, so a `--range` narrows
 /// *which files* are checked, never which references within one file.
-fn phantom_symbols(
+pub(crate) fn phantom_symbols(
     storage: &dyn Storage,
     target_paths: &[String],
 ) -> Result<Vec<Finding>, Box<dyn std::error::Error>> {

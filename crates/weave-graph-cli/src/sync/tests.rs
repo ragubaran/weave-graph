@@ -163,7 +163,7 @@ fn push_refuses_when_not_on_a_git_branch() {
     let (addr, _request) = serve_with_status(201, b"");
     write_config(repo.path(), &addr);
 
-    let err = cmd_sync_push(repo.path(), None, None).unwrap_err();
+    let err = cmd_sync_push(repo.path(), None, None, "hmac").unwrap_err();
     let message = err.to_string();
     assert!(
         message.contains("default branch") || message.contains("git branch"),
@@ -198,7 +198,7 @@ fn push_on_main_publishes_the_snapshot() {
         "x"
     ]));
 
-    cmd_sync_push(repo.path(), None, None).unwrap();
+    cmd_sync_push(repo.path(), None, None, "hmac").unwrap();
 
     let request = request.join().unwrap();
     assert!(request.starts_with("PUT /snapshots/"));
@@ -241,7 +241,7 @@ fn push_with_a_signature_sends_the_x_weave_signature_header() {
         "x"
     ]));
 
-    cmd_sync_push(repo.path(), Some("deadbeef"), None).unwrap();
+    cmd_sync_push(repo.path(), Some("deadbeef"), None, "hmac").unwrap();
 
     let request = request.join().unwrap();
     assert!(
@@ -261,10 +261,16 @@ fn push_signature_can_be_computed_from_a_local_secret_file() {
     fs::write(&key_path, [3u8; 32]).unwrap();
     fs::write(&snapshot_path, b"snapshot bytes").unwrap();
 
-    let signature =
-        super::push_signature(dir.path(), "abc123", &snapshot_path, None, Some(&key_path))
-            .unwrap()
-            .unwrap();
+    let signature = super::push_signature(
+        dir.path(),
+        "abc123",
+        &snapshot_path,
+        None,
+        Some(&key_path),
+        "hmac",
+    )
+    .unwrap()
+    .unwrap();
     let expected = HmacSnapshotProvenanceVerifier::new([3u8; 32])
         .unwrap()
         .sign_snapshot(&super::repo_label(dir.path()), "abc123", b"snapshot bytes")
@@ -273,6 +279,63 @@ fn push_signature_can_be_computed_from_a_local_secret_file() {
         .collect::<String>();
 
     assert_eq!(signature, expected);
+}
+
+#[cfg(feature = "hub-provenance")]
+#[test]
+fn push_signature_can_be_computed_with_the_ed25519_provider() {
+    use weave_graph_hub::{Ed25519SnapshotProvenanceVerifier, SnapshotProvenanceVerifier};
+
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = dir.path().join("provenance.key");
+    let snapshot_path = dir.path().join("snapshot.db");
+    fs::write(&key_path, [3u8; 32]).unwrap();
+    fs::write(&snapshot_path, b"snapshot bytes").unwrap();
+
+    let signature = super::push_signature(
+        dir.path(),
+        "abc123",
+        &snapshot_path,
+        None,
+        Some(&key_path),
+        "ed25519",
+    )
+    .unwrap()
+    .unwrap();
+    let expected = Ed25519SnapshotProvenanceVerifier::new([3u8; 32])
+        .unwrap()
+        .sign_snapshot(&super::repo_label(dir.path()), "abc123", b"snapshot bytes")
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+
+    assert_eq!(signature, expected);
+    // Ed25519 signatures are 64 bytes (128 hex chars); HMAC-SHA-256's are 32 (64 hex chars) —
+    // confirms this actually used a different scheme, not just a coincidentally-equal path.
+    assert_eq!(signature.len(), 128);
+}
+
+#[cfg(feature = "hub-provenance")]
+#[test]
+fn push_signature_rejects_an_unknown_provenance_provider() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = dir.path().join("provenance.key");
+    let snapshot_path = dir.path().join("snapshot.db");
+    fs::write(&key_path, [3u8; 32]).unwrap();
+    fs::write(&snapshot_path, b"snapshot bytes").unwrap();
+
+    let error = super::push_signature(
+        dir.path(),
+        "abc123",
+        &snapshot_path,
+        None,
+        Some(&key_path),
+        "rsa",
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("unknown provenance provider"), "{error}");
 }
 
 #[test]
@@ -284,6 +347,7 @@ fn push_signature_rejects_two_signing_sources() {
         &dir.path().join("snapshot.db"),
         Some("deadbeef"),
         Some(&dir.path().join("key")),
+        "hmac",
     )
     .unwrap_err()
     .to_string();
@@ -426,7 +490,7 @@ fn push_retries_with_backoff_after_a_rate_limit_and_then_succeeds() {
         "x"
     ]));
 
-    cmd_sync_push(repo.path(), None, None).unwrap();
+    cmd_sync_push(repo.path(), None, None, "hmac").unwrap();
 
     assert_eq!(
         requests.join().unwrap().len(),
@@ -464,7 +528,7 @@ fn push_retries_past_a_second_conflict_before_giving_up() {
         "x"
     ]));
 
-    cmd_sync_push(repo.path(), None, None).unwrap();
+    cmd_sync_push(repo.path(), None, None, "hmac").unwrap();
 
     assert_eq!(
         requests.join().unwrap().len(),
@@ -502,7 +566,7 @@ fn push_gives_up_after_exhausting_conflict_retries() {
         "x"
     ]));
 
-    let err = cmd_sync_push(repo.path(), None, None).unwrap_err();
+    let err = cmd_sync_push(repo.path(), None, None, "hmac").unwrap_err();
 
     assert!(err.to_string().contains("republish attempts"), "got: {err}");
     assert_eq!(

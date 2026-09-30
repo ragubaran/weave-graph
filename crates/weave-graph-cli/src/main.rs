@@ -26,6 +26,8 @@ mod migration;
 mod notes;
 #[cfg(feature = "policy-lint")]
 mod policy;
+#[cfg(feature = "pr-review")]
+mod pr_review;
 mod provenance;
 mod query;
 #[cfg(feature = "rbac")]
@@ -55,7 +57,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use weave_graph_core::{Node, ReindexConfig, Storage, should_bail_out};
 use weave_graph_mcp::{
     HttpTransport, McpHandler, McpTransport, StdioTransport, validate_loopback_bind,
@@ -84,12 +86,34 @@ struct Cli {
     r#as: Option<String>,
 }
 
+/// `weave init --mode`'s only two valid values — a `clap::ValueEnum` so an
+/// unrecognized value is a clear parse error, never silently treated as
+/// `single`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum InitMode {
+    Single,
+    Multiple,
+}
+
+impl InitMode {
+    fn is_multiple(self) -> bool {
+        self == InitMode::Multiple
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            InitMode::Single => "single",
+            InitMode::Multiple => "multiple",
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Initialize .weave directory and config in current workspace
     Init {
-        #[arg(long, default_value = "single")]
-        mode: String,
+        #[arg(long, value_enum, default_value = "single")]
+        mode: InitMode,
     },
     /// Index all code and configuration files into the local graph
     Index {
@@ -168,10 +192,10 @@ enum Commands {
     /// Open the report in the browser viewer (feature: viz)
     #[cfg(feature = "viz")]
     Viz {
-        /// Open a browser window (default: per `[viz] mode`, yes for static)
+        /// Open a browser window (default: per `[viz] report_type`, yes for static)
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         open: bool,
-        /// Port for `[viz] mode = "server"` (loopback only)
+        /// Port for `[viz] report_type = "server"` (loopback only)
         #[arg(long, default_value_t = 8080)]
         port: u16,
         #[arg(long, default_value = ".")]
@@ -207,6 +231,37 @@ enum Commands {
         #[arg(long)]
         skip: bool,
         /// Audit reason for --skip (mandatory when --skip is passed)
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Risk-scored PR review artifact: blast radius, a deterministic risk
+    /// header, and contract/policy/phantom-symbol findings (feature:
+    /// pr-review). Proposal: docs/proposal-pr.md.
+    PrReview {
+        /// Ref to diff against (three-dot merge-base, e.g. `main`)
+        #[arg(long)]
+        base: String,
+        /// Output format: `md` (default) or `json`
+        #[arg(long, default_value = "md")]
+        format: String,
+        /// Write to this file instead of stdout (pipe into `gh pr comment`)
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Max transitive hops from each touched symbol (`all`/`max` for unbounded)
+        #[arg(long, default_value = "2")]
+        depth: String,
+        /// Traversal direction: `callers` (who's affected, default), `callees` (what the change touches), or `both`
+        #[arg(long, default_value = "callers")]
+        direction: String,
+        /// Minimum finding severity that fails the command: blocker (default), warning, info, or never
+        #[arg(long, default_value = "blocker")]
+        fail_on: String,
+        /// Waive one finding by its exact id (as printed); repeatable. Requires --reason
+        #[arg(long = "waive")]
+        waive: Vec<String>,
+        /// Audit reason for --waive (mandatory when --waive is passed)
         #[arg(long)]
         reason: Option<String>,
         #[arg(long, default_value = ".")]
@@ -487,9 +542,12 @@ enum SyncAction {
         /// Precomputed hex signature supplied by another signer
         #[arg(long)]
         signature: Option<String>,
-        /// HMAC-SHA-256 secret file used to sign the snapshot locally
+        /// Secret file used to sign the snapshot locally with --provenance-provider's scheme
         #[arg(long)]
         provenance_key_file: Option<PathBuf>,
+        /// Signature scheme for --provenance-key-file: "hmac" (default, HMAC-SHA-256) or "ed25519" (EdDSA) — must match the registry's own --provenance-provider
+        #[arg(long, default_value = "hmac")]
+        provenance_provider: String,
     },
 }
 
@@ -529,7 +587,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let as_subject: Option<String> = None;
 
     match cli.command {
-        Commands::Init { mode } => cmd_init(&mode)?,
+        Commands::Init { mode } => cmd_init(mode)?,
         Commands::Index {
             path,
             incremental,
@@ -628,6 +686,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
             )?
         }
+        #[cfg(feature = "pr-review")]
+        Commands::PrReview {
+            base,
+            format,
+            out,
+            depth,
+            direction,
+            fail_on,
+            waive,
+            reason,
+            path,
+        } => pr_review::cmd_pr_review(
+            &path,
+            &base,
+            &format,
+            out.as_deref(),
+            &depth,
+            &direction,
+            &fail_on,
+            &waive,
+            reason.as_deref(),
+            as_subject.as_deref(),
+        )?,
+        #[cfg(not(feature = "pr-review"))]
+        Commands::PrReview { .. } => feature_not_compiled("weave pr-review", "pr-review"),
         Commands::Config { action } => match action {
             ConfigAction::Set { key, value, path } => cmd_config_set(&path, &key, &value)?,
             ConfigAction::Get { key, path } => cmd_config_get(&path, &key)?,
@@ -740,8 +823,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     path,
                     signature,
                     provenance_key_file,
+                    provenance_provider,
                 },
-        } => sync::cmd_sync_push(&path, signature.as_deref(), provenance_key_file.as_deref())?,
+        } => sync::cmd_sync_push(
+            &path,
+            signature.as_deref(),
+            provenance_key_file.as_deref(),
+            &provenance_provider,
+        )?,
         #[cfg(not(feature = "hub"))]
         Commands::Sync { .. } => feature_not_compiled("weave sync", "hub"),
         #[cfg(feature = "slm")]
@@ -936,7 +1025,7 @@ fn feature_not_compiled(command: &str, feature: &str) -> ! {
     std::process::exit(1);
 }
 
-fn cmd_init(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_init(mode: InitMode) -> Result<(), Box<dyn std::error::Error>> {
     let weave_dir = Path::new(".weave");
     if !weave_dir.exists() {
         fs::create_dir_all(weave_dir)?;
@@ -944,7 +1033,7 @@ fn cmd_init(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     let config_path = weave_dir.join("config.toml");
     if !config_path.exists() {
-        let content = if mode == "multiple" {
+        let content = if mode.is_multiple() {
             r#"mode = "multiple"
 
 # Optional: Store graph data in a central location outside this repository.
@@ -971,8 +1060,11 @@ staleness_policy = "warn"
 "#
         };
         fs::write(&config_path, content)?;
-        println!("Initialized weave graph in .weave/ (mode: {mode})");
-        if mode == "multiple" {
+        println!(
+            "Initialized weave graph in .weave/ (mode: {})",
+            mode.as_str()
+        );
+        if mode.is_multiple() {
             // CI cold-indexes on every run without a cache primitive; emit
             // the L1 snippet alongside the config so the
             // setup step is self-contained.
