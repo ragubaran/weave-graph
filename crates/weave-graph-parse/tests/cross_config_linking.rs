@@ -1,9 +1,16 @@
 use std::path::Path;
+use std::sync::Mutex;
 
 use weave_graph_parse::{ProjectIndex, parse_file};
 
+// Tree-sitter grammar C code shares a global init mutex. Parallel test
+// threads deadlock when two grammars initialize concurrently. This
+// Mutex ensures sequential grammar init across all tests in this file.
+static GRAMMAR_INIT: Mutex<()> = Mutex::new(());
+
 #[test]
 fn typescript_process_env_links_to_dotenv_symbol() {
+    let _guard = GRAMMAR_INIT.lock().unwrap();
     let ts_source = r#"
 function startServer() {
     const port = process.env.PORT;
@@ -50,6 +57,7 @@ DATABASE_URL=postgres://localhost:5432/db
 
 #[test]
 fn rust_env_macro_links_to_dotenv_symbol() {
+    let _guard = GRAMMAR_INIT.lock().unwrap();
     let rs_source = r#"
 fn get_config() {
     let port = env!("PORT");
@@ -81,6 +89,7 @@ PORT=8080
 
 #[test]
 fn docker_compose_depends_on_links_services() {
+    let _guard = GRAMMAR_INIT.lock().unwrap();
     let yaml_source = r#"
 services:
   web:

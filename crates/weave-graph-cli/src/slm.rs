@@ -146,6 +146,9 @@ pub(crate) fn pull_model(
             "--sha256 must be a 64-char hex digest, got {expected_sha256}"
         ));
     }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create models dir: {e}"))?;
+    }
     let partial = dest.with_extension("gguf.part");
     let output = Command::new("curl")
         .args(["-fL", "--retry", "3", "-o"])

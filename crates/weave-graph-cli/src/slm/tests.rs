@@ -159,3 +159,29 @@ fn percentile_picks_the_right_order_statistic() {
     assert_eq!(percentile(vec![1.0, 2.0, 3.0, 4.0], 50.0), 3.0);
     assert_eq!(percentile(vec![4.0, 1.0, 2.0], 95.0), 4.0);
 }
+
+#[test]
+fn pull_model_creates_parent_directory_before_curl() {
+    // A fresh CI runner has no ~/.cache/weave/models/ — pull_model must
+    // create it before spawning curl or curl exits 23 (write failure).
+    let tmp = tempfile::tempdir().unwrap();
+    let nested = tmp.path().join("a").join("b").join("c");
+    assert!(!nested.exists());
+    // Offline stub: localhost URL fails immediately without any network
+    // round-trip, so this test never downloads anything.
+    let spec = ModelSpec {
+        name: "test-model",
+        url: "http://127.0.0.1:1/does-not-exist",
+        ram_mb: 0,
+        role: "test",
+    };
+    // Valid-format sha256 passes the hex-length guard and
+    // reaches create_dir_all before curl ever runs.
+    let sha = "0".repeat(64);
+    let dest = nested.join("model.gguf");
+    let _ = pull_model(&spec, &sha, &dest);
+    assert!(
+        nested.exists(),
+        "parent dir must be created before curl spawn"
+    );
+}
