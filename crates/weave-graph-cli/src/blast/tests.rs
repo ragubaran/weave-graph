@@ -3,7 +3,11 @@ use std::path::Path;
 use std::process::Command;
 
 use super::*;
-use crate::git::blast_since;
+use crate::git::blast_between;
+
+fn blast_since(root: &Path, base: &str) -> Result<Vec<String>, String> {
+    blast_between(root, base, "HEAD")
+}
 
 fn git(root: &Path, args: &[&str]) {
     let status = Command::new("git")

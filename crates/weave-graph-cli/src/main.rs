@@ -264,6 +264,13 @@ enum Commands {
         /// Audit reason for --waive (mandatory when --waive is passed)
         #[arg(long)]
         reason: Option<String>,
+        /// Score this branch's own diff against a stacked-branch parent ref instead of --base;
+        /// pass `auto` to detect the nearest ancestor local branch. --base still shows cumulative context.
+        #[arg(long)]
+        stack_base: Option<String>,
+        /// Score one parallel ref (a lane) against --base on its own, alongside the main report; repeatable
+        #[arg(long = "lane")]
+        lane: Vec<String>,
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
@@ -696,6 +703,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             fail_on,
             waive,
             reason,
+            stack_base,
+            lane,
             path,
         } => pr_review::cmd_pr_review(
             &path,
@@ -708,6 +717,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &waive,
             reason.as_deref(),
             as_subject.as_deref(),
+            stack_base.as_deref(),
+            &lane,
         )?,
         #[cfg(not(feature = "pr-review"))]
         Commands::PrReview { .. } => feature_not_compiled("weave pr-review", "pr-review"),

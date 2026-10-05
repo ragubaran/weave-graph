@@ -137,15 +137,17 @@ weave blast --base <ref> [--format md|json] [--out <file>] [--depth <n>] [--dire
 
 ### `weave pr-review` (feature: `pr-review`, Custom tier only)
 
-Risk-scored, consolidated PR review artifact (`docs/proposal-pr.md`, `impl.md` §13 Phase 11 — all six milestones done): reuses `weave blast`'s own diff/traversal for a deterministic risk header, then aggregates `check-contracts`-style contract drift, `policy lint` violations, and `weave verify`'s phantom-symbol check into one severity-ranked findings list.
+Risk-scored, consolidated PR review artifact (`docs/proposal-pr.md`, `impl.md` §13 Phase 11 — all eight milestones done): reuses `weave blast`'s own diff/traversal for a deterministic risk header, then aggregates `check-contracts`-style contract drift, `policy lint` violations, and `weave verify`'s phantom-symbol check into one severity-ranked findings list.
 
 ```bash
-weave pr-review --base <ref> [--format md|json] [--out <file>] [--depth <n>] [--direction callers|callees|both] [--fail-on blocker|warning|info|never] [--waive <finding-id>]... [--reason <text>] [--path <dir>]
+weave pr-review --base <ref> [--format md|json] [--out <file>] [--depth <n>] [--direction callers|callees|both] [--fail-on blocker|warning|info|never] [--waive <finding-id>]... [--reason <text>] [--stack-base <ref>|auto] [--lane <ref>]... [--path <dir>]
 ```
 
 - `--base <ref>`, `--format`, `--out`, `--depth`, `--direction`: identical to `weave blast` above (same underlying `blast::compute`).
 - `--fail-on <blocker|warning|info|never>` _(default: `blocker`)_: minimum finding severity that exits non-zero. `never` never fails the command regardless of findings.
 - `--waive <finding-id>` (repeatable) + `--reason <text>` (mandatory once `--waive` is passed): marks a finding waived by its exact printed id (e.g. `policy:disallow:src/ui->src/db`, `oversized-blast-radius`, `contract:<provider-label>`) — reuses the same waiver mechanism as `weave blast --skip`/`check-contracts --allow-drift`/`policy lint --waive`. Waiving a `blocker`-severity finding requires the `"allow-drift"` RBAC role when `--features rbac` is compiled in and `[rbac.users]` grants that role to anyone (see `--as <subject>` under `weave blast` above); waiving `warning`/`info` findings never requires RBAC.
+- `--stack-base <ref>` (or `--stack-base auto`): scores *this branch's own diff* against a stacked-branch parent ref instead of `--base` — so a branch partway through a stack isn't blamed for its earlier siblings' changes too. `--base` is still used for an additional "Stack context" section (markdown) / `stack_base` + `cumulative` fields (JSON) showing the cumulative diff to the true merge target. `auto` picks the nearest ancestor local branch (`git merge-base`-based; no reliance on any particular git client's internal branch representation), erroring clearly if none qualifies. Omit entirely for unchanged, pre-existing behavior.
+- `--lane <ref>` (repeatable): scores one or more additional refs against the same `--base`, independently of the main report and of each other (parallel change-sets off one trunk, not a dependency chain) — renders as a `### Lanes` section (markdown) or a `"lanes"` array (JSON), each entry carrying its own risk level.
 - Findings, one per line, each tagged `[blocker]`/`[warning]`/`[info]`:
   - `oversized-blast-radius` _(warning)_ — blast radius ≥50 symbols, unconditional.
   - `contract:<provider-label>` _(blocker, needs `federation`)_ — this repo's public contract diverged from a linked partner's recorded expectation; a safe no-op with no `[federation] linked_repos` configured.

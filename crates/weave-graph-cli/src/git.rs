@@ -75,17 +75,18 @@ pub(crate) fn changed_since(root: &Path, sha: &str) -> Option<Vec<String>> {
     Some(paths)
 }
 
-/// Files changed on the PR side of `<ref>...HEAD` — a **three-dot**
+/// Files changed on the PR side of `<base>...<head>` — a **three-dot**
 /// (merge-base) diff, distinct from `changed_since`'s two-dot diff: a PR
 /// blast-radius comment must not blame the PR for `main`'s own commits
-/// landed after the branch point.
+/// landed after the branch point. `head` is `"HEAD"` for a normal run;
+/// per-ref lane scoring and stacked-branch scoring pass another local ref.
 ///
 /// Shallow checkouts (`fetch-depth: 1`) are refused with a clear message
 /// naming the fix — `git merge-base` silently has no common ancestor
 /// there, and a raw `git` error would confuse exactly the CI user this
 /// exists for. `Err` (not `None`) because the caller should surface it,
 /// never silently fall back to a full diff.
-pub(crate) fn blast_since(root: &Path, base: &str) -> Result<Vec<String>, String> {
+pub(crate) fn blast_between(root: &Path, base: &str, head: &str) -> Result<Vec<String>, String> {
     if run(root, &["rev-parse", "--is-shallow-repository"])
         .as_deref()
         .map(str::trim)
@@ -101,12 +102,12 @@ pub(crate) fn blast_since(root: &Path, base: &str) -> Result<Vec<String>, String
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["diff", "--name-only", &format!("{base}...HEAD")])
+        .args(["diff", "--name-only", &format!("{base}...{head}")])
         .output()
         .map_err(|e| format!("failed to run git: {e}"))?;
     if !output.status.success() {
         return Err(format!(
-            "git diff {base}...HEAD failed: {} (is `{base}` a valid ref in this repo?)",
+            "git diff {base}...{head} failed: {} (is `{base}`/`{head}` a valid ref in this repo?)",
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
@@ -117,6 +118,50 @@ pub(crate) fn blast_since(root: &Path, base: &str) -> Result<Vec<String>, String
     paths.sort();
     paths.dedup();
     Ok(paths)
+}
+
+/// Best-effort nearest ancestor branch among local `refs/heads/*`
+/// (`weave pr-review --stack-base auto`'s stacked-branch auto-detection):
+/// among branches whose tip is a strict ancestor of `HEAD` and isn't
+/// `exclude` itself, picks the one with the most recent commit — the
+/// branch immediately beneath `HEAD` in a dependency chain, not just any
+/// ancestor. `None` when nothing qualifies (no other local branches, or
+/// none are an ancestor of `HEAD`) — the caller falls back to requiring
+/// an explicit ref.
+#[cfg(feature = "pr-review")]
+pub(crate) fn closest_ancestor_branch(root: &Path, exclude: &str) -> Option<String> {
+    let refs = run(
+        root,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+    )?;
+    let head = run(root, &["rev-parse", "HEAD"])?.trim().to_string();
+    let mut best: Option<(String, i64)> = None;
+    for name in refs.lines().map(str::trim).filter(|n| !n.is_empty()) {
+        if name == exclude {
+            continue;
+        }
+        let Some(tip) = run(root, &["rev-parse", "--verify", "--quiet", name]) else {
+            continue;
+        };
+        let tip = tip.trim().to_string();
+        if tip == head {
+            continue;
+        }
+        let merge_base = run(root, &["merge-base", name, "HEAD"]).map(|s| s.trim().to_string());
+        if merge_base.as_deref() != Some(tip.as_str()) {
+            continue;
+        }
+        let Some(ts) = run(root, &["log", "-1", "--format=%ct", name]) else {
+            continue;
+        };
+        let Ok(ts) = ts.trim().parse::<i64>() else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|(_, best_ts)| ts > *best_ts) {
+            best = Some((name.to_string(), ts));
+        }
+    }
+    best.map(|(name, _)| name)
 }
 
 /// One registered Git submodule, discovered from `.gitmodules`. Gated on

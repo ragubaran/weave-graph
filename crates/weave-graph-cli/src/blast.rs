@@ -22,6 +22,10 @@ const SYMBOL_BUDGET: usize = 200;
 
 pub(crate) struct BlastReport {
     pub(crate) base: String,
+    /// The ref diffed against `base` — `"HEAD"` for a normal `weave blast`/
+    /// `weave pr-review` run, or another local ref when scoring one lane
+    /// or stack entry on its own.
+    pub(crate) head: String,
     pub(crate) changed_files: Vec<String>,
     /// `(symbol, path, line_start)` of every impacted symbol, sorted.
     pub(crate) impacted: Vec<(String, String, u32)>,
@@ -122,7 +126,21 @@ pub(crate) fn compute(
     depth: &str,
     direction: &str,
 ) -> Result<BlastReport, Box<dyn std::error::Error>> {
-    let changed_files = git::blast_since(root, base)?;
+    compute_against(root, base, "HEAD", depth, direction)
+}
+
+/// Same as `compute`, diffing `base...<head>` instead of always
+/// `base...HEAD` — backs stacked-branch scoring (`--stack-base`, a
+/// non-`HEAD` `base`) and per-lane scoring (`--lane <ref>`, a non-`HEAD`
+/// `head`).
+pub(crate) fn compute_against(
+    root: &Path,
+    base: &str,
+    head: &str,
+    depth: &str,
+    direction: &str,
+) -> Result<BlastReport, Box<dyn std::error::Error>> {
+    let changed_files = git::blast_between(root, base, head)?;
 
     let (storage, _db_path) = crate::open_storage_for_read(root)?;
     let nodes = storage.all_nodes()?;
@@ -225,6 +243,7 @@ pub(crate) fn compute(
 
     Ok(BlastReport {
         base: base.to_string(),
+        head: head.to_string(),
         changed_files,
         impacted: impacted_list,
         folded: false,
@@ -235,7 +254,10 @@ pub(crate) fn compute(
 
 pub(crate) fn render_markdown(report: &BlastReport) -> String {
     let mut lines = Vec::new();
-    lines.push(format!("## Weave blast radius: `{}`...`HEAD`", report.base));
+    lines.push(format!(
+        "## Weave blast radius: `{}`...`{}`",
+        report.base, report.head
+    ));
     lines.push(format!(
         "{} file(s) changed: {}",
         report.changed_files.len(),
@@ -317,6 +339,7 @@ pub(crate) fn render_markdown(report: &BlastReport) -> String {
 pub(crate) fn report_to_json(report: &BlastReport) -> serde_json::Value {
     serde_json::json!({
         "base": report.base,
+        "head": report.head,
         "changed_files": report.changed_files,
         "impacted_symbols": report.impacted.iter()
             .map(|(s, p, l)| serde_json::json!({"symbol": s, "path": p, "line_start": l}))

@@ -338,3 +338,49 @@ fn default_branch_is_none_with_no_remote_and_no_main_or_master() {
 
     assert_eq!(default_branch(dir.path()), None);
 }
+
+#[cfg(feature = "pr-review")]
+fn checkout_branch(dir: &std::path::Path, args: &[&str]) {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?} failed");
+}
+
+/// A 3-branch stack (`main` -> `branch-a` -> `branch-b` == HEAD): from
+/// HEAD, `branch-a` is the closest ancestor, not `main` — `main` is also
+/// an ancestor, but further back. `--stack-base auto` relies on exactly
+/// this choice.
+#[cfg(feature = "pr-review")]
+#[test]
+fn closest_ancestor_branch_picks_the_nearest_stack_parent_not_a_further_ancestor() {
+    let dir = init_repo();
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    checkout_branch(dir.path(), &["checkout", "-q", "-b", "main"]);
+    commit_all(dir.path(), "base");
+    checkout_branch(dir.path(), &["checkout", "-q", "-b", "branch-a"]);
+    fs::write(dir.path().join("b.rs"), "fn b() {}\n").unwrap();
+    commit_all(dir.path(), "branch-a work");
+    checkout_branch(dir.path(), &["checkout", "-q", "-b", "branch-b"]);
+    fs::write(dir.path().join("c.rs"), "fn c() {}\n").unwrap();
+    commit_all(dir.path(), "branch-b work");
+
+    assert_eq!(
+        closest_ancestor_branch(dir.path(), "branch-b"),
+        Some("branch-a".to_string())
+    );
+}
+
+#[cfg(feature = "pr-review")]
+#[test]
+fn closest_ancestor_branch_is_none_with_no_other_local_branches() {
+    let dir = init_repo();
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    checkout_branch(dir.path(), &["checkout", "-q", "-b", "solo"]);
+    commit_all(dir.path(), "first");
+
+    assert_eq!(closest_ancestor_branch(dir.path(), "solo"), None);
+}

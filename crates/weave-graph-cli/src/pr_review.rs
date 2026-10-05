@@ -2,6 +2,9 @@
 //! risk-scored PR review artifact built on `blast::compute`'s
 //! `BlastReport`, plus contract/policy/phantom-symbol findings under a
 //! severity model and a waiver mechanism matching this codebase's patterns.
+//! `--stack-base` and `--lane` extend this to stacked-branch and
+//! multi-lane workflows without any vendor-specific on-disk format
+//! dependency — both take plain git refs.
 
 use std::path::Path;
 
@@ -9,6 +12,7 @@ use std::path::Path;
 use weave_graph_core::Storage;
 
 use crate::blast;
+use crate::git;
 
 /// Blast-radius risk classification — distinct from a per-finding
 /// severity: this is the one-line "how big is this change" header.
@@ -230,6 +234,33 @@ fn verify_findings(
         .collect())
 }
 
+/// `--stack-base <ref>`, or `--stack-base auto` to detect it: the nearest
+/// local ancestor branch via `git::closest_ancestor_branch`. `None` input
+/// (flag not passed) means "no stack awareness" — behavior identical to
+/// before this flag existed.
+fn resolve_stack_base(
+    root: &Path,
+    stack_base: Option<&str>,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    match stack_base {
+        None => Ok(None),
+        Some("auto") => {
+            let current = git::current_branch(root).ok_or(
+                "--stack-base auto: could not determine the current branch (detached HEAD?) \
+                 — pass --stack-base <ref> explicitly",
+            )?;
+            let detected = git::closest_ancestor_branch(root, &current).ok_or_else(|| {
+                format!(
+                    "--stack-base auto: no local branch found that's a strict ancestor of \
+                     HEAD other than `{current}` — pass --stack-base <ref> explicitly"
+                )
+            })?;
+            Ok(Some(detected))
+        }
+        Some(explicit) => Ok(Some(explicit.to_string())),
+    }
+}
+
 fn risk_header(risk: RiskLevel, report: &blast::BlastReport) -> String {
     format!(
         "**Blast radius: {}** ({} symbol{}, {} module{}, {} exported symbol{} touched)\n\n",
@@ -270,6 +301,54 @@ fn findings_markdown(findings: &[Finding], waived: &[String]) -> String {
     out
 }
 
+/// Empty once there's no `--stack-base` (the common case, unchanged
+/// output) — a cumulative-to-merge-target line is only meaningful once a
+/// stack parent narrower than `base` is actually in play.
+fn stack_markdown(
+    stack_ref: Option<&str>,
+    base: &str,
+    cumulative: Option<&blast::BlastReport>,
+) -> String {
+    let (Some(stack_ref), Some(cum)) = (stack_ref, cumulative) else {
+        return String::new();
+    };
+    format!(
+        "### Stack context\n\nScored against stack parent `{stack_ref}`. Cumulative to \
+         merge target `{base}`: {} symbol{}, {} exported symbol{} touched.\n\n",
+        cum.impacted.len(),
+        if cum.impacted.len() == 1 { "" } else { "s" },
+        cum.exported_touched.len(),
+        if cum.exported_touched.len() == 1 {
+            ""
+        } else {
+            "s"
+        },
+    )
+}
+
+fn lanes_markdown(lane_reports: &[(String, blast::BlastReport, RiskLevel)]) -> String {
+    if lane_reports.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("### Lanes\n\n");
+    for (name, report, risk) in lane_reports {
+        out.push_str(&format!(
+            "- **`{name}`** — {}: {} symbol{}, {} exported symbol{} touched\n",
+            risk.as_str(),
+            report.impacted.len(),
+            if report.impacted.len() == 1 { "" } else { "s" },
+            report.exported_touched.len(),
+            if report.exported_touched.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+        ));
+    }
+    out.push('\n');
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cmd_pr_review(
     root: &Path,
@@ -282,10 +361,37 @@ pub(crate) fn cmd_pr_review(
     waive: &[String],
     reason: Option<&str>,
     as_subject: Option<&str>,
+    stack_base: Option<&str>,
+    lanes: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let fail_on_severity = Severity::parse_fail_on(fail_on)?;
-    let report = blast::compute(root, base, depth, direction)?;
+
+    // `own_base` scores *this branch's own diff*: `stack_base` when given
+    // (a stacked-branch parent), else `base`, matching every call site
+    // before this flag existed. `cumulative` reuses the same diff against
+    // the true merge target for context only — never scored or gated.
+    let resolved_stack_base = resolve_stack_base(root, stack_base)?;
+    let own_base = resolved_stack_base.as_deref().unwrap_or(base);
+    let report = blast::compute(root, own_base, depth, direction)?;
     let risk = classify_risk(report.impacted.len(), report.exported_touched.len());
+    let cumulative = match &resolved_stack_base {
+        Some(stack_ref) if stack_ref != base => Some(blast::compute(root, base, depth, direction)?),
+        _ => None,
+    };
+
+    // One `BlastReport` + risk per `--lane <ref>`, each diffed from the
+    // same true `base` — unlike `own_base` above, lanes are parallel
+    // change-sets off one trunk, not a dependency chain, so each is
+    // scored independently rather than relative to one another.
+    let lane_reports: Vec<(String, blast::BlastReport, RiskLevel)> = lanes
+        .iter()
+        .map(|lane_ref| {
+            blast::compute_against(root, base, lane_ref, depth, direction).map(|r| {
+                let lane_risk = classify_risk(r.impacted.len(), r.exported_touched.len());
+                (lane_ref.clone(), r, lane_risk)
+            })
+        })
+        .collect::<Result<_, _>>()?;
 
     let mut findings = Vec::new();
     findings.extend(oversized_blast_finding(&report));
@@ -341,12 +447,49 @@ pub(crate) fn cmd_pr_review(
                             .collect(),
                     ),
                 );
+                if let Some(stack_ref) = &resolved_stack_base {
+                    obj.insert(
+                        "stack_base".to_string(),
+                        serde_json::Value::String(stack_ref.clone()),
+                    );
+                }
+                if let Some(cum) = &cumulative {
+                    obj.insert("cumulative".to_string(), blast::report_to_json(cum));
+                }
+                if !lane_reports.is_empty() {
+                    obj.insert(
+                        "lanes".to_string(),
+                        serde_json::Value::Array(
+                            lane_reports
+                                .iter()
+                                .map(|(name, r, lane_risk)| {
+                                    let mut lane_value = blast::report_to_json(r);
+                                    if let Some(lane_obj) = lane_value.as_object_mut() {
+                                        lane_obj.insert(
+                                            "lane".to_string(),
+                                            serde_json::Value::String(name.clone()),
+                                        );
+                                        lane_obj.insert(
+                                            "risk".to_string(),
+                                            serde_json::Value::String(
+                                                lane_risk.as_str().to_string(),
+                                            ),
+                                        );
+                                    }
+                                    lane_value
+                                })
+                                .collect(),
+                        ),
+                    );
+                }
             }
             serde_json::to_string_pretty(&value)?
         }
         "md" | "markdown" => format!(
-            "## Weave PR Review\n\n{}{}{}",
+            "## Weave PR Review\n\n{}{}{}{}{}",
             risk_header(risk, &report),
+            stack_markdown(resolved_stack_base.as_deref(), base, cumulative.as_ref()),
+            lanes_markdown(&lane_reports),
             findings_markdown(&findings, waive),
             blast::render_markdown(&report)
         ),

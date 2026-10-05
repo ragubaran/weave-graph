@@ -103,6 +103,8 @@ fn cmd_pr_review_markdown_includes_the_risk_header_and_blast_body() {
         &[],
         None,
         None,
+        None,
+        &[],
     )
     .unwrap();
     let text = fs::read_to_string(&out_path).unwrap();
@@ -126,6 +128,8 @@ fn cmd_pr_review_json_carries_a_risk_field_alongside_blast_data() {
         &[],
         None,
         None,
+        None,
+        &[],
     )
     .unwrap();
     let parsed: serde_json::Value =
@@ -158,6 +162,7 @@ fn parse_fail_on_rejects_an_unknown_value() {
 fn synthetic_report(impacted_count: usize) -> blast::BlastReport {
     blast::BlastReport {
         base: "main".to_string(),
+        head: "HEAD".to_string(),
         changed_files: Vec::new(),
         impacted: (0..impacted_count)
             .map(|i| (format!("sym{i}"), "f.rs".to_string(), 1))
@@ -223,6 +228,8 @@ fn phantom_symbol_reference_is_a_warning_that_does_not_fail_by_default() {
         &[],
         None,
         None,
+        None,
+        &[],
     )
     .unwrap();
     let text = fs::read_to_string(&out_path).unwrap();
@@ -264,6 +271,8 @@ fn policy_violation_is_a_blocker_that_fails_by_default_and_can_be_waived() {
         &[],
         None,
         None,
+        None,
+        &[],
     )
     .unwrap_err();
     assert!(err.to_string().contains("unwaived finding"), "{err}");
@@ -281,6 +290,8 @@ fn policy_violation_is_a_blocker_that_fails_by_default_and_can_be_waived() {
         &["policy:disallow:feature.rs->core.rs".to_string()],
         None,
         None,
+        None,
+        &[],
     )
     .unwrap_err();
     assert!(
@@ -299,6 +310,8 @@ fn policy_violation_is_a_blocker_that_fails_by_default_and_can_be_waived() {
         &["policy:disallow:feature.rs->core.rs".to_string()],
         Some("policy predates this PR"),
         None,
+        None,
+        &[],
     )
     .unwrap();
     let waived_text = fs::read_to_string(&out_path).unwrap();
@@ -380,6 +393,8 @@ fn linked_provider_contract_drift_is_a_blocker_finding() {
         &[],
         None,
         None,
+        None,
+        &[],
     )
     .unwrap_err();
     assert!(err.to_string().contains("unwaived finding"), "{err}");
@@ -459,6 +474,8 @@ fn fail_on_never_never_fails_even_with_a_blocker_finding() {
         &[],
         None,
         None,
+        None,
+        &[],
     )
     .unwrap();
 }
@@ -477,9 +494,234 @@ fn cmd_pr_review_rejects_an_unknown_format() {
         &[],
         None,
         None,
+        None,
+        &[],
     )
     .unwrap_err();
     assert!(err.to_string().contains("unknown format"), "{err}");
     let _ = &fx.weave_dir;
     let _ = &fx.active_db;
+}
+
+/// A 3-branch stack off `main`: `branch-a` adds `file_a.rs`, `branch-b`
+/// (checked out, HEAD) adds `file_b.rs` on top of it — one distinct file
+/// per branch, so file-level precision can't blur which branch owns which
+/// symbol the way editing one shared file across branches would.
+struct StackFixture {
+    dir: tempfile::TempDir,
+}
+
+impl StackFixture {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q", "-b", "main"]);
+        git(dir.path(), &["config", "user.email", "test@example.com"]);
+        git(dir.path(), &["config", "user.name", "Test"]);
+        fs::write(dir.path().join("core.rs"), "pub fn core() {}\n").unwrap();
+        commit_all(dir.path(), "base");
+        git(dir.path(), &["checkout", "-q", "-b", "branch-a"]);
+        fs::write(dir.path().join("file_a.rs"), "fn feature_a() { core(); }\n").unwrap();
+        commit_all(dir.path(), "branch-a work");
+        git(dir.path(), &["checkout", "-q", "-b", "branch-b"]);
+        fs::write(dir.path().join("file_b.rs"), "fn feature_b() { core(); }\n").unwrap();
+        commit_all(dir.path(), "branch-b work");
+
+        let weave_dir = dir.path().join(".weave");
+        fs::create_dir_all(&weave_dir).unwrap();
+        let active_db = weave_dir.join("graph.db");
+        let files = ["core.rs", "file_a.rs", "file_b.rs"]
+            .iter()
+            .map(|f| dir.path().join(f))
+            .collect::<Vec<_>>();
+        crate::index::full_reindex(dir.path(), &weave_dir, &active_db, &files).unwrap();
+        Self { dir }
+    }
+}
+
+#[test]
+fn stack_base_scores_only_this_branchs_own_diff_not_the_whole_stack() {
+    let fx = StackFixture::new();
+    let out_path = fx.dir.path().join("pr-review.md");
+    cmd_pr_review(
+        fx.dir.path(),
+        "main",
+        "md",
+        Some(&out_path),
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        Some("branch-a"),
+        &[],
+    )
+    .unwrap();
+    let text = fs::read_to_string(&out_path).unwrap();
+    assert!(text.contains("feature_b"), "{text}");
+    assert!(!text.contains("feature_a"), "{text}");
+    assert!(text.contains("Stack context"), "{text}");
+    assert!(text.contains("stack parent `branch-a`"), "{text}");
+    assert!(text.contains("merge target `main`"), "{text}");
+}
+
+#[test]
+fn stack_base_auto_detects_the_nearest_ancestor_branch() {
+    let fx = StackFixture::new();
+    let out_path = fx.dir.path().join("pr-review.md");
+    cmd_pr_review(
+        fx.dir.path(),
+        "main",
+        "md",
+        Some(&out_path),
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        Some("auto"),
+        &[],
+    )
+    .unwrap();
+    let text = fs::read_to_string(&out_path).unwrap();
+    assert!(text.contains("feature_b"), "{text}");
+    assert!(!text.contains("feature_a"), "{text}");
+    assert!(text.contains("stack parent `branch-a`"), "{text}");
+}
+
+#[test]
+fn stack_base_auto_errors_clearly_with_no_ancestor_branch() {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "-q", "-b", "solo"]);
+    git(dir.path(), &["config", "user.email", "test@example.com"]);
+    git(dir.path(), &["config", "user.name", "Test"]);
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    commit_all(dir.path(), "first");
+    index_all(dir.path(), &["a.rs"]);
+
+    let err = cmd_pr_review(
+        dir.path(),
+        "solo",
+        "md",
+        None,
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        Some("auto"),
+        &[],
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("--stack-base auto"), "{err}");
+}
+
+#[test]
+fn stack_base_json_carries_stack_base_and_cumulative_fields() {
+    let fx = StackFixture::new();
+    let out_path = fx.dir.path().join("pr-review.json");
+    cmd_pr_review(
+        fx.dir.path(),
+        "main",
+        "json",
+        Some(&out_path),
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        Some("branch-a"),
+        &[],
+    )
+    .unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
+    assert_eq!(parsed["stack_base"], "branch-a");
+    assert_eq!(parsed["base"], "branch-a");
+    let own_count = parsed["impacted_count"].as_u64().unwrap();
+    let cumulative_count = parsed["cumulative"]["impacted_count"].as_u64().unwrap();
+    assert!(
+        cumulative_count > own_count,
+        "cumulative (vs main) must cover more than this branch's own diff (vs branch-a): {parsed}"
+    );
+}
+
+#[test]
+fn lane_scores_a_ref_independently_alongside_the_main_report() {
+    let fx = StackFixture::new();
+    let out_path = fx.dir.path().join("pr-review.md");
+    cmd_pr_review(
+        fx.dir.path(),
+        "main",
+        "md",
+        Some(&out_path),
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        None,
+        &["branch-a".to_string()],
+    )
+    .unwrap();
+    let text = fs::read_to_string(&out_path).unwrap();
+    assert!(text.contains("### Lanes"), "{text}");
+    assert!(text.contains("`branch-a`"), "{text}");
+    assert!(text.contains("feature_a"), "{text}");
+    assert!(text.contains("feature_b"), "{text}");
+}
+
+#[test]
+fn lane_json_includes_a_lanes_array_with_per_lane_risk() {
+    let fx = StackFixture::new();
+    let out_path = fx.dir.path().join("pr-review.json");
+    cmd_pr_review(
+        fx.dir.path(),
+        "main",
+        "json",
+        Some(&out_path),
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        None,
+        &["branch-a".to_string()],
+    )
+    .unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
+    let lanes = parsed["lanes"].as_array().unwrap();
+    assert_eq!(lanes.len(), 1, "{parsed}");
+    assert_eq!(lanes[0]["lane"], "branch-a");
+    assert!(lanes[0]["risk"].is_string(), "{parsed}");
+}
+
+#[test]
+fn no_stack_base_or_lanes_leaves_output_unchanged_from_before_the_flags_existed() {
+    let fx = Fixture::new();
+    let out_path = fx.dir.path().join("pr-review.md");
+    cmd_pr_review(
+        fx.dir.path(),
+        "main",
+        "md",
+        Some(&out_path),
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        None,
+        &[],
+    )
+    .unwrap();
+    let text = fs::read_to_string(&out_path).unwrap();
+    assert!(!text.contains("Stack context"), "{text}");
+    assert!(!text.contains("### Lanes"), "{text}");
 }
