@@ -68,6 +68,8 @@ weave index [--path <dir>] [--incremental] [--watch]
 - `--incremental`: Touches only modified files since the last indexing cycle. Automatically falls back to a clean full rebuild above a 10% modified-file ratio (never below 100 modified files) — a fixed default, not a `.weave/config.toml` key.
 - `--watch` _(feature: `watch`)_: Runs in the foreground, debouncing file edits and checking impact blast radius before reindexing.
 
+Every run also stamps `.weave/extractor_version`. If it doesn't match the running binary's parsing/extraction logic version, `weave index` forces a full rebuild on your next run regardless of `--incremental` or an unchanged commit — a parser/extractor fix can make previously indexed data stale without changing any file's content, something a git diff can't see on its own. This only fires right after a `weave` upgrade that changed extraction logic; it's silent and automatic otherwise.
+
 ### `weave status`
 
 Summarizes the indexed graph and pending workspace markers.
@@ -109,6 +111,8 @@ Supported expression forms:
 - `path(<source>, <target>)`: Computes the shortest call chain between two symbols.
 - `latency(<symbol>)` _(feature: `otel`)_: Displays runtime latency percentiles (p50, p95, p99) and error rate.
 
+`callers()`/`callees()`/`impact()` accept space-separated filters appended after the call: `path:<prefix>` (require), `path:!<prefix>` (exclude — composable with `path:`, e.g. `impact(foo) path:src path:!tests`), `lang:<language>`, `kind:<node-kind>`, `visibility:public|private`. `callers()` additionally accepts `edge:<kind>` and `precise:true|false` (drops heuristically-resolved edges).
+
 ### `weave export`
 
 Exports a symbol's N-hop neighborhood as structured JSON.
@@ -137,13 +141,16 @@ weave blast --base <ref> [--format md|json] [--out <file>] [--depth <n>] [--dire
 
 ### `weave pr-review` (feature: `pr-review`, Custom tier only)
 
-Risk-scored, consolidated PR review artifact (`docs/proposal-pr.md`, `impl.md` §13 Phase 11 — all eight milestones done): reuses `weave blast`'s own diff/traversal for a deterministic risk header, then aggregates `check-contracts`-style contract drift, `policy lint` violations, and `weave verify`'s phantom-symbol check into one severity-ranked findings list.
+Risk-scored, consolidated PR review artifact (`docs/proposal-pr.md`, `impl.md` §13 Phase 11 — all eleven milestones done): reuses `weave blast`'s own diff/traversal for a deterministic risk header, then aggregates `check-contracts`-style contract drift, `policy lint` violations, and `weave verify`'s phantom-symbol check into one severity-ranked findings list.
 
 ```bash
-weave pr-review --base <ref> [--format md|json] [--out <file>] [--depth <n>] [--direction callers|callees|both] [--fail-on blocker|warning|info|never] [--waive <finding-id>]... [--reason <text>] [--stack-base <ref>|auto] [--lane <ref>]... [--path <dir>]
+weave pr-review --base <ref> [--format md|json|html] [--out <file>] [--depth <n>] [--direction callers|callees|both] [--fail-on blocker|warning|info|never] [--waive <finding-id>]... [--reason <text>] [--stack-base <ref>|auto] [--lane <ref>]... [--check-remote] [--history [<n>]] [--path <dir>]
 ```
 
-- `--base <ref>`, `--format`, `--out`, `--depth`, `--direction`: identical to `weave blast` above (same underlying `blast::compute`).
+- `--base <ref>`, `--format` (now including `html`), `--out`, `--depth`, `--direction`: identical to `weave blast` above (same underlying `blast::compute`). `--base` is required unless `--history` is passed.
+- `--format html`: renders the exact same content as `--format md` into one self-contained static HTML file — no server, no browser auto-launch, no network call.
+- `--check-remote`: opt-in only (no network call without this flag) — runs a single scoped `git fetch origin <base>` (only `<base>`'s new commits arrive, nothing of this branch's own diff crosses the wire) and flags the report if the local `--base` is behind (`"stale_base": true` + `"stale_base_commits_behind": N` in JSON; a markdown/HTML banner).
+- `--history [<n>]` (default 20 when passed with no value): lists past `weave pr-review` runs read-only, newest first, from `.weave/graph.db`, instead of scoring a new one — skips `--base` and all diff/git work entirely.
 - `--fail-on <blocker|warning|info|never>` _(default: `blocker`)_: minimum finding severity that exits non-zero. `never` never fails the command regardless of findings.
 - `--waive <finding-id>` (repeatable) + `--reason <text>` (mandatory once `--waive` is passed): marks a finding waived by its exact printed id (e.g. `policy:disallow:src/ui->src/db`, `oversized-blast-radius`, `contract:<provider-label>`) — reuses the same waiver mechanism as `weave blast --skip`/`check-contracts --allow-drift`/`policy lint --waive`. Waiving a `blocker`-severity finding requires the `"allow-drift"` RBAC role when `--features rbac` is compiled in and `[rbac.users]` grants that role to anyone (see `--as <subject>` under `weave blast` above); waiving `warning`/`info` findings never requires RBAC.
 - `--stack-base <ref>` (or `--stack-base auto`): scores *this branch's own diff* against a stacked-branch parent ref instead of `--base` — so a branch partway through a stack isn't blamed for its earlier siblings' changes too. `--base` is still used for an additional "Stack context" section (markdown) / `stack_base` + `cumulative` fields (JSON) showing the cumulative diff to the true merge target. `auto` picks the nearest ancestor local branch (`git merge-base`-based; no reliance on any particular git client's internal branch representation), erroring clearly if none qualifies. Omit entirely for unchanged, pre-existing behavior.
@@ -257,6 +264,7 @@ weave verify [--file <path>] [--range <start:end>] [--submodules] [--format text
 - `--range <start:end>`: Line range within `--file`, e.g. `"100:180"` — requires `--file`.
 - `--submodules`: Only run submodule-relevant checks (encapsulation + stale references), skipping the phantom-symbol scan.
 - `--format text|json` _(default: `text`)_.
+- **`.weave/contracts.yml`** (optional; absent means every check runs at its most-verifying default) toggles which checks run: `submodules.enforce_visibility`/`reject_dirty_working_tree`/`qualify_changed_commits`, `ai.phantom_symbols.reject_unresolved`/`exempt_globs`, and (2026-10-09) `required_guards` — a list of `{symbol, allowed_callers}` entries, each a direct-caller allowlist: every indexed node with an edge landing on `symbol` must itself be one of `allowed_callers`, or it's a `required_guards` finding. Both `symbol` and `allowed_callers` are monikers (`<path>#<symbol>`, e.g. `src/admin.rs#delete_user`) — the same identity the resolver itself uses. Direct callers only, deliberately not transitive; parsing this section needs `policy-lint` compiled in (same YAML dependency boundary every other `contracts.yml` section already has) — without it, or with no `required_guards` entries declared, the check is reported `skipped`, never a false pass.
 - **Correction (this pass): this command had no documentation at all** — added here for the first time; not previously a gap in an existing synopsis, a wholly missing section.
 
 ### `weave plan-migration`

@@ -710,3 +710,49 @@ fn get_node_by_symbol_returns_none_for_an_unknown_symbol() {
 
     assert!(storage.get_node_by_symbol("ghost").unwrap().is_none());
 }
+
+#[test]
+fn pr_review_runs_round_trip_newest_first() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    storage
+        .record_pr_review_run("main", "HEAD", "Low", "[]", "[]", None)
+        .unwrap();
+    storage
+        .record_pr_review_run(
+            "main",
+            "HEAD",
+            "Critical",
+            r#"[{"id":"oversized-blast-radius"}]"#,
+            r#"["oversized-blast-radius"]"#,
+            Some("known false positive"),
+        )
+        .unwrap();
+
+    let runs = storage.list_pr_review_runs(10).unwrap();
+    assert_eq!(runs.len(), 2);
+    // Newest first: the second recorded run (Critical) comes back first.
+    assert_eq!(runs[0].risk, "Critical");
+    assert_eq!(runs[0].reason.as_deref(), Some("known false positive"));
+    assert!(runs[0].findings_json.contains("oversized-blast-radius"));
+    assert_eq!(runs[1].risk, "Low");
+    assert_eq!(runs[1].reason, None);
+}
+
+#[test]
+fn pr_review_runs_list_respects_the_limit() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    for _ in 0..5 {
+        storage
+            .record_pr_review_run("main", "HEAD", "Low", "[]", "[]", None)
+            .unwrap();
+    }
+
+    assert_eq!(storage.list_pr_review_runs(2).unwrap().len(), 2);
+    assert_eq!(storage.list_pr_review_runs(100).unwrap().len(), 5);
+}
+
+#[test]
+fn pr_review_runs_table_is_empty_on_a_fresh_database() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    assert!(storage.list_pr_review_runs(10).unwrap().is_empty());
+}

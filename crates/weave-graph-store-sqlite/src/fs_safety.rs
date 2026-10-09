@@ -26,7 +26,7 @@ fn nearest_existing_ancestor(path: &Path) -> Option<PathBuf> {
 const NETWORK_FS_NAMES: &[&str] = &["nfs", "smbfs", "afpfs", "webdav", "cifs"];
 
 #[cfg(target_os = "macos")]
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
 fn raw_is_network_filesystem(path: &Path) -> bool {
     use std::ffi::CString;
     use std::mem::MaybeUninit;
@@ -58,7 +58,7 @@ fn raw_is_network_filesystem(path: &Path) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
+#[expect(unsafe_code)]
 fn raw_is_network_filesystem(path: &Path) -> bool {
     use std::ffi::CString;
     use std::mem::MaybeUninit;
@@ -86,8 +86,13 @@ fn raw_is_network_filesystem(path: &Path) -> bool {
     let stat = unsafe { stat.assume_init() };
     // `f_type`'s type varies by libc: signed `i64` on glibc x86_64/aarch64,
     // unsigned `c_ulong` (u64) on musl — `as i64` is required on musl and a
-    // same-type no-op on glibc, so clippy's lint is a false positive here.
-    #[allow(clippy::unnecessary_cast)]
+    // same-type no-op on glibc, so the cast is only ever flagged as
+    // unnecessary on the glibc side; `expect` there would be unfulfilled
+    // on musl, so the attribute itself is glibc-only.
+    #[cfg(not(target_env = "musl"))]
+    #[expect(clippy::unnecessary_cast)]
+    let f_type = stat.f_type as i64;
+    #[cfg(target_env = "musl")]
     let f_type = stat.f_type as i64;
     matches!(
         f_type,

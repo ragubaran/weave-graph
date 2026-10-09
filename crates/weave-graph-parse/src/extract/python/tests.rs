@@ -59,8 +59,9 @@ mod flask_routes {
 
     #[test]
     fn app_route_decorator_produces_a_route_symbol_and_a_routes_to_edge() {
-        let file =
-            parse("@app.route(\"/users/<id>\", methods=[\"GET\"])\ndef get_user(id):\n    pass\n");
+        let file = parse(
+            "app = Flask(__name__)\n@app.route(\"/users/<id>\", methods=[\"GET\"])\ndef get_user(id):\n    pass\n",
+        );
         let route = file
             .symbols
             .iter()
@@ -79,7 +80,7 @@ mod flask_routes {
 
     #[test]
     fn http_method_shorthand_decorator_is_tagged_with_its_own_method() {
-        let file = parse("@app.get(\"/health\")\ndef health():\n    pass\n");
+        let file = parse("app = Flask(__name__)\n@app.get(\"/health\")\ndef health():\n    pass\n");
         let route = file
             .symbols
             .iter()
@@ -95,8 +96,43 @@ mod flask_routes {
     }
 
     #[test]
+    fn blueprint_receiver_is_also_a_recognized_route_receiver() {
+        let file = parse(
+            "bp = Blueprint(\"users\", __name__)\n@bp.route(\"/ping\")\ndef ping():\n    pass\n",
+        );
+        assert!(
+            file.symbols.iter().any(|s| s.kind == SymbolKind::Route),
+            "{file:?}"
+        );
+    }
+
+    #[test]
+    fn attribute_qualified_blueprint_constructor_is_also_recognized() {
+        let file = parse(
+            "bp = flask.Blueprint(\"users\", __name__)\n@bp.route(\"/ping\")\ndef ping():\n    pass\n",
+        );
+        assert!(
+            file.symbols.iter().any(|s| s.kind == SymbolKind::Route),
+            "{file:?}"
+        );
+    }
+
+    #[test]
+    fn a_non_flask_receiver_with_the_same_decorator_shape_is_not_a_route() {
+        // `cache`/`client`/anything else never assigned from Flask(...)/
+        // Blueprint(...) must not false-positive just because the call
+        // shape (`.get("literal")` as a decorator) happens to match —
+        // this is the exact false-positive this pilot used to have.
+        let file = parse("@cache.get(\"my_key\")\ndef expensive():\n    pass\n");
+        assert!(
+            !file.symbols.iter().any(|s| s.kind == SymbolKind::Route),
+            "{file:?}"
+        );
+    }
+
+    #[test]
     fn the_wrapped_handler_is_still_indexed_as_an_ordinary_function() {
-        let file = parse("@app.route(\"/ping\")\ndef ping():\n    pass\n");
+        let file = parse("app = Flask(__name__)\n@app.route(\"/ping\")\ndef ping():\n    pass\n");
         assert!(
             file.symbols
                 .iter()
@@ -107,8 +143,9 @@ mod flask_routes {
 
     #[test]
     fn calls_inside_a_decorated_handler_are_still_collected() {
-        let file =
-            parse("@app.route(\"/ping\")\ndef ping():\n    helper()\ndef helper():\n    pass\n");
+        let file = parse(
+            "app = Flask(__name__)\n@app.route(\"/ping\")\ndef ping():\n    helper()\ndef helper():\n    pass\n",
+        );
         assert!(
             file.calls.iter().any(|c| c.callee_name == "helper"),
             "{file:?}"
@@ -126,7 +163,8 @@ mod flask_routes {
 
     #[test]
     fn a_decorator_call_with_no_string_literal_argument_is_not_a_route() {
-        let file = parse("@app.route(build_path())\ndef handler():\n    pass\n");
+        let file =
+            parse("app = Flask(__name__)\n@app.route(build_path())\ndef handler():\n    pass\n");
         assert!(
             !file.symbols.iter().any(|s| s.kind == SymbolKind::Route),
             "{file:?}"
@@ -145,5 +183,41 @@ mod flask_routes {
                 .iter()
                 .any(|s| s.symbol == "Point" && s.kind == SymbolKind::Class)
         );
+    }
+
+    #[test]
+    fn raw_string_route_path_strips_the_prefix_not_just_the_quotes() {
+        let file =
+            parse("app = Flask(__name__)\n@app.route(r\"/raw/path\")\ndef handler():\n    pass\n");
+        let route = file
+            .symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::Route)
+            .expect("a route symbol must be indexed");
+        assert_eq!(route.symbol, "route:ANY /raw/path", "{file:?}");
+    }
+
+    #[test]
+    fn an_fstring_route_path_with_real_interpolation_is_not_a_route() {
+        // The path isn't statically known — never a guess at its value.
+        let file = parse(
+            "app = Flask(__name__)\n@app.route(f\"/users/{user_id}\")\ndef handler(user_id):\n    pass\n",
+        );
+        assert!(
+            !file.symbols.iter().any(|s| s.kind == SymbolKind::Route),
+            "{file:?}"
+        );
+    }
+
+    #[test]
+    fn an_fstring_route_path_with_no_actual_interpolation_still_works() {
+        let file =
+            parse("app = Flask(__name__)\n@app.route(f\"/static\")\ndef handler():\n    pass\n");
+        let route = file
+            .symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::Route)
+            .expect("a route symbol must be indexed");
+        assert_eq!(route.symbol, "route:ANY /static", "{file:?}");
     }
 }

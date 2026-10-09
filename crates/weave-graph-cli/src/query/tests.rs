@@ -134,6 +134,55 @@ fn mask_is_applied_to_fetched_nodes() {
     assert!(run(&storage, "callers(b)", mask).unwrap().contains("a ("));
 }
 
+/// `run_masked`'s own `"path"` arm — a different branch from the unmasked
+/// `path_finds_the_shortest_chain` above, and from the masked `impact`
+/// case `filters_apply_under_an_rbac_mask_too` already covers below.
+#[test]
+fn masked_path_resolves_through_the_rbac_masked_node_list() {
+    let storage = chain_storage();
+    let passthrough = |n: &Node| n.clone();
+    let mask: Option<&dyn Fn(&Node) -> Node> = Some(&passthrough);
+    let result = run(&storage, "path(caller,c)", mask).unwrap();
+    assert_eq!(result, "caller → a → b → c");
+}
+
+/// `run_masked`'s own `"latency"` arm, under whichever feature set this
+/// build compiled — mirrors `latency_behaves_per_compiled_feature_set`
+/// above but through the masked path, never exercised there.
+#[test]
+fn masked_latency_behaves_per_compiled_feature_set() {
+    let storage = chain_storage();
+    let passthrough = |n: &Node| n.clone();
+    let mask: Option<&dyn Fn(&Node) -> Node> = Some(&passthrough);
+    match run(&storage, "latency(b)", mask) {
+        Ok(text) => assert!(text.contains("no trace spans matched to symbol b")),
+        Err(msg) => assert!(msg.contains("otel")),
+    }
+}
+
+/// `run_masked`'s own `"other"` arm — the unmasked
+/// `unknown_function_is_a_clear_error` above never takes the masked path.
+#[test]
+fn masked_unknown_function_is_a_clear_error() {
+    let storage = chain_storage();
+    let passthrough = |n: &Node| n.clone();
+    let mask: Option<&dyn Fn(&Node) -> Node> = Some(&passthrough);
+    let err = run(&storage, "bogus(a)", mask).unwrap_err();
+    assert!(err.contains("unknown query function"));
+}
+
+/// `parse_call`'s empty-parens shape (`f()`) — distinct from every other
+/// test here, which always supplies at least one argument.
+#[test]
+fn zero_argument_call_shape_parses_and_then_fails_on_argument_count() {
+    let storage = chain_storage();
+    let err = run(&storage, "callers()", None).unwrap_err();
+    assert!(
+        err.contains("expected exactly one argument, got 0"),
+        "{err}"
+    );
+}
+
 #[test]
 fn empty_result_sets_print_no_results() {
     let storage = chain_storage();
@@ -228,6 +277,21 @@ fn path_filter_narrows_impact_results() {
     assert!(result.contains("b ("), "{result}");
     assert!(!result.contains("a ("), "{result}");
     assert!(!result.contains("c ("), "{result}");
+}
+
+#[test]
+fn path_exclude_filter_drops_matching_paths_and_keeps_the_rest() {
+    let storage = chain_storage();
+    let result = run(&storage, "impact(caller) path:!b", None).unwrap();
+    assert!(!result.contains("b ("), "{result}");
+    assert!(result.contains("c ("), "{result}");
+}
+
+#[test]
+fn path_and_path_exclude_filters_compose() {
+    let storage = chain_storage();
+    let result = run(&storage, "impact(caller) path:a path:!a.rs", None).unwrap();
+    assert!(!result.contains("a ("), "{result}");
 }
 
 #[test]

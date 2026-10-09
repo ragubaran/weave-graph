@@ -6,7 +6,7 @@ use weave_graph_core::{CsrGraph, Node, NodeId, Storage};
 use weave_graph_parse::Language;
 use weave_graph_parse::contract::{short_name, visibility_rule};
 
-const USAGE: &str = "Supported forms: callers(<symbol>), callees(<symbol>), impact(<symbol>), path(<a>,<b>), latency(<symbol>), each optionally followed by space-separated path:/lang:/kind:/visibility:/edge: filters";
+const USAGE: &str = "Supported forms: callers(<symbol>), callees(<symbol>), impact(<symbol>), path(<a>,<b>), latency(<symbol>), each optionally followed by space-separated path:/lang:/kind:/visibility:/edge: filters (path:!<prefix> excludes instead of requiring)";
 
 fn parse_call(expr: &str) -> Option<(&str, Vec<&str>)> {
     let open = expr.find('(')?;
@@ -34,6 +34,9 @@ fn parse_call(expr: &str) -> Option<(&str, Vec<&str>)> {
 #[derive(Default)]
 struct QueryFilters<'a> {
     path: Option<&'a str>,
+    /// `path:!<prefix>` — excludes nodes whose path starts with `<prefix>`,
+    /// composable with `path:` (both may narrow the same query at once).
+    path_exclude: Option<&'a str>,
     lang: Option<&'a str>,
     kind: Option<&'a str>,
     visibility: Option<&'a str>,
@@ -55,7 +58,10 @@ impl<'a> QueryFilters<'a> {
                 ));
             };
             match key {
-                "path" => filters.path = Some(value),
+                "path" => match value.strip_prefix('!') {
+                    Some(prefix) => filters.path_exclude = Some(prefix),
+                    None => filters.path = Some(value),
+                },
                 "lang" => filters.lang = Some(value),
                 "kind" => filters.kind = Some(value),
                 "visibility" => {
@@ -92,6 +98,7 @@ impl<'a> QueryFilters<'a> {
 
     fn is_empty(&self) -> bool {
         self.path.is_none()
+            && self.path_exclude.is_none()
             && self.lang.is_none()
             && self.kind.is_none()
             && self.visibility.is_none()
@@ -103,6 +110,9 @@ impl<'a> QueryFilters<'a> {
     /// one caller (`callers_text`) that has real per-edge kind data.
     fn matches_node(&self, n: &Node) -> bool {
         if self.path.is_some_and(|p| !n.path.starts_with(p)) {
+            return false;
+        }
+        if self.path_exclude.is_some_and(|p| n.path.starts_with(p)) {
             return false;
         }
         if self.kind.is_some_and(|k| n.kind != k) {

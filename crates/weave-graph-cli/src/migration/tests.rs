@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::cmd_plan_migration;
+use super::{cmd_plan_migration, render_plan, split_moniker};
 use crate::index::full_reindex;
 
 struct RepoFixture {
@@ -48,6 +48,43 @@ impl RepoFixture {
         )
         .unwrap();
     }
+}
+
+#[test]
+fn split_moniker_handles_a_missing_separator() {
+    assert_eq!(
+        split_moniker("path/to/file.rs#the_symbol"),
+        ("path/to/file.rs", "the_symbol")
+    );
+    assert_eq!(
+        split_moniker("bare_symbol_no_hash"),
+        ("", "bare_symbol_no_hash")
+    );
+}
+
+/// `render_plan`'s own defensive branch: an order step naming a label
+/// that isn't in `affected` at all (shouldn't happen via `cmd_plan_migration`
+/// itself, but `render_plan` is tested here directly as a pure function).
+#[test]
+fn render_plan_reports_missing_caller_inventory_for_an_unlisted_label() {
+    let affected = Vec::new();
+    let order = vec!["ghost-repo".to_string()];
+    let plan = render_plan("provider", "deprecated_fn", &affected, &order);
+    assert!(plan.contains("Caller inventory was unavailable"), "{plan}");
+}
+
+/// Two configured repo roots that are actually the same repo (`linked_repos`
+/// pointing back at itself) resolve to the same label — federation needs
+/// distinguishable repos, so this must be a clear error, not a confusing
+/// internal failure further down the survey.
+#[test]
+fn cmd_plan_migration_rejects_two_repos_resolving_to_the_same_label() {
+    let repo = RepoFixture::new();
+    repo.index(&[("a.rs", "pub fn a() {}\n")]);
+    repo.link(&[&repo]);
+
+    let err = cmd_plan_migration(repo.root(), "a").unwrap_err();
+    assert!(err.to_string().contains("same label"), "{err}");
 }
 
 /// Verify fixture: three repos in a linear dependency

@@ -218,3 +218,148 @@ fn read_rbac_users_bare_array_shorthand_has_no_path_scope() {
         Some(vec![])
     );
 }
+
+#[test]
+fn read_rbac_users_returns_empty_map_on_malformed_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "not valid = = toml").unwrap();
+    assert!(read_rbac_users(&path).is_empty());
+}
+
+#[test]
+fn read_rbac_users_skips_a_scalar_user_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    // Neither the bare-array nor the table form — not a valid user record.
+    fs::write(&path, "[rbac.users]\nalice = 5\n").unwrap();
+    assert!(read_rbac_users(&path).is_empty());
+}
+
+#[cfg(feature = "federation")]
+#[test]
+fn add_linked_repo_creates_section_and_array_when_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    add_linked_repo(&path, Path::new("../peer")).unwrap();
+    assert_eq!(read_linked_repos(&path), vec![PathBuf::from("../peer")]);
+}
+
+#[cfg(feature = "federation")]
+#[test]
+fn add_linked_repo_overwrites_a_non_table_federation_section() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "federation = \"oops\"\n").unwrap();
+    add_linked_repo(&path, Path::new("../peer")).unwrap();
+    assert_eq!(read_linked_repos(&path), vec![PathBuf::from("../peer")]);
+}
+
+#[cfg(feature = "federation")]
+#[test]
+fn add_linked_repo_overwrites_a_non_array_linked_repos_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    fs::write(&path, "[federation]\nlinked_repos = \"oops\"\n").unwrap();
+    add_linked_repo(&path, Path::new("../peer")).unwrap();
+    assert_eq!(read_linked_repos(&path), vec![PathBuf::from("../peer")]);
+}
+
+#[cfg(feature = "federation")]
+#[test]
+fn add_linked_repo_is_idempotent_for_the_same_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    add_linked_repo(&path, Path::new("../peer")).unwrap();
+    add_linked_repo(&path, Path::new("../peer")).unwrap();
+    assert_eq!(read_linked_repos(&path), vec![PathBuf::from("../peer")]);
+}
+
+#[cfg(feature = "rbac")]
+#[test]
+fn read_rbac_group_mappings_parses_and_handles_absence() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    assert!(read_rbac_group_mappings(&dir.path().join("nope.toml")).is_empty());
+
+    fs::write(&path, "not valid = = toml").unwrap();
+    assert!(read_rbac_group_mappings(&path).is_empty());
+
+    fs::write(&path, "[rbac.group_mappings]\nengineering = \"internal\"\n").unwrap();
+    let mappings = read_rbac_group_mappings(&path);
+    assert_eq!(mappings.get("engineering"), Some(&"internal".to_string()));
+}
+
+#[cfg(all(feature = "rbac", feature = "github-auth"))]
+#[test]
+fn read_github_roles_parses_logins_to_role_lists_and_handles_absence() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    assert!(read_github_roles(&dir.path().join("nope.toml")).is_empty());
+
+    fs::write(&path, "not valid = = toml").unwrap();
+    assert!(read_github_roles(&path).is_empty());
+
+    fs::write(
+        &path,
+        "[rbac.github_roles]\noctocat = [\"internal\", \"reviewer\"]\n",
+    )
+    .unwrap();
+    let roles = read_github_roles(&path);
+    assert_eq!(
+        roles.get("octocat"),
+        Some(&vec!["internal".to_string(), "reviewer".to_string()])
+    );
+}
+
+#[cfg(all(feature = "rbac", feature = "github-auth"))]
+#[test]
+fn read_github_org_roles_parses_and_handles_absence() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    assert!(read_github_org_roles(&dir.path().join("nope.toml")).is_empty());
+
+    fs::write(&path, "not valid = = toml").unwrap();
+    assert!(read_github_org_roles(&path).is_empty());
+
+    fs::write(&path, "[rbac.github_org_roles]\nacme = \"internal\"\n").unwrap();
+    assert_eq!(
+        read_github_org_roles(&path).get("acme"),
+        Some(&"internal".to_string())
+    );
+}
+
+#[cfg(all(feature = "rbac", feature = "github-auth"))]
+#[test]
+fn read_github_team_roles_parses_and_handles_absence() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    assert!(read_github_team_roles(&dir.path().join("nope.toml")).is_empty());
+
+    fs::write(&path, "not valid = = toml").unwrap();
+    assert!(read_github_team_roles(&path).is_empty());
+
+    fs::write(
+        &path,
+        "[rbac.github_team_roles]\n\"acme/eng\" = \"internal\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        read_github_team_roles(&path).get("acme/eng"),
+        Some(&"internal".to_string())
+    );
+}
+
+#[cfg(any(feature = "vector", feature = "fts"))]
+#[test]
+fn read_vector_exclude_parses_and_handles_malformed_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    assert!(read_vector_exclude(&dir.path().join("nope.toml")).is_empty());
+
+    fs::write(&path, "not valid = = toml").unwrap();
+    assert!(read_vector_exclude(&path).is_empty());
+
+    fs::write(&path, "[vector]\nexclude = [\"vendor/**\"]\n").unwrap();
+    assert_eq!(read_vector_exclude(&path), vec!["vendor/**".to_string()]);
+}

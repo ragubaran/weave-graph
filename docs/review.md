@@ -341,6 +341,13 @@ From **11 October 2026**, PR review becomes the primary product track:
   advisory until their accuracy gate passes.
 - Use design-partner adoption and caught-defect evidence as the continuation
   test described below.
+- Three local-only `pr-review` additions — P11.9 static HTML output, P11.10
+  opt-in git-remote staleness check, P11.11 review-decision archive, scoped
+  from a `backnotprop/plannotator` feature-gap review — were implemented and
+  shipped 2026-10-08 on explicit instruction, ahead of the feature-freeze
+  recommendation below (validation-sprint evidence has not been gathered for
+  them any more than for the rest of Phase 11). See [`impl.md`](impl.md) §13
+  for the full implementation record and test evidence.
 
 ## Recommended decision
 

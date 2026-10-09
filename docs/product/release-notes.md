@@ -1,6 +1,22 @@
 # Release Notes
 
-## Unreleased — RBAC Hardening, Registry Auth & Provenance, Storage Trait Cleanup, New MCP Tools, Corrected Binary Sizes, Federated Query Persistence, Zero-Config MCP & Ignore Management, Local Pre-Push Gate
+## Unreleased — RBAC Hardening, Registry Auth & Provenance, Storage Trait Cleanup, New MCP Tools, Corrected Binary Sizes, Federated Query Persistence, Zero-Config MCP & Ignore Management, Local Pre-Push Gate, Extractor-Version-Aware Reindex Invalidation, TSX Parsing Fix, Query Path Exclusion
+
+### TSX Parsing Fix and `weave query` Path Exclusion
+
+Two correctness fixes found while auditing another tree-sitter-based tool's issue tracker for gap classes worth checking here (see `docs/recom_new_fea.md`):
+
+- **`.tsx` files now use the TSX grammar, not plain TypeScript's.** Previously `.tsx` was parsed with `LANGUAGE_TYPESCRIPT`, which cannot parse JSX syntax — any function whose body contained JSX became an unrecoverable parse error and silently vanished from the symbol table entirely, not just missing an edge. New `Language::Tsx` variant routes `.tsx` to `LANGUAGE_TSX` (same `tree-sitter-typescript` dependency, no new crate), sharing the existing TypeScript/JavaScript extractor. JSX component-usage reference edges (`<Foo />` → `Foo`) still aren't extracted — this fix closes the data-loss bug, not the separate, narrower missing-edge gap.
+- **`weave query`'s `path:` filter now supports exclusion**: `path:!<prefix>` drops nodes whose path starts with `<prefix>`, composable with a positive `path:` in the same call (`impact(foo) path:src path:!tests`). Previously there was no way to exclude anything from any search/query surface in `weave-graph`.
+
+### Extractor-Version-Aware Reindex Invalidation
+
+New base-tier correctness check, no Cargo feature required:
+
+- `weave index` now stamps `.weave/extractor_version` after every successful run. If it doesn't match the running binary's parsing/extraction logic version (`EXTRACTOR_VERSION`, `weave-graph-core`), the next run forces a full rebuild — bypassing both the "already up to date" fast path and `--incremental` — instead of silently trusting data an older parser build produced.
+- Closes a gap the existing git-diff-based incremental reindex can't see on its own: a parser/extraction fix changes no file's content, so `git diff` alone never flags previously indexed nodes/edges as stale.
+- No SQLite schema migration, no new dependency: a plain file beside the existing `.weave/last_indexed_sha` commit-sha cache.
+- **Correction (same day)**: the version stamp alone wasn't enough — the per-commit snapshot cache (`.weave/cache/<sha>.idx`, used for fast branch switching) carried no version tag of its own, so after the stamp got re-written by reindexing one commit, a *different* commit's pre-upgrade snapshot could still be silently restored. Fixed by also clearing the whole snapshot cache on a version mismatch, not just skipping the fast path for the commit currently being indexed.
 
 ### Local Pre-Push Gate (`weave hooks install`/`uninstall`)
 

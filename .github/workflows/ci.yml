@@ -125,6 +125,64 @@ jobs:
           path: lcov.info
 
   # ---------------------------------------------------------------------------
+  # 2b. All-Feature & Per-Crate Coverage (progrss.md: the default-feature-only
+  # gate above can pass while optional feature code (rbac, hub, pr-review,
+  # vector, ...) regresses, since that code never compiles into the default
+  # build it measures). `weave-graph-python` keeps its own dedicated
+  # maturin/wheel coverage path (job below) — `--all-features` here would
+  # otherwise try to build its `extension-module` feature with a plain
+  # `cargo` invocation, which doesn't link on every host.
+  # ---------------------------------------------------------------------------
+  coverage-all-features:
+    name: All-Feature & Per-Crate Coverage (>90%)
+    runs-on: ubuntu-latest
+    needs: [lint]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: All-feature workspace coverage gate (>= 90%, excludes weave-graph-python)
+        run: |
+          cargo llvm-cov --workspace \
+            --all-features \
+            --all-targets \
+            --exclude weave-graph-python \
+            --fail-under-lines 90 \
+            --lcov \
+            --output-path lcov-all-features.info
+
+      - name: Upload All-Feature Coverage Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-coverage-report-all-features
+          path: lcov-all-features.info
+
+      # The workspace-wide gate above only asserts the *aggregate* stays
+      # above 90% — one well-covered crate can hide another that's
+      # regressed. This loop gates each crate individually, same threshold.
+      - name: Per-crate coverage gate (>= 90% each, excludes weave-graph-python)
+        run: |
+          set -e
+          for crate in $(cargo metadata --no-deps --format-version 1 \
+              | jq -r '.packages[].name' \
+              | grep -v '^weave-graph-python$'); do
+            echo "::group::$crate"
+            cargo llvm-cov -p "$crate" --all-features --fail-under-lines 90
+            echo "::endgroup::"
+          done
+
+  # ---------------------------------------------------------------------------
   # 3. Integration, E2E & BDD CLI Tests
   # ---------------------------------------------------------------------------
   e2e-bdd:

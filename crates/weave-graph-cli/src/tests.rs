@@ -200,6 +200,26 @@ fn try_fast_path_returns_false_when_neither_shortcut_applies() {
 }
 
 #[test]
+fn extractor_version_matches_is_false_when_never_written() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(!extractor_version_matches(dir.path()));
+}
+
+#[test]
+fn extractor_version_matches_is_true_after_writing_the_current_version() {
+    let dir = tempfile::tempdir().unwrap();
+    cache::write_extractor_version(dir.path(), EXTRACTOR_VERSION).unwrap();
+    assert!(extractor_version_matches(dir.path()));
+}
+
+#[test]
+fn extractor_version_matches_is_false_for_a_stale_stored_version() {
+    let dir = tempfile::tempdir().unwrap();
+    cache::write_extractor_version(dir.path(), EXTRACTOR_VERSION + 1).unwrap();
+    assert!(!extractor_version_matches(dir.path()));
+}
+
+#[test]
 fn should_skip_dir_excludes_known_noise_directories() {
     assert!(should_skip_dir(".git"));
     assert!(should_skip_dir("node_modules"));

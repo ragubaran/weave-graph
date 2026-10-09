@@ -572,3 +572,50 @@ fn incremental_reindex_updates_body_text_for_a_changed_node() {
         1
     );
 }
+
+/// Closes the exact gap `docs/issues.md`/the progress audit flagged: the
+/// `framework-routes` pilot existed in `weave-graph-parse` but no shipped
+/// CLI profile could reach it. This forwards the feature as a standalone
+/// opt-in (never `team`/`custom`/`default`) and proves `weave index` itself
+/// — not just the parse crate's own unit tests — produces a route node.
+#[cfg(feature = "framework-routes")]
+#[test]
+fn framework_routes_feature_forwarding_reaches_weave_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let weave_dir = dir.path().join(".weave");
+    fs::create_dir_all(&weave_dir).unwrap();
+    let active_db = weave_dir.join("graph.db");
+    let source = dir.path().join("app.py");
+    fs::write(
+        &source,
+        "app = Flask(__name__)\n@app.route(\"/ping\")\ndef ping():\n    pass\n",
+    )
+    .unwrap();
+
+    full_reindex(dir.path(), &weave_dir, &active_db, &[source]).unwrap();
+
+    let storage = SqliteStorage::open(&active_db).unwrap();
+    let nodes = storage.all_nodes().unwrap();
+    assert!(
+        nodes.iter().any(|n| n.kind == "route"),
+        "expected a route-kind node once framework-routes is forwarded into the CLI: {nodes:?}"
+    );
+}
+
+#[cfg(any(feature = "vector", feature = "fts"))]
+#[test]
+fn path_is_excluded_matches_exact_and_directory_prefixes_only() {
+    // An empty prefix is treated as "exclude everything" — a defensive
+    // reading of a misconfigured (blank) entry, not a silent no-op.
+    assert!(path_is_excluded("src/lib.rs", ""));
+    assert!(path_is_excluded("vendor", "vendor"), "exact match");
+    assert!(
+        path_is_excluded("vendor/lib.rs", "vendor"),
+        "directory prefix"
+    );
+    assert!(
+        !path_is_excluded("vendor_extra/lib.rs", "vendor"),
+        "a sibling directory sharing the prefix string must not match"
+    );
+    assert!(!path_is_excluded("src/lib.rs", "vendor"));
+}

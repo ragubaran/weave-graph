@@ -66,7 +66,7 @@ echo "--- 3. 500k symbol indexing peak RSS in SQLite (< 80 MiB) ---"
 # form is required under `set -e`: a bare command followed by `$?` never
 # reaches the `$?` line, since `set -e` aborts the script immediately on
 # that command's own non-zero exit (verified live).
-if cargo run --release -q -p weave-graph-store-sqlite --example mem_500k 2>&1; then
+if cargo run --release -q -p weave-graph-store-sqlite --example sqlite_mem_500k 2>&1; then
     pass "SQLite 500k indexing within 80 MiB envelope"
 else
     fail "SQLite 500k indexing exceeded 80 MiB envelope"

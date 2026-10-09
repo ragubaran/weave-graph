@@ -115,6 +115,8 @@ There is no dedicated toggle for this — the only two ways past the refusal are
 
 `weave index --incremental` re-parses only modified files. When large refactorings or upstream branch merges occur, executing thousands of localized deletes and re-inserts is slower than a clean rebuild — `weave-graph-core`'s `ReindexConfig` bails out to a full rebuild above a 10% modified-file ratio (never below 100 modified files regardless of ratio). **These thresholds are compiled-in defaults, not `.weave/config.toml` keys** — there is no `[index]` section; `weave config set index.bailout_ratio ...` would write a value nothing reads back. If you need this tunable, that's a real gap to file, not a documented feature today.
 
+A separate, unconditional check runs before any of the above: `weave index` stamps `.weave/extractor_version` after every successful run, and forces a full rebuild — bypassing both the "already up to date" fast path and `--incremental` — whenever that stamp doesn't match the running binary's own parsing/extraction logic version. Git-diff-based change detection only sees changed file content; it can't see a `weave` upgrade that changed how files are parsed. There's no config key for this either — it's a correctness check, not a tunable.
+
 ---
 
 ## 4. Multi-Repo Federation (`[federation]`)

@@ -28,6 +28,7 @@ and semantic-quality targets remain subject to the gates in the internal audit.
 | [`pr-review`](#pr-review) | Custom only | **Default** in `weave-custom` | `--features pr-review` | Consolidated, risk-scored PR review artifact (`weave pr-review`) with severity/waive/fail-on — approved and fully built; see [`docs/proposal-pr.md`](../proposal-pr.md) |
 | [`python`](#python) | Separate artifact | N/A — its own build | `--features python` | PyO3 Python bindings wheel (`weave-graph-python`) for offline graph analytics |
 | [`turso`](#turso) | Not a `weave-graph-cli` feature at all | N/A | Library crate only, no `--features` flag exists for it | Embedded libSQL `Storage` implementation; not available through `weave` commands |
+| [`framework-routes`](#framework-routes) | Neither — standalone | **Optional** on both; not in any prebuilt binary | `--features framework-routes` | Route/handler detection across Flask, Spring Boot, Axum, and Gin (`weave index`) — a scoped pilot, not a general framework-adapter product surface |
 
 ### Feature Profiles (Cargo Bundles)
 
@@ -161,16 +162,20 @@ blast`'s existing JSON shape — a documented, stable contract for an
 external LLM reviewer or a CI annotation step to consume. Verified
 feature-isolated (`scripts/feature_isolation.sh pr-review`).
 
-**Approved and fully built** (`docs/proposal-pr.md`, `impl.md` §13 Phase
-11): all six milestones (P11.1–P11.6) are real and tested. Per-finding
-`blocker`/`warning`/`info` severity maps to GitHub's own Checks API
-annotation levels; `--waive <finding-id> --reason <text>` (repeatable)
-reuses this codebase's existing waiver shape (`weave blast --skip`,
-`check-contracts --allow-drift`, `policy lint --waive`), requiring the
-`"allow-drift"` RBAC role only when waiving a `blocker`-severity finding;
-`--fail-on` (default `blocker`) controls the command's exit code.
-Configuration lives in CLI flags and the CI pipeline, never
-`.weave/config.toml`, by design.
+**Approved and fully built** (`docs/proposal-pr.md`, `docs/proposal_pr_but.md`,
+`impl.md` §13 Phase 11): all eleven milestones (P11.1–P11.11) are real and
+tested, including stacked-branch (`--stack-base`) and multi-lane (`--lane`)
+scoring, a static-HTML output (`--format html`, no server/network), an
+opt-in remote-staleness check (`--check-remote`, one scoped `git fetch`),
+and a queryable run history (`--history [<n>]`, `.weave/graph.db`'s
+`pr_review_runs` table). Per-finding `blocker`/`warning`/`info` severity maps
+to GitHub's own Checks API annotation levels; `--waive <finding-id> --reason
+<text>` (repeatable) reuses this codebase's existing waiver shape (`weave
+blast --skip`, `check-contracts --allow-drift`, `policy lint --waive`),
+requiring the `"allow-drift"` RBAC role only when waiving a
+`blocker`-severity finding; `--fail-on` (default `blocker`) controls the
+command's exit code. Configuration lives in CLI flags and the CI pipeline,
+never `.weave/config.toml`, by design.
 
 ## `weave hooks install`/`uninstall` (no feature flag — base CLI)
 
@@ -196,7 +201,8 @@ path-traversal refused.
 Centralized snapshot registry and client sync: `weave sync pull` hydrates the
 graph for a commit (falling back to the hub's `latest` snapshot on request),
 and `weave sync push` publishes the current snapshot (refuses off the default branch,
-retries once on a `409` conflict). Includes both the zero-dependency HTTP client
+retries up to 3 times with backoff on a `409` conflict — `MAX_CONFLICT_RETRIES`,
+`crates/weave-graph-cli/src/sync.rs`). Includes both the zero-dependency HTTP client
 and the lightweight `weave-registry` standalone server daemon.
 
 - **Fast CI Hydration**: Replaces cold 29-language source tree indexing with a snapshot download and atomic database swap — no re-parse of the whole tree.
@@ -273,6 +279,51 @@ migrations, same transaction discipline) — real, tested code
   and distribution design (separate binary or build-matrix change), plus
   compatibility, performance, and recovery
   tests. It is not a supported runtime configuration today.
+
+## `framework-routes`
+
+A route/handler detection pilot across four frameworks — Flask (Python),
+Spring Boot (Java), Axum (Rust), and Gin (Go) — forwarded into the CLI as
+a standalone opt-in feature, deliberately not in `team`, `custom`, or
+`default` (`impl.md` P10.8: a scoped pilot, not a general product surface
+yet). All four emit the same `route`-kind symbol plus a structural edge
+from the route to its handler, reusing the existing generic
+structural-edge resolution path — no new traversal, and the decorated/
+wrapped handler is still indexed and its own calls still collected, in
+every framework.
+
+- **Flask** (`@app.route("/path")`/`@app.get/post/put/delete/patch("/path")`):
+  only tagged when the decorator's receiver was itself assigned from
+  `Flask(...)`/`Blueprint(...)` (module scope) — an arbitrary `@x.get(...)`
+  on an unrelated object is never mistaken for a route. Route paths are
+  read via tree-sitter's own `string_content` nodes, not a raw-text
+  quote-trim, so `r"..."`/`f"..."`/`b"..."`-prefixed literals resolve
+  correctly; an f-string with real `{interpolation}` is correctly left
+  undetected rather than guessed at.
+- **Spring Boot** (`@GetMapping`/`@PostMapping`/`@PutMapping`/
+  `@DeleteMapping`/`@PatchMapping`, and `@RequestMapping` with or without
+  an explicit `method = RequestMethod.X`): only tagged inside a class
+  itself annotated `@RestController`/`@Controller`. **Known gap**: a
+  class-level `@RequestMapping` base path isn't composed with the
+  method-level path, so the recorded route can be missing a real prefix
+  (e.g. recording `/users` when the reachable path is `/api/v1/users`).
+- **Axum** (`.route("/path", get(handler))` builder calls, any of
+  `get`/`post`/`put`/`delete`/`patch`): only tagged when the receiver
+  chain traces back to a literal `Router::new()`/`<crate>::Router::new()`
+  call. **Known gaps**: a `let`-bound router reused across separate
+  statements isn't traced, and only the first hop of a composed call like
+  `get(h1).post(h2)` as the second argument is detected.
+- **Gin** (`r.GET("/path", handler)`, any of `GET`/`POST`/`PUT`/`DELETE`/
+  `PATCH`): only tagged when the receiver was itself short-var-declared
+  from `gin.Default()`/`gin.New()`. **Known gaps**: `r.Group(...)`
+  sub-routers aren't traced, and only the first hop of a chained
+  statement like `r.GET(...).POST(...)` is detected.
+- **Enabling it**: `cargo build --features framework-routes` (or add it to
+  a custom feature list). Not available in either prebuilt `weave`/
+  `weave-custom` binary — build from source to use it.
+- **Scope**: these four frameworks/languages only, one call/decorator
+  shape each. Every "known gap" above degrades to a missing route, never
+  a wrong one — none of them guess at a value they can't statically read.
 
 ## `python`
 

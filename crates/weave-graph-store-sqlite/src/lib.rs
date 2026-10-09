@@ -13,7 +13,7 @@ mod schema;
 #[cfg(feature = "vector")]
 mod vector;
 
-pub use backend::SqliteStorage;
+pub use backend::{PrReviewRunRecord, SqliteStorage};
 #[cfg(feature = "provenance")]
 pub use doc_provenance::DocLinkProvenance;
 pub use ext::{SqliteExt, SqliteStorageBuilder};

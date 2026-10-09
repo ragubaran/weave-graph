@@ -117,7 +117,7 @@ fn rotate_staged_write(
         return Ok(());
     }
     storage.commit_bulk_write()?;
-    storage.checkpoint_wal()?;
+    storage.checkpoint_wal_if_needed()?;
     storage.begin_bulk_write()?;
     *pending_rows = 0;
     Ok(())

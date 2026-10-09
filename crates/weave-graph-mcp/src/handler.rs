@@ -672,7 +672,7 @@ impl McpHandler {
     fn call_repo_map(
         &self,
         args: &Value,
-        #[allow(unused_variables)] guard: GuardRef,
+        #[cfg_attr(not(feature = "rbac"), expect(unused_variables))] guard: GuardRef,
     ) -> CallToolResult {
         let max_files = args
             .get("max_files")
@@ -712,7 +712,7 @@ impl McpHandler {
     fn call_explore(
         &self,
         args: &Value,
-        #[allow(unused_variables)] guard: GuardRef,
+        #[cfg_attr(not(feature = "rbac"), expect(unused_variables))] guard: GuardRef,
     ) -> CallToolResult {
         let symbol = args.get("symbol").and_then(|v| v.as_str());
         let max_tokens = args
@@ -744,7 +744,7 @@ impl McpHandler {
     fn call_find_all(
         &self,
         args: &Value,
-        #[allow(unused_variables)] guard: GuardRef,
+        #[cfg_attr(not(feature = "rbac"), expect(unused_variables))] guard: GuardRef,
     ) -> CallToolResult {
         let Some(pattern) = args.get("pattern").and_then(|v| v.as_str()) else {
             return CallToolResult::err("Missing 'pattern' parameter");
@@ -786,7 +786,7 @@ impl McpHandler {
     fn call_file_api(
         &self,
         args: &Value,
-        #[allow(unused_variables)] guard: GuardRef,
+        #[cfg_attr(not(feature = "rbac"), expect(unused_variables))] guard: GuardRef,
     ) -> CallToolResult {
         let paths_vec: Vec<&str> = match args.get("paths").and_then(|v| v.as_array()) {
             Some(arr) => arr.iter().filter_map(|v| v.as_str()).collect(),
@@ -817,7 +817,7 @@ impl McpHandler {
     fn call_trace_calls(
         &self,
         args: &Value,
-        #[allow(unused_variables)] guard: GuardRef,
+        #[cfg_attr(not(feature = "rbac"), expect(unused_variables))] guard: GuardRef,
     ) -> CallToolResult {
         let symbol = match args.get("symbol").and_then(|v| v.as_str()) {
             Some(s) => s,
@@ -860,7 +860,7 @@ impl McpHandler {
     fn call_impact_radius(
         &self,
         args: &Value,
-        #[allow(unused_variables)] guard: GuardRef,
+        #[cfg_attr(not(feature = "rbac"), expect(unused_variables))] guard: GuardRef,
     ) -> CallToolResult {
         let symbol = match args.get("symbol").and_then(|v| v.as_str()) {
             Some(s) => s,
@@ -915,7 +915,7 @@ impl McpHandler {
     fn call_search_semantic(
         &self,
         args: &Value,
-        #[allow(unused_variables)] guard: GuardRef,
+        #[cfg_attr(not(feature = "rbac"), expect(unused_variables))] guard: GuardRef,
     ) -> CallToolResult {
         let Some(query) = args.get("query").and_then(|v| v.as_str()) else {
             return CallToolResult::err("Missing 'query' parameter");
@@ -958,7 +958,10 @@ impl McpHandler {
     }
 
     #[cfg(feature = "policy-lint")]
-    fn call_policy_lint(&self, #[allow(unused_variables)] guard: GuardRef) -> CallToolResult {
+    fn call_policy_lint(
+        &self,
+        #[cfg_attr(not(feature = "rbac"), expect(unused_variables))] guard: GuardRef,
+    ) -> CallToolResult {
         let storage = self.storage.borrow();
         let (nodes, edges) = match (storage.all_nodes(), storage.all_edges()) {
             (Ok(n), Ok(e)) => (n, e),

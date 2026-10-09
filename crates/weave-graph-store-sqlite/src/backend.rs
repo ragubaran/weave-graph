@@ -26,6 +26,21 @@ fn backend_err(e: rusqlite::Error) -> StorageError {
     StorageError::Backend(e.to_string())
 }
 
+/// One past `weave pr-review` run, as recorded by `record_pr_review_run`
+/// and read back by `list_pr_review_runs`. `findings_json`/`waived_ids_json`
+/// are opaque JSON text — the caller decodes them, this crate doesn't know
+/// their shape.
+#[derive(Debug, Clone)]
+pub struct PrReviewRunRecord {
+    pub base: String,
+    pub head: String,
+    pub risk: String,
+    pub findings_json: String,
+    pub waived_ids_json: String,
+    pub reason: Option<String>,
+    pub created_at: i64,
+}
+
 impl SqliteStorage {
     /// Opens (creating if absent) the database at `path` and migrates it
     /// to the latest schema. WAL mode lets a reader hold the file open
@@ -465,8 +480,10 @@ impl SqliteStorage {
             .map_err(backend_err)
     }
 
-    /// Growth-aware checkpoint valve, not yet wired into the bulk-write
-    /// path: a non-blocking `PASSIVE` checkpoint on every call, escalating
+    /// Growth-aware checkpoint valve, wired into `weave-graph-cli`'s
+    /// periodic `rotate_staged_write` rotations (not the final pre-rename
+    /// flush, which keeps the unconditional blocking `checkpoint_wal`):
+    /// a non-blocking `PASSIVE` checkpoint on every call, escalating
     /// to a blocking `TRUNCATE` only if `PASSIVE` is falling behind by more
     /// than [`WAL_HARD_CHECKPOINT_FRAMES`] frames — `PASSIVE` never blocks,
     /// so a sustained bulk write can outpace it; this is the pressure-relief
@@ -556,6 +573,113 @@ impl SqliteStorage {
                 "this storage backend does not support symbol search".to_string(),
             ))
         }
+    }
+
+    /// Bounded, case-insensitive literal-substring scan over `symbol`/
+    /// `signature`/`path`, pushed into SQLite rather than materializing
+    /// every node into process memory — `weave search`'s FTS-miss fallback
+    /// calls this instead of `all_nodes()` (Core Invariant 4: a no-hit query
+    /// must not be the worst-case memory path). Same adaptive-oversample
+    /// loop as `search_symbol_nodes`, bounded by `candidate_limit`, never
+    /// the whole table.
+    pub fn search_nodes_literal(
+        &self,
+        query_lower: &str,
+        limit: usize,
+        visible: Option<&dyn Fn(&Node) -> bool>,
+    ) -> Result<Vec<Node>, StorageError> {
+        let escaped = query_lower
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("%{escaped}%");
+        let mut factor = 4usize;
+        loop {
+            let candidate_limit = limit.saturating_mul(factor).max(limit);
+            let mut stmt = self
+                .conn
+                .prepare(
+                    "SELECT id, repo_id, path, symbol, kind, line_start, line_end, signature
+                     FROM nodes
+                     WHERE lower(symbol) LIKE ?1 ESCAPE '\\'
+                        OR lower(signature) LIKE ?1 ESCAPE '\\'
+                        OR lower(path) LIKE ?1 ESCAPE '\\'
+                     ORDER BY id
+                     LIMIT ?2",
+                )
+                .map_err(backend_err)?;
+            let rows = stmt
+                .query_map(params![pattern, candidate_limit as i64], row_to_node)
+                .map_err(backend_err)?;
+            let mut nodes = rows
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(backend_err)?;
+            let raw_count = nodes.len();
+            if let Some(visible) = visible {
+                nodes.retain(visible);
+            }
+            let exhausted = raw_count < candidate_limit;
+            if nodes.len() >= limit || exhausted || factor >= 256 {
+                nodes.truncate(limit);
+                return Ok(nodes);
+            }
+            factor = factor.saturating_mul(4);
+        }
+    }
+
+    /// Persists one `weave pr-review` run (`pr_review_runs`, unconditional
+    /// table — V12). History only: never consulted by scoring itself, so a
+    /// write failure here must not fail the review it's recording.
+    /// Findings/waived ids are stored as opaque JSON text, not normalized
+    /// rows — this is a read-mostly audit log, not a queried index.
+    pub fn record_pr_review_run(
+        &self,
+        base: &str,
+        head: &str,
+        risk: &str,
+        findings_json: &str,
+        waived_ids_json: &str,
+        reason: Option<&str>,
+    ) -> Result<(), StorageError> {
+        self.conn
+            .execute(
+                "INSERT INTO pr_review_runs
+                    (base, head, risk, findings_json, waived_ids_json, reason, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%s', 'now'))",
+                params![base, head, risk, findings_json, waived_ids_json, reason],
+            )
+            .map_err(backend_err)?;
+        Ok(())
+    }
+
+    /// Past `weave pr-review` runs, newest first, bounded by `limit` —
+    /// read-only, never touched by scoring.
+    pub fn list_pr_review_runs(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<PrReviewRunRecord>, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT base, head, risk, findings_json, waived_ids_json, reason, created_at
+                 FROM pr_review_runs ORDER BY created_at DESC, id DESC LIMIT ?1",
+            )
+            .map_err(backend_err)?;
+        let rows = stmt
+            .query_map(params![limit as i64], |row| {
+                Ok(PrReviewRunRecord {
+                    base: row.get(0)?,
+                    head: row.get(1)?,
+                    risk: row.get(2)?,
+                    findings_json: row.get(3)?,
+                    waived_ids_json: row.get(4)?,
+                    reason: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            })
+            .map_err(backend_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(backend_err)
     }
 
     /// Rebuilds the `vec_chunks` semantic index

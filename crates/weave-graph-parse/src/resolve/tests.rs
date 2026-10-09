@@ -286,6 +286,32 @@ fn same_file_match_is_tagged_same_file_exact_with_its_own_language() {
 }
 
 #[test]
+fn c_same_file_call_is_tagged_same_file_exact_with_its_own_language() {
+    let a = parse(
+        Language::C,
+        "a.c",
+        "int helper(void) { return 0; }\nint caller(void) { return helper(); }\n",
+    );
+    let b = parse(Language::C, "b.c", "int helper(void) { return 1; }\n");
+    let mut index = ProjectIndex::new();
+    index.add_file(&a);
+    index.add_file(&b);
+
+    let edges = index.resolve(&a);
+    let call = edges
+        .0
+        .iter()
+        .find(|e| e.kind == "CALLS_EXACT")
+        .expect("same-file helper must resolve");
+    assert_eq!(call.resolution_kind, ResolutionKind::SameFileExact);
+    assert_eq!(
+        call.extractor.as_deref(),
+        Some("c"),
+        "C calls must flow through the same resolver as every other language"
+    );
+}
+
+#[test]
 fn dynamic_fan_out_is_tagged_ambiguous_heuristic() {
     let src = "struct A; impl A { fn run(&self) { self.step(); } fn step(&self) {} }\nstruct B; impl B { fn step(&self) {} }\n";
     let a = parse(Language::Rust, "a.rs", src);
@@ -349,6 +375,36 @@ fn a_structural_edge_with_multiple_candidates_is_tagged_ambiguous_heuristic() {
         inherits
             .iter()
             .all(|e| e.resolution_kind == ResolutionKind::AmbiguousHeuristic)
+    );
+}
+
+#[test]
+fn external_package_import_call_wrongly_resolves_to_an_unrelated_local_function_of_the_same_name() {
+    // No extractor records which names an import brought in (only the
+    // module path, as an IMPORTS edge), so a call through an externally
+    // imported name is indistinguishable from an unrelated same-named local
+    // symbol and wrongly resolves to it with full confidence.
+    let a = parse(
+        Language::TypeScript,
+        "a.ts",
+        "import { helper } from 'external-pkg';\nfunction run() { helper(); }\n",
+    );
+    let b = parse(Language::TypeScript, "b.ts", "function helper() {}\n");
+    let mut index = ProjectIndex::new();
+    index.add_file(&a);
+    index.add_file(&b);
+
+    assert_eq!(
+        index.resolve(&a).0,
+        vec![ResolvedEdge {
+            source_moniker: "a.ts#run".into(),
+            target_moniker: "b.ts#helper".into(),
+            kind: "CALLS_EXACT".into(),
+            resolution_kind: ResolutionKind::UniqueGlobalExact,
+            extractor: Some("typescript".into()),
+        }],
+        "BUG: a call to a name imported from an external package must not \
+         resolve to an unrelated local function of the same name"
     );
 }
 

@@ -164,6 +164,25 @@ pub(crate) fn closest_ancestor_branch(root: &Path, exclude: &str) -> Option<Stri
     best.map(|(name, _)| name)
 }
 
+/// `weave pr-review --check-remote`'s own plumbing: fetches just
+/// `ref_name` from `remote` (not the whole repo, not any other branch)
+/// into `FETCH_HEAD`, then counts commits reachable from the remote tip
+/// but not from the local `ref_name` — how far behind the remote the local
+/// ref is. Nothing about this branch's own diff crosses the wire; only the
+/// named ref's new commits arrive, exactly as an ordinary `git fetch`
+/// would. `None` on any failure (no such remote, offline, unknown ref) —
+/// a soft skip, not an error: `--check-remote` is a convenience, not a
+/// release gate.
+#[cfg(feature = "pr-review")]
+pub(crate) fn commits_behind_remote(root: &Path, remote: &str, ref_name: &str) -> Option<usize> {
+    run(root, &["fetch", "--quiet", remote, ref_name])?;
+    let out = run(
+        root,
+        &["rev-list", "--count", &format!("{ref_name}..FETCH_HEAD")],
+    )?;
+    out.trim().parse().ok()
+}
+
 /// One registered Git submodule, discovered from `.gitmodules`. Gated on
 /// `federation` — its only consumer is `weave check-contracts --submodules`;
 /// keeping it out of the default build matches Core Invariant 8.

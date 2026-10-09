@@ -400,6 +400,36 @@ fn directory_parsing_is_tolerant_of_malformed_content() {
 }
 
 #[test]
+fn directory_parsing_skips_a_scalar_user_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("d.toml");
+    // Neither the bare-array nor the table form — not a valid user record.
+    fs::write(&path, "[users]\njane = 5\n").unwrap();
+    assert!(load_directory(&path).is_empty());
+}
+
+#[test]
+fn save_directory_round_trips_a_token_bearing_user_through_the_table_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("d.toml");
+    let mut users = HashMap::new();
+    users.insert(
+        "svc_account".to_string(),
+        UserConfig {
+            roles: vec!["internal".to_string()],
+            token: Some("sec-123".to_string()),
+            path_scope: Vec::new(),
+        },
+    );
+    super::save_directory(&path, &users).unwrap();
+
+    let reloaded = load_directory(&path);
+    let user = reloaded.get("svc_account").unwrap();
+    assert_eq!(user.roles, vec!["internal".to_string()]);
+    assert_eq!(user.token.as_deref(), Some("sec-123"));
+}
+
+#[test]
 fn scim_rejects_an_empty_username_and_unsupported_methods() {
     let (dir, mut directory) = provisioned_root();
     let r = ScimServer::handle_request(&mut directory, "POST", "/Users", r#"{"userName":""}"#);
@@ -553,6 +583,75 @@ fn github_identity_lookup_sends_bearer_and_parses_api_response() {
     );
 }
 
+#[cfg(feature = "github-auth")]
+#[test]
+fn github_identity_from_endpoint_rejects_an_empty_token() {
+    // Short-circuits before any network call — the endpoint is never dialed.
+    assert!(super::github_identity_from_endpoint("http://127.0.0.1:1/user", "   ").is_none());
+}
+
+#[cfg(feature = "github-auth")]
+#[test]
+fn github_identity_from_endpoint_retries_once_before_giving_up() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener); // Nothing listens now — both attempts refuse fast.
+    let endpoint = format!("http://{address}/user");
+    assert!(super::github_identity_from_endpoint(&endpoint, "test-token").is_none());
+}
+
+#[test]
+fn scim_server_delete_and_unsupported_method_render_over_real_tcp() {
+    let (dir, directory) = provisioned_root();
+    let mut server = ScimServer::bind_with_token(0, directory, None).unwrap();
+    let port = server
+        .local_addr()
+        .unwrap()
+        .parse::<std::net::SocketAddr>()
+        .unwrap()
+        .port();
+    let handle = std::thread::spawn(move || server.serve().unwrap());
+
+    fn request(port: u16, raw: &str) -> String {
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.write_all(raw.as_bytes()).unwrap();
+        let mut buf = String::new();
+        stream.read_to_string(&mut buf).unwrap();
+        buf
+    }
+
+    let carol_body = "{\"userName\":\"carol\",\"roles\":[\"internal\"]}";
+    let created = request(
+        port,
+        &format!(
+            "POST /Users HTTP/1.0\r\nContent-Length: {}\r\n\r\n{carol_body}",
+            carol_body.len()
+        ),
+    );
+    assert!(created.starts_with("HTTP/1.0 201"), "{created}");
+    request(port, "POST /sync HTTP/1.0\r\n\r\n");
+
+    // 204, empty body — write_response's no-body branch.
+    let deleted = request(port, "DELETE /Users/carol HTTP/1.0\r\n\r\n");
+    assert!(deleted.starts_with("HTTP/1.0 204 No Content"), "{deleted}");
+    assert!(deleted.ends_with("\r\n\r\n"), "{deleted:?}");
+
+    // 404 — unknown user, and 405 — a method/path shape nothing handles.
+    let not_found = request(port, "GET /Users/ghost HTTP/1.0\r\n\r\n");
+    assert!(
+        not_found.starts_with("HTTP/1.0 404 Not Found"),
+        "{not_found}"
+    );
+    let unsupported = request(port, "PATCH /Users HTTP/1.0\r\n\r\n");
+    assert!(
+        unsupported.starts_with("HTTP/1.0 405 Method Not Allowed"),
+        "{unsupported}"
+    );
+
+    drop(handle);
+    let _ = dir;
+}
+
 /// IDP-02: `[rbac.scim] token` in `.weave/config.toml` reaches
 /// `cmd_serve_scim` and is enforced on the real socket.
 #[test]
@@ -666,6 +765,32 @@ fn read_request_rejects_overlarge_bodies_and_headers() {
     );
     let mut stream = ChunkedReader {
         data: request.as_bytes(),
+        step: 8192,
+    };
+    let err = read_request(&mut stream).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+}
+
+/// Distinct from the body-side overlarge-Content-Length case above: here
+/// the header block itself never completes ("\r\n\r\n" never appears)
+/// within the 64 KiB header budget.
+#[test]
+fn read_request_rejects_headers_that_never_terminate_within_the_limit() {
+    let huge = format!("GET /Users HTTP/1.0\r\nX-Pad: {}\r\n", "a".repeat(70_000));
+    let mut stream = ChunkedReader {
+        data: huge.as_bytes(),
+        step: 8192,
+    };
+    let err = read_request(&mut stream).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn read_request_rejects_a_body_that_is_not_valid_utf8() {
+    let mut request = b"POST /Users HTTP/1.0\r\nContent-Length: 2\r\n\r\n".to_vec();
+    request.extend_from_slice(&[0xFF, 0xFE]);
+    let mut stream = ChunkedReader {
+        data: &request,
         step: 8192,
     };
     let err = read_request(&mut stream).unwrap_err();

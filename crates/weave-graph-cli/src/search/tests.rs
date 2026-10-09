@@ -142,6 +142,15 @@ fn cmd_search_runs_end_to_end_without_error() {
     cmd_search(repo.path(), "nonexistentzzz", 10, None).unwrap();
 }
 
+/// Distinct from the two calls above: FTS finds nothing for "ckJwt" but
+/// the literal-substring fallback does, so `cmd_search` must take its own
+/// "no FTS match" label branch, not just the plain hit-listing one.
+#[test]
+fn cmd_search_labels_results_found_only_through_the_fallback_scan() {
+    let repo = init_repo();
+    cmd_search(repo.path(), "ckJwt", 10, None).unwrap();
+}
+
 #[cfg(feature = "vector")]
 mod semantic {
     use super::super::{cmd_search_semantic, run_semantic};
@@ -190,6 +199,20 @@ mod semantic {
     fn cmd_search_semantic_runs_end_to_end_without_error() {
         let repo = repo_with_two_topics();
         cmd_search_semantic(repo.path(), "verify auth token expiry", 5, None).unwrap();
+    }
+
+    /// An empty index has no chunks at all for the mock embedder to score
+    /// — the one way `run_semantic` actually returns nothing, exercising
+    /// `cmd_search_semantic`'s own "no visible semantic matches" branch.
+    #[test]
+    fn cmd_search_semantic_reports_no_matches_on_an_empty_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let weave_dir = dir.path().join(".weave");
+        std::fs::create_dir_all(&weave_dir).unwrap();
+        let active_db = weave_dir.join("graph.db");
+        crate::index::full_reindex(dir.path(), &weave_dir, &active_db, &[]).unwrap();
+
+        cmd_search_semantic(dir.path(), "anything", 5, None).unwrap();
     }
 
     /// SEC-01 through the CLI layer: the best-matching chunk being masked

@@ -6,9 +6,11 @@
 use std::path::Path;
 
 #[cfg(feature = "vector")]
+use weave_graph_core::Storage;
+#[cfg(feature = "vector")]
 use weave_graph_core::ranking::reciprocal_rank_fusion;
 use weave_graph_core::synonym::expand_query;
-use weave_graph_core::{MAX_SEARCH_LIMIT, Node, Storage, StorageError};
+use weave_graph_core::{MAX_SEARCH_LIMIT, Node, StorageError};
 use weave_graph_store_sqlite::SqliteStorage;
 
 use crate::open_storage_for_read;
@@ -39,6 +41,8 @@ pub(crate) fn run(
 /// (e.g. "kenExpira" against `JwtTokenExpirationHandler`) can never
 /// `MATCH`, no matter how the query is expanded. Returns whether the
 /// fallback path produced these results, so the CLI can label them.
+/// Pushed into SQLite via `search_nodes_literal` rather than loading
+/// every node into process memory first (Core Invariant 4).
 pub(crate) fn run_with_fallback(
     storage: &SqliteStorage,
     query: &str,
@@ -50,17 +54,7 @@ pub(crate) fn run_with_fallback(
         return Ok((hits, false));
     }
     let query_lower = query.to_ascii_lowercase();
-    let mut fallback: Vec<Node> = storage
-        .all_nodes()?
-        .into_iter()
-        .filter(|n| visible.is_none_or(|v| v(n)))
-        .filter(|n| {
-            n.symbol.to_ascii_lowercase().contains(&query_lower)
-                || n.signature.to_ascii_lowercase().contains(&query_lower)
-                || n.path.to_ascii_lowercase().contains(&query_lower)
-        })
-        .collect();
-    fallback.truncate(bounded_limit(limit));
+    let fallback = storage.search_nodes_literal(&query_lower, bounded_limit(limit), visible)?;
     Ok((fallback, true))
 }
 

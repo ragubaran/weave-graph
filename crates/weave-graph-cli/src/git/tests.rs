@@ -384,3 +384,108 @@ fn closest_ancestor_branch_is_none_with_no_other_local_branches() {
 
     assert_eq!(closest_ancestor_branch(dir.path(), "solo"), None);
 }
+
+/// Three of `closest_ancestor_branch`'s own disqualifying checks in one
+/// repo: the excluded branch itself (`branch-a`, which `for-each-ref`
+/// still lists), a branch that shares HEAD's exact commit (`head-alias`),
+/// and a branch that diverged rather than descended from HEAD
+/// (`unrelated`) — only `main`, a real ancestor, must survive all three.
+#[cfg(feature = "pr-review")]
+#[test]
+fn closest_ancestor_branch_skips_the_excluded_a_head_alias_and_a_non_ancestor() {
+    let dir = init_repo();
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    checkout_branch(dir.path(), &["checkout", "-q", "-b", "main"]);
+    commit_all(dir.path(), "base");
+
+    checkout_branch(dir.path(), &["checkout", "-q", "-b", "unrelated"]);
+    fs::write(dir.path().join("u.rs"), "fn u() {}\n").unwrap();
+    commit_all(dir.path(), "unrelated work");
+
+    checkout_branch(dir.path(), &["checkout", "-q", "main"]);
+    checkout_branch(dir.path(), &["checkout", "-q", "-b", "branch-a"]);
+    fs::write(dir.path().join("b.rs"), "fn b() {}\n").unwrap();
+    commit_all(dir.path(), "branch-a work");
+    // Points at the exact same commit as HEAD (branch-a) — the
+    // `tip == head` disqualifier, not the "not an ancestor" one.
+    checkout_branch(dir.path(), &["branch", "head-alias"]);
+
+    assert_eq!(
+        closest_ancestor_branch(dir.path(), "branch-a"),
+        Some("main".to_string())
+    );
+}
+
+/// A real local-path `origin` (a plain `git clone`, no network) one commit
+/// ahead of the clone — `--check-remote`'s exact target scenario: a local
+/// `--base` ref that's gone stale since the last fetch.
+#[cfg(feature = "pr-review")]
+fn clone_with_stale_origin(
+    extra_upstream_commits: usize,
+) -> (tempfile::TempDir, tempfile::TempDir, String) {
+    let upstream = init_repo();
+    fs::write(upstream.path().join("a.rs"), "fn a() {}\n").unwrap();
+    commit_all(upstream.path(), "first");
+    let branch = current_branch(upstream.path()).unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let status = Command::new("git")
+        .args([
+            "clone",
+            "-q",
+            upstream.path().to_str().unwrap(),
+            dir.path().to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "git clone failed");
+    Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["config", "user.email", "test@example.com"])
+        .status()
+        .unwrap();
+    Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["config", "user.name", "Test"])
+        .status()
+        .unwrap();
+
+    for i in 0..extra_upstream_commits {
+        fs::write(upstream.path().join(format!("b{i}.rs")), "fn b() {}\n").unwrap();
+        commit_all(upstream.path(), &format!("upstream commit {i}"));
+    }
+    (upstream, dir, branch)
+}
+
+#[cfg(feature = "pr-review")]
+#[test]
+fn commits_behind_remote_counts_new_commits_on_the_remote_only() {
+    let (_upstream, dir, branch) = clone_with_stale_origin(2);
+    assert_eq!(
+        commits_behind_remote(dir.path(), "origin", &branch),
+        Some(2)
+    );
+}
+
+#[cfg(feature = "pr-review")]
+#[test]
+fn commits_behind_remote_is_zero_when_already_up_to_date() {
+    let (_upstream, dir, branch) = clone_with_stale_origin(0);
+    assert_eq!(
+        commits_behind_remote(dir.path(), "origin", &branch),
+        Some(0)
+    );
+}
+
+#[cfg(feature = "pr-review")]
+#[test]
+fn commits_behind_remote_is_none_without_a_configured_remote() {
+    let dir = init_repo();
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    checkout_branch(dir.path(), &["checkout", "-q", "-b", "main"]);
+    commit_all(dir.path(), "first");
+
+    assert_eq!(commits_behind_remote(dir.path(), "origin", "main"), None);
+}

@@ -141,6 +141,111 @@ fn pull_requires_a_configured_hub_url() {
     assert!(err.to_string().contains("[hub] url"), "got: {err}");
 }
 
+/// No `--commit` given: the sha is resolved via `git merge-base
+/// origin/main HEAD`, not left for the hub to guess.
+#[test]
+fn pull_resolves_the_commit_via_git_merge_base_when_none_is_given() {
+    let repo = init_repo("mergebase");
+    let (addr, _request) = serve_snapshot(b"merge-base-bytes");
+    write_config(repo.path(), &addr);
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(git(&["init", "-q"]).status.success());
+    assert!(git(&["add", "-A"]).status.success());
+    assert!(
+        git(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "-m",
+            "x"
+        ])
+        .status
+        .success()
+    );
+    let head = String::from_utf8(git(&["rev-parse", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    assert!(
+        git(&["update-ref", "refs/remotes/origin/main", &head])
+            .status
+            .success()
+    );
+
+    cmd_sync_pull(repo.path(), None, false).unwrap();
+
+    let db = fs::read(repo.path().join(".weave").join("graph.db")).unwrap();
+    assert_eq!(db, b"merge-base-bytes");
+}
+
+/// A shallow checkout (or a repo with no commits at all) has no
+/// merge-base to compute — the error must name the actual fix, not
+/// surface git's own raw failure.
+#[test]
+fn pull_reports_a_clear_error_when_merge_base_cannot_be_determined() {
+    let repo = init_repo("shallow");
+    // Unreachable address — the failure must come from git, before any
+    // network attempt.
+    write_config(repo.path(), "http://127.0.0.1:1");
+    let git_ok = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(git_ok(&["init", "-q"]));
+
+    let err = cmd_sync_pull(repo.path(), None, false).unwrap_err();
+    assert!(err.to_string().contains("merge-base"), "got: {err}");
+}
+
+/// `--fallback-latest`: an exact-sha miss transparently hydrates the
+/// hub's latest snapshot instead of reporting nothing.
+#[test]
+fn pull_fallback_latest_hydrates_when_the_exact_commit_is_missing() {
+    let repo = init_repo("fallback");
+    let (addr, requests) = serve_sequence(vec![(404, ""), (200, "")]);
+    write_config(repo.path(), &addr);
+
+    cmd_sync_pull(repo.path(), Some("missing-sha"), true).unwrap();
+
+    assert_eq!(requests.join().unwrap().len(), 2, "exact sha then latest");
+}
+
+/// `--fallback-latest` with nothing on the hub at all for either the
+/// exact sha or latest: reported, never an error, and the active db is
+/// left untouched.
+#[test]
+fn pull_fallback_latest_still_reports_when_no_snapshot_exists_at_all() {
+    let repo = init_repo("none_anywhere");
+    let (addr, requests) = serve_sequence(vec![(404, ""), (404, "")]);
+    write_config(repo.path(), &addr);
+    let before = fs::read(repo.path().join(".weave").join("graph.db")).unwrap();
+
+    cmd_sync_pull(repo.path(), Some("missing-sha"), true).unwrap();
+
+    let db = fs::read(repo.path().join(".weave").join("graph.db")).unwrap();
+    assert_eq!(
+        db, before,
+        "no snapshot anywhere must never touch the active database"
+    );
+    assert_eq!(requests.join().unwrap().len(), 2);
+}
+
 /// The registry's returned signature used to be discarded straight into
 /// `_signature`. `report_signature` now handles it — this pins that a
 /// present signature doesn't make the pull
@@ -169,6 +274,40 @@ fn push_refuses_when_not_on_a_git_branch() {
         message.contains("default branch") || message.contains("git branch"),
         "got: {message}"
     );
+}
+
+/// A real (non-detached) branch that isn't `main`/`master` is refused
+/// too — distinct from the no-git-repo-at-all case above, which never
+/// resolves a branch name in the first place.
+#[test]
+fn push_refuses_from_a_non_default_branch() {
+    let repo = init_repo("sidebranch");
+    let (addr, _request) = serve_with_status(201, b"");
+    write_config(repo.path(), &addr);
+    let git_ok = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(git_ok(&["init", "-b", "feature-x"]));
+    assert!(git_ok(&["add", "."]));
+    assert!(git_ok(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-m",
+        "x"
+    ]));
+
+    let err = cmd_sync_push(repo.path(), None, None, "hmac").unwrap_err();
+    assert!(err.to_string().contains("feature-x"), "got: {err}");
 }
 
 #[test]
@@ -574,4 +713,88 @@ fn push_gives_up_after_exhausting_conflict_retries() {
         4,
         "expected the initial push plus 3 exhausted conflict retries"
     );
+}
+
+/// The entire `MAX_PUSH_ATTEMPTS` retry budget is spent rate-limited —
+/// `push_with_backoff` gives up cleanly rather than looping forever, and
+/// `cmd_sync_push` reports it through the top-level `RateLimited` arm
+/// (not the conflict-retry one below).
+#[test]
+fn push_errors_clearly_when_rate_limited_for_the_entire_retry_budget() {
+    let repo = init_repo("limited_forever");
+    let responses: Vec<(u16, &'static str)> =
+        std::iter::repeat_n((429, "Retry-After: 0\r\n"), 5).collect();
+    let (addr, requests) = serve_sequence(responses);
+    write_config(repo.path(), &addr);
+    let git_ok = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(git_ok(&["init", "-b", "main"]));
+    assert!(git_ok(&["add", "."]));
+    assert!(git_ok(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-m",
+        "x"
+    ]));
+
+    let err = cmd_sync_push(repo.path(), None, None, "hmac").unwrap_err();
+
+    assert!(
+        err.to_string().contains("still limited after"),
+        "got: {err}"
+    );
+    assert_eq!(requests.join().unwrap().len(), 5);
+}
+
+/// A conflict republish that then runs into a rate limit surfaces through
+/// the conflict-retry loop's own `RateLimited` arm — distinct error text
+/// from the top-level one above.
+#[test]
+fn push_conflict_retry_errors_clearly_if_the_hub_then_rate_limits() {
+    let repo = init_repo("conflict_then_limited");
+    let mut responses = vec![(409, "")];
+    responses.extend(std::iter::repeat_n((429, "Retry-After: 0\r\n"), 5));
+    let (addr, requests) = serve_sequence(responses);
+    write_config(repo.path(), &addr);
+    let git_ok = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(git_ok(&["init", "-b", "main"]));
+    assert!(git_ok(&["add", "."]));
+    assert!(git_ok(&[
+        "-c",
+        "user.email=t@t",
+        "-c",
+        "user.name=t",
+        "commit",
+        "-m",
+        "x"
+    ]));
+
+    let err = cmd_sync_push(repo.path(), None, None, "hmac").unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("rate-limited the publish during conflict"),
+        "got: {err}"
+    );
+    assert_eq!(requests.join().unwrap().len(), 6);
 }

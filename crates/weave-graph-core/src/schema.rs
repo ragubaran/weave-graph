@@ -7,7 +7,15 @@
 
 /// Highest schema version any migration in `MIGRATIONS` brings a database
 /// to — round-trip tests assert against it.
-pub const LATEST_SCHEMA_VERSION: u32 = 11;
+pub const LATEST_SCHEMA_VERSION: u32 = 12;
+
+/// Bump when parsing/extraction logic changes in a way that makes previously
+/// indexed nodes/edges stale even though the source files themselves didn't
+/// change (e.g. a symbol-kind classification fix). The CLI compares this
+/// against the version stamped at last index time and forces a full reindex
+/// on mismatch — git-diff-based incremental reindex has no way to see a
+/// change in the code that interprets a file, only in the file itself.
+pub const EXTRACTOR_VERSION: u32 = 1;
 
 /// Base schema: `nodes`, `edges`, `doc_links`, `contracts`,
 /// `schema_version`. Unique indices on each table's natural key make
@@ -177,6 +185,25 @@ pub const V11_NODE_SYMBOL_INDEX: &str = "
 CREATE INDEX idx_nodes_symbol ON nodes(symbol);
 ";
 
+/// `pr-review` feature: past `weave pr-review --history` run records. The
+/// table lands unconditionally (V3/V4/V10's own precedent — schema version
+/// must not depend on Cargo features); only the CLI writer/reader is
+/// feature-gated. Findings/waived ids are stored as JSON text rather than
+/// normalized rows: this is a read-mostly audit log, not a queried index.
+pub const V12_PR_REVIEW_HISTORY: &str = "
+CREATE TABLE pr_review_runs (
+    id INTEGER PRIMARY KEY,
+    base TEXT NOT NULL,
+    head TEXT NOT NULL,
+    risk TEXT NOT NULL,
+    findings_json TEXT NOT NULL,
+    waived_ids_json TEXT NOT NULL,
+    reason TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_pr_review_runs_created_at ON pr_review_runs(created_at);
+";
+
 /// Versioned migration history shared by every storage backend.
 pub const MIGRATIONS: &[(u32, &str)] = &[
     (1, V1_CREATE_TABLES),
@@ -190,6 +217,7 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (9, V9_DROP_UNUSED_SEMANTIC_KEY_INDEX),
     (10, V10_EDGE_PROVENANCE),
     (11, V11_NODE_SYMBOL_INDEX),
+    (12, V12_PR_REVIEW_HISTORY),
 ];
 
 /// Returns unapplied migrations in version order, independent of declaration order.

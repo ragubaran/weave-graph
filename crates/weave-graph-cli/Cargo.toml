@@ -62,6 +62,12 @@ notes = ["weave-graph-core/notes", "weave-graph-mcp/notes"]
 # of there being something in `default` to opt out of for the first time.
 default = ["lang-extended"]
 lang-extended = ["weave-graph-parse/lang-extended"]
+# Standalone opt-in, deliberately not in `team`/`custom`/`default`: the
+# Flask-route pilot (impl.md P10.8) is a scoped single-framework pilot, not
+# a general product surface yet. Forwarding it is all this needs — route
+# nodes/edges flow through the existing generic `Node.kind`/`Edge.kind`
+# string pipeline, no CLI-side special-casing required.
+framework-routes = ["weave-graph-parse/framework-routes"]
 hub = ["dep:weave-graph-hub"]
 hub-provenance = ["hub", "weave-graph-hub/hub-provenance"]
 docs = ["weave-graph-parse/docs"]

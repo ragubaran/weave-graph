@@ -110,9 +110,10 @@ jobs:
       fail-fast: false
       matrix:
         # Two release variants (docs/deploy.md §1) built across every
-        # platform target: `weave` (team = docs+federation+fts+vector;
-        # single and multiple mode) and `weave-custom` (custom =
-        # team+hub+rbac+otel+policy-lint+fts+vector; adds custom mode).
+        # platform target: `weave` (team = docs+federation+fts+vector)
+        # and `weave-custom` (custom = team+hub+hub-provenance+provenance+
+        # rbac+otel+policy-lint+pr-review). Both are build tiers, not
+        # runtime modes — `single`/`multiple` apply to either variant.
         include:
           # Linux x86_64 (GLIBC)
           - os: ubuntu-latest

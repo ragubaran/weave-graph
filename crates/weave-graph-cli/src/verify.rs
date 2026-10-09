@@ -1,24 +1,24 @@
 //! `weave verify`: deterministic pre-flight checks against the indexed
-//! graph — phantom symbols, submodule encapsulation violations, and stale
-//! submodule references (`docs/proposal-skylos.md` §3.2–3.3). Tri-state:
-//! `Pass` (0) nothing found and every applicable check completed, `Fail`
-//! (1) a confirmed violation, `Incomplete` (2) proof couldn't be
-//! established (a dirty/uninitialized submodule) — never a false `Pass`.
+//! graph — phantom symbols, submodule encapsulation violations, stale
+//! submodule references, and required-guard caller allowlists
+//! (`docs/proposal-skylos.md` §3.2–3.3). Tri-state: `Pass` (0) nothing
+//! found and every applicable check completed, `Fail` (1) a confirmed
+//! violation, `Incomplete` (2) proof couldn't be established (a
+//! dirty/uninitialized submodule) — never a false `Pass`.
 //!
-//! **Not implemented**: "Mandatory Guard & Decorator Verification"
-//! (`docs/proposal-skylos.md` §3.2 bullet 4). The proposal's own §3.4
-//! correction note (2026-09-22) retracted the `guards:`/`boundaries:`
-//! `.weave/contracts.yml` sketch that would have declared which entry
-//! points require which guard attributes, and named no replacement
-//! mechanism — inventing one here would be exactly the kind of
-//! undesigned scope `AGENTS.md`'s "Ground Truth & Zero Invention"
-//! invariant forbids. `completed_checks`/`skipped_checks` name this gap
-//! explicitly rather than silently omitting the check.
+//! **`required_guards` (2026-10-09)**: the proposal's own §3.4 correction
+//! note (2026-09-22) retracted an earlier `guards:`/`boundaries:` sketch as
+//! unworkable and named no replacement — this implements a deliberately
+//! narrower mechanism instead of reviving that one: a direct-caller
+//! allowlist (`required_guard_violations`), not a transitive "did we pass
+//! through guard G somewhere upstream" check (the ambiguity that likely
+//! sank the original sketch). `completed_checks`/`skipped_checks` still
+//! name exactly what ran.
 
 use std::collections::HashMap;
 use std::path::Path;
 
-use weave_graph_core::Storage;
+use weave_graph_core::{Edge, Node, Storage};
 use weave_graph_parse::Language;
 use weave_graph_parse::contract::{short_name, visibility_rule};
 
@@ -27,11 +27,25 @@ use crate::git::{self, Submodule, SubmoduleState};
 
 pub(crate) const CONTRACTS_FILE: &str = ".weave/contracts.yml";
 
+/// One declared guard: every direct caller of `symbol` must appear in
+/// `allowed_callers`, or `required_guard_violations` reports it. Both
+/// fields are monikers — `weave_graph_parse::moniker::build`'s own
+/// `"{path}#{qualified_symbol}"` format, the same stable identity the
+/// resolver already uses, not an invented identifier scheme.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "policy-lint", derive(serde::Deserialize))]
+pub(crate) struct RequiredGuardSpec {
+    pub(crate) symbol: String,
+    #[cfg_attr(feature = "policy-lint", serde(default))]
+    pub(crate) allowed_callers: Vec<String>,
+}
+
 /// Declarative toggles from `.weave/contracts.yml` (`docs/proposal-skylos.md`
-/// §3.4, the version corrected 2026-09-22 — no `guards:`/`boundaries:` keys,
-/// since those would duplicate `.weave/policy.yaml`). Every field defaults
-/// to its most-verifying value, so an absent file behaves exactly like the
-/// hard-coded behavior before this config existed.
+/// §3.4, the version corrected 2026-09-22, plus `required_guards` added
+/// 2026-10-09 — see this file's own module doc comment). Every field
+/// defaults to its most-verifying value (`required_guards` defaults to
+/// empty, i.e. nothing declared, nothing to check), so an absent file
+/// behaves exactly like the hard-coded behavior before this config existed.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct VerifyConfig {
     pub(crate) enforce_submodule_visibility: bool,
@@ -39,6 +53,7 @@ pub(crate) struct VerifyConfig {
     pub(crate) qualify_changed_commits: bool,
     pub(crate) reject_unresolved_phantom_symbols: bool,
     pub(crate) phantom_symbol_exempt_globs: Vec<String>,
+    pub(crate) required_guards: Vec<RequiredGuardSpec>,
 }
 
 impl Default for VerifyConfig {
@@ -49,6 +64,7 @@ impl Default for VerifyConfig {
             qualify_changed_commits: true,
             reject_unresolved_phantom_symbols: true,
             phantom_symbol_exempt_globs: Vec::new(),
+            required_guards: Vec::new(),
         }
     }
 }
@@ -62,6 +78,47 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
         Some(prefix) => path == prefix || path.starts_with(&format!("{prefix}/")),
         None => pattern == path,
     }
+}
+
+/// Direct-caller allowlist check: every edge landing on a declared guard's
+/// `symbol` must originate from a node whose moniker is in that guard's
+/// `allowed_callers`, or it's a violation. Deliberately *direct* edges
+/// only — no transitive "reachable through some chain that eventually
+/// passes a guard" reasoning, which is exactly the ambiguity this file's
+/// own module doc comment explains was never resolved. A declared
+/// `symbol` that doesn't match any indexed node is silently inert — same
+/// "nothing configured for this" precedent `weave policy lint` and
+/// `weave check-contracts` already use for an absent/empty config.
+fn required_guard_violations(
+    nodes: &[Node],
+    edges: &[Edge],
+    guards: &[RequiredGuardSpec],
+) -> Vec<Finding> {
+    let moniker_of = |n: &Node| weave_graph_parse::moniker::build(&n.path, &n.symbol);
+    let mut findings = Vec::new();
+    for guard in guards {
+        let Some(protected) = nodes.iter().find(|n| moniker_of(n) == guard.symbol) else {
+            continue;
+        };
+        for caller in edges
+            .iter()
+            .filter(|e| e.target_id == protected.id)
+            .filter_map(|e| nodes.iter().find(|n| n.id == e.source_id))
+        {
+            let caller_moniker = moniker_of(caller);
+            if !guard.allowed_callers.contains(&caller_moniker) {
+                findings.push(Finding {
+                    check: "required_guards",
+                    file: caller.path.clone(),
+                    message: format!(
+                        "{caller_moniker} calls guarded symbol {} but isn't in its allowed_callers list",
+                        guard.symbol
+                    ),
+                });
+            }
+        }
+    }
+    findings
 }
 
 #[cfg(feature = "policy-lint")]
@@ -78,6 +135,8 @@ mod config_file {
         pub(super) submodules: SubmodulesSection,
         #[serde(default)]
         pub(super) ai: AiSection,
+        #[serde(default)]
+        pub(super) required_guards: Vec<super::RequiredGuardSpec>,
     }
 
     #[derive(Deserialize)]
@@ -148,6 +207,7 @@ pub(crate) fn load_config(root: &Path) -> Result<VerifyConfig, String> {
             qualify_changed_commits: file.submodules.qualify_changed_commits,
             reject_unresolved_phantom_symbols: file.ai.phantom_symbols.reject_unresolved,
             phantom_symbol_exempt_globs: file.ai.phantom_symbols.exempt_globs,
+            required_guards: file.required_guards,
         })
     }
     #[cfg(not(feature = "policy-lint"))]
@@ -279,7 +339,7 @@ fn language_name(path: &str) -> Option<&'static str> {
         Language::Rust => "rust",
         Language::Python => "python",
         Language::Go => "go",
-        Language::TypeScript => "typescript",
+        Language::TypeScript | Language::Tsx => "typescript",
         Language::JavaScript => "javascript",
         Language::Java => "java",
         Language::C => "c",
@@ -491,11 +551,20 @@ pub(crate) fn cmd_verify(
         completed.push("stale_submodule_references");
     }
 
-    skipped.push((
-        "required_guards",
-        "no declaration mechanism specified in docs/proposal-skylos.md — its own §3.4 \
-         correction retracted the guards:/boundaries: sketch; not invented here",
-    ));
+    if config.required_guards.is_empty() {
+        skipped.push((
+            "required_guards",
+            "no guards declared: .weave/contracts.yml has no required_guards entries \
+             (or policy-lint isn't compiled in, this file's only YAML dependency)",
+        ));
+    } else {
+        findings.extend(required_guard_violations(
+            &nodes,
+            &edges,
+            &config.required_guards,
+        ));
+        completed.push("required_guards");
+    }
 
     let mut summary = SubmoduleSummary {
         total: submodules.len(),

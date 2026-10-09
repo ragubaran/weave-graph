@@ -58,7 +58,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use weave_graph_core::{Node, ReindexConfig, Storage, should_bail_out};
+use weave_graph_core::{Node, ReindexConfig, Storage, schema::EXTRACTOR_VERSION, should_bail_out};
 use weave_graph_mcp::{
     HttpTransport, McpHandler, McpTransport, StdioTransport, validate_loopback_bind,
 };
@@ -240,10 +240,10 @@ enum Commands {
     /// header, and contract/policy/phantom-symbol findings (feature:
     /// pr-review). Proposal: docs/proposal-pr.md.
     PrReview {
-        /// Ref to diff against (three-dot merge-base, e.g. `main`)
+        /// Ref to diff against (three-dot merge-base, e.g. `main`). Required unless --history is passed
         #[arg(long)]
-        base: String,
-        /// Output format: `md` (default) or `json`
+        base: Option<String>,
+        /// Output format: `md` (default), `json`, or `html`
         #[arg(long, default_value = "md")]
         format: String,
         /// Write to this file instead of stdout (pipe into `gh pr comment`)
@@ -271,6 +271,12 @@ enum Commands {
         /// Score one parallel ref (a lane) against --base on its own, alongside the main report; repeatable
         #[arg(long = "lane")]
         lane: Vec<String>,
+        /// Opt-in: fetch --base from `origin` and flag the report if the local ref is behind. No network call without this flag
+        #[arg(long)]
+        check_remote: bool,
+        /// List past runs instead of scoring a new one, newest first; optional count (default 20)
+        #[arg(long, num_args = 0..=1, default_missing_value = "20")]
+        history: Option<usize>,
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
@@ -705,10 +711,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             reason,
             stack_base,
             lane,
+            check_remote,
+            history,
             path,
         } => pr_review::cmd_pr_review(
             &path,
-            &base,
+            base.as_deref(),
             &format,
             out.as_deref(),
             &depth,
@@ -719,6 +727,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             as_subject.as_deref(),
             stack_base.as_deref(),
             &lane,
+            check_remote,
+            history,
         )?,
         #[cfg(not(feature = "pr-review"))]
         Commands::PrReview { .. } => feature_not_compiled("weave pr-review", "pr-review"),
@@ -1376,6 +1386,14 @@ fn try_fast_path(
 /// effect when there's a prior index and a known last-indexed commit to diff
 /// against — otherwise there's nothing to be incremental relative to, and it
 /// silently behaves like a full index (never an error, never a stale result).
+/// Also forces a full reindex, regardless of the git diff, when the stored
+/// `EXTRACTOR_VERSION` doesn't match the running binary's: a parsing-logic
+/// change can stale previously indexed data without changing any file's
+/// content, which git-diff-based change detection can never see.
+fn extractor_version_matches(weave_dir: &Path) -> bool {
+    cache::read_extractor_version(weave_dir) == Some(EXTRACTOR_VERSION)
+}
+
 fn reindex(
     root: &Path,
     weave_dir: &Path,
@@ -1384,6 +1402,8 @@ fn reindex(
     incremental: bool,
     last_sha: Option<&str>,
 ) -> Result<IndexStats, Box<dyn std::error::Error>> {
+    let incremental = incremental && extractor_version_matches(weave_dir);
+    let mut incremental_stats = None;
     if incremental
         && active_db.exists()
         && let Some(changed) = last_sha.and_then(|sha| git::changed_since(root, sha))
@@ -1394,10 +1414,17 @@ fn reindex(
             .collect();
         let total_indexed = index::indexed_file_count(active_db)?;
         if !should_bail_out(changed.len(), total_indexed, &ReindexConfig::default()) {
-            return index::incremental_reindex(root, weave_dir, active_db, files, &changed);
+            incremental_stats = Some(index::incremental_reindex(
+                root, weave_dir, active_db, files, &changed,
+            )?);
         }
     }
-    index::full_reindex(root, weave_dir, active_db, files)
+    let stats = match incremental_stats {
+        Some(stats) => stats,
+        None => index::full_reindex(root, weave_dir, active_db, files)?,
+    };
+    cache::write_extractor_version(weave_dir, EXTRACTOR_VERSION)?;
+    Ok(stats)
 }
 
 fn cmd_index(root: &Path, incremental: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -1417,13 +1444,27 @@ fn cmd_index(root: &Path, incremental: bool) -> Result<(), Box<dyn std::error::E
     let current_sha = git::current_sha(root);
     let last_sha = cache::read_last_indexed_sha(&weave_dir);
 
-    if try_fast_path(
-        &weave_dir,
-        &active_db,
-        current_sha.as_deref(),
-        last_sha.as_deref(),
-        start,
-    )? {
+    // A stale `EXTRACTOR_VERSION` must skip both fast paths too, not just
+    // `reindex`'s own incremental-vs-full choice — "already up to date"
+    // and the snapshot-restore path would otherwise keep serving data an
+    // older parser build produced, forever, since neither looks at git diff.
+    // The snapshot cache itself must also be wiped here, not just skipped:
+    // once this run's own reindex re-stamps the version file, a *later*
+    // `weave index` on some *other*, still-stale-cached commit would see a
+    // matching version and silently restore that commit's pre-upgrade data.
+    let extractor_ok = extractor_version_matches(&weave_dir);
+    if !extractor_ok {
+        cache::clear_snapshot_cache(&weave_dir)?;
+    }
+    if extractor_ok
+        && try_fast_path(
+            &weave_dir,
+            &active_db,
+            current_sha.as_deref(),
+            last_sha.as_deref(),
+            start,
+        )?
+    {
         return Ok(());
     }
 

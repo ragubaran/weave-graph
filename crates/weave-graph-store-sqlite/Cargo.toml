@@ -36,4 +36,4 @@ harness = false
 required-features = ["vector"]
 
 [[example]]
-name = "mem_500k"
+name = "sqlite_mem_500k"

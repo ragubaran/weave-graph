@@ -269,9 +269,16 @@ rustup component add llvm-tools-preview
 
 ### Whole Workspace Coverage
 
+CI runs two workspace-wide gates (`.github/workflows/ci.yml`), not one: default-feature only is not sufficient on its own, since optional-feature code (`rbac`, `hub`, `pr-review`, `vector`, ...) never compiles into that build and so can't be measured by it.
+
 ```bash
-# Check full workspace coverage with 90% threshold gate
+# Default-feature coverage (what a bare `cargo build` ships)
 cargo llvm-cov --workspace --all-targets --fail-under-lines 90
+
+# All-feature coverage (catches regressions in optional-feature code the
+# command above can't see at all) — Python stays on its own maturin/wheel
+# coverage path, excluded here same as in CI
+cargo llvm-cov --workspace --all-features --all-targets --fail-under-lines 90 --exclude weave-graph-python
 
 # Generate interactive HTML coverage report
 cargo llvm-cov --workspace --html --open
@@ -282,28 +289,35 @@ cargo llvm-cov --workspace --lcov --output-path lcov.info
 
 ### Per-Crate / Module Coverage
 
+The workspace-wide gates above only assert the *aggregate* stays above 90% — one well-covered crate can hide another that's regressed. CI also gates each crate individually, with `--all-features` (matching the all-feature workspace gate's rationale):
+
 ```bash
 # weave-graph-core
-cargo llvm-cov -p weave-graph-core --fail-under-lines 90
+cargo llvm-cov -p weave-graph-core --all-features --fail-under-lines 90
 
 # weave-graph-parse
-cargo llvm-cov -p weave-graph-parse --fail-under-lines 90
+cargo llvm-cov -p weave-graph-parse --all-features --fail-under-lines 90
 
 # weave-graph-store-sqlite
-cargo llvm-cov -p weave-graph-store-sqlite --fail-under-lines 90
+cargo llvm-cov -p weave-graph-store-sqlite --all-features --fail-under-lines 90
 
 # weave-graph-cli
-cargo llvm-cov -p weave-graph-cli --fail-under-lines 90
+cargo llvm-cov -p weave-graph-cli --all-features --fail-under-lines 90
 
 # weave-graph-mcp
-cargo llvm-cov -p weave-graph-mcp --fail-under-lines 90
+cargo llvm-cov -p weave-graph-mcp --all-features --fail-under-lines 90
 
 # weave-graph-hub
-cargo llvm-cov -p weave-graph-hub --fail-under-lines 90
+cargo llvm-cov -p weave-graph-hub --all-features --fail-under-lines 90
 
 # weave-graph-store-turso
-cargo llvm-cov -p weave-graph-store-turso --fail-under-lines 90
+cargo llvm-cov -p weave-graph-store-turso --all-features --fail-under-lines 90
+
+# weave-graph-wasm
+cargo llvm-cov -p weave-graph-wasm --all-features --fail-under-lines 90
 ```
+
+`weave-graph-python` is excluded from both the all-feature workspace gate and the per-crate loop — it keeps its own dedicated `maturin`/wheel coverage job instead, since `--all-features` would otherwise try to build its `extension-module` feature with a plain `cargo` invocation, which doesn't link on every host.
 
 ### Pre-Commit Local Verification Check
 

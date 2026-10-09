@@ -19,6 +19,37 @@ pub(crate) fn write_last_indexed_sha(weave_dir: &Path, sha: &str) -> std::io::Re
     fs::write(last_indexed_sha_path(weave_dir), sha)
 }
 
+fn extractor_version_path(weave_dir: &Path) -> PathBuf {
+    weave_dir.join("extractor_version")
+}
+
+/// `None` covers both "never indexed" and "indexed by a build predating this
+/// file" — both must be treated as a version mismatch by the caller, not as
+/// a match, so a pre-existing index gets one safe full reindex rather than
+/// silently trusting data an unversioned build produced.
+pub(crate) fn read_extractor_version(weave_dir: &Path) -> Option<u32> {
+    fs::read_to_string(extractor_version_path(weave_dir))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+}
+
+pub(crate) fn write_extractor_version(weave_dir: &Path, version: u32) -> std::io::Result<()> {
+    fs::write(extractor_version_path(weave_dir), version.to_string())
+}
+
+/// Wipes every cached commit snapshot (not `last_indexed_sha`/
+/// `extractor_version` themselves) — every snapshot was built by whatever
+/// extractor was running when it was saved, with no per-snapshot version
+/// tag, so after an `EXTRACTOR_VERSION` mismatch they're all suspect at
+/// once. A no-op if the cache directory doesn't exist yet.
+pub(crate) fn clear_snapshot_cache(weave_dir: &Path) -> std::io::Result<()> {
+    match fs::remove_dir_all(weave_dir.join("cache")) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Restores `active_db` from the cached snapshot for `sha`, through the same
 /// build-into-`.rebuild`-then-atomically-rename path as a full rebuild (Core
 /// Invariant 2) — a cache hit must never leave `active_db` half-written

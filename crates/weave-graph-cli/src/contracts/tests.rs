@@ -1,9 +1,12 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
+use weave_graph_parse::contract::ContractDiff;
+
 use super::{
-    CheckContractsWaiver, cmd_check_contracts, cmd_check_contracts_submodules, record_expectations,
-    repo_contract_hash, repo_contract_map,
+    CheckContractsWaiver, ContractEntry, cmd_check_contracts, cmd_check_contracts_submodules,
+    partition_by_scope, record_expectations, repo_contract_hash, repo_contract_map,
 };
 
 struct RepoFixture {
@@ -164,6 +167,105 @@ fn repo_contract_hash_is_stable_for_unchanged_sources() {
     let first = repo_contract_hash(repo.path()).unwrap();
     let second = repo_contract_hash(repo.path()).unwrap();
     assert_eq!(first, second);
+}
+
+/// A file with no recognized `Language` (Markdown, which `discover_files`
+/// only returns at all once the `docs` feature makes it indexable) must
+/// be skipped, not treated as an empty contract or an error — only
+/// `.rs`'s `exported` symbol belongs in the map.
+#[test]
+#[cfg(feature = "docs")]
+fn repo_contract_map_skips_files_with_no_recognized_language() {
+    let dir = tempfile::tempdir().unwrap();
+    write_source(dir.path(), "lib", "pub fn exported(x: u32) {}\n");
+    fs::write(dir.path().join("README.md"), "# hi\n").unwrap();
+
+    let map = repo_contract_map(dir.path()).unwrap();
+    assert!(map.contains_key("exported"));
+}
+
+/// `--scoped` with no `weave link` federated graph for the provider
+/// (only the lightweight `record_expectations` this file's own `link()`
+/// helper uses) can't read `imported_symbols` — it must fall back to the
+/// unscoped diff and still report the drift, never silently pass.
+#[test]
+fn scoped_check_falls_back_to_unscoped_when_no_federated_graph_exists() {
+    let consumer = RepoFixture::new("consumer");
+    let provider = RepoFixture::new("provider");
+    link(consumer.path(), provider.path());
+    config_with_policy(consumer.path(), provider.path(), "strict");
+
+    write_source(provider.path(), "provider", "pub fn exported(x: u64) {}\n");
+
+    let result = cmd_check_contracts(
+        consumer.path(),
+        false,
+        true,
+        CheckContractsWaiver::default(),
+    );
+    assert!(
+        result.is_err(),
+        "falls back to the unscoped drift, which is strict-blocking"
+    );
+}
+
+/// `--diff` without `--scoped`: the unscoped "all exported symbols"
+/// label, distinct from the scoped "imported — blocking" one the scoped
+/// tests above exercise.
+#[test]
+fn diff_flag_reports_the_unscoped_drift_label() {
+    let consumer = RepoFixture::new("consumer");
+    let provider = RepoFixture::new("provider");
+    link(consumer.path(), provider.path());
+    config_with_policy(consumer.path(), provider.path(), "warn");
+
+    write_source(
+        provider.path(),
+        "provider",
+        "pub fn exported(x: u64) {}\npub fn added_fn() {}\n",
+    );
+
+    cmd_check_contracts(
+        consumer.path(),
+        true,
+        false,
+        CheckContractsWaiver::default(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn partition_by_scope_buckets_added_and_removed_entries_by_import_status() {
+    let entry = |line: u32| -> ContractEntry {
+        (
+            "function".to_string(),
+            "pub fn f()".to_string(),
+            "a.rs".to_string(),
+            line,
+        )
+    };
+    let mut diff = ContractDiff::<ContractEntry>::default();
+    diff.added.push(("new_fn".to_string(), entry(1)));
+    diff.added.push(("imported_fn".to_string(), entry(2)));
+    diff.removed.push(("old_fn".to_string(), entry(3)));
+    diff.removed
+        .push(("imported_removed".to_string(), entry(4)));
+
+    let mut imported = HashSet::new();
+    imported.insert("imported_fn".to_string());
+    imported.insert("imported_removed".to_string());
+
+    let (in_scope, out_of_scope) = partition_by_scope(diff, &imported);
+
+    assert_eq!(in_scope.added.len(), 1);
+    assert_eq!(in_scope.added[0].0, "imported_fn");
+    assert_eq!(out_of_scope.added.len(), 1);
+    assert_eq!(out_of_scope.added[0].0, "new_fn");
+
+    assert_eq!(in_scope.removed.len(), 1);
+    assert_eq!(in_scope.removed[0].0, "imported_removed");
+    assert_eq!(out_of_scope.removed.len(), 1);
+    assert_eq!(out_of_scope.removed[0].0, "old_fn");
 }
 
 /// `--scoped` blocks when the changed symbol is one the consumer actually

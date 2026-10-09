@@ -166,3 +166,33 @@ fn an_extremely_tight_ceiling_never_drops_below_the_floor() {
     assert_eq!(budget.parse_chunk, MIN_PARSE_CHUNK);
     assert_eq!(budget.staged_write_rows, MIN_STAGED_WRITE_ROWS);
 }
+
+/// `cgroup_v1_negative_quota_is_unlimited` above only exercises the
+/// early `quota <= 0` return; a positive quota must still read the
+/// period file and compute a real thread count.
+#[test]
+fn cgroup_v1_positive_quota_computes_thread_count() {
+    let dir = tempfile::tempdir().unwrap();
+    cgroup_v1(dir.path(), "max", "150000", "100000");
+    assert_eq!(detect_cpu_threads(dir.path(), 16), 1);
+}
+
+/// `a_tight_ceiling_scales_batch_sizes_down...` above only names
+/// `CgroupV2` in its explanation text — the other three `CeilingSource`
+/// arms of `explain`'s own match are exercised nowhere else.
+#[test]
+fn explain_names_the_source_for_every_remaining_ceiling_kind() {
+    for (source, expected) in [
+        (CeilingSource::CgroupV1, "cgroup v1 memory.limit_in_bytes"),
+        (CeilingSource::HostPhysicalMemory, "host physical memory"),
+        (CeilingSource::Unknown, "unknown"),
+    ] {
+        let ceiling = MemoryCeiling {
+            bytes: Some(64 * 1024 * 1024),
+            source,
+        };
+        let budget = compute_admission_budget(ceiling, 2, 32, 10_000);
+        let explanation = budget.explain(32).unwrap();
+        assert!(explanation.contains(expected), "{explanation}");
+    }
+}

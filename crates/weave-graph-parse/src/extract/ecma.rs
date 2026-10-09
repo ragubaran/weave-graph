@@ -223,7 +223,7 @@ fn heritage(class_node: Node, source: &[u8]) -> Vec<(String, StructuralEdgeKind)
 /// default 7-argument threshold; splitting the other six (all pre-existing
 /// walker context) into a struct wouldn't shrink this function, just move
 /// the same data through a different shape.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn push_symbol(
     sig_start: Node,
     decl: Node,

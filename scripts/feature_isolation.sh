@@ -37,7 +37,7 @@ esac
 # `status`/`serve --mcp` measurements, so what's actually measured is
 # slm's idle/compiled-in cost, exactly what this gate covers.
 if [ "$#" -eq 0 ]; then
-    FEATURES=(docs federation provenance notes watch viz rbac fts vector slm http-compression github-auth pr-review)
+    FEATURES=(docs federation provenance notes watch viz rbac fts vector slm http-compression github-auth pr-review framework-routes)
 else
     FEATURES=("$@")
 fi

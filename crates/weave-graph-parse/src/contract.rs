@@ -41,7 +41,9 @@ pub fn visibility_rule(language: Language) -> VisibilityRule {
         Language::Rust => |sig, _| sig.starts_with("pub") && !sig.starts_with("pub("),
         Language::Python => |_, name| !name.starts_with('_'),
         Language::Go => |_, name| name.chars().next().is_some_and(|c| c.is_ascii_uppercase()),
-        Language::TypeScript | Language::JavaScript => |sig, _| sig.contains("export"),
+        Language::TypeScript | Language::Tsx | Language::JavaScript => {
+            |sig, _| sig.contains("export")
+        }
         Language::Java => |sig, _| sig.to_ascii_lowercase().contains("public"),
         Language::C | Language::Cpp => |sig, _| !sig.starts_with("static"),
         // Extended-language variants are gated like the enum: when

@@ -9,6 +9,11 @@ pub enum Language {
     Python,
     JavaScript,
     TypeScript,
+    /// `.tsx` needs its own grammar (`LANGUAGE_TSX`, not `LANGUAGE_TYPESCRIPT`):
+    /// tree-sitter-typescript ships two grammars because JSX's `<Tag>` and
+    /// TypeScript's old-style `<Type>value` cast syntax are ambiguous, so one
+    /// grammar can't parse both correctly. Shares the `ecma` extractor.
+    Tsx,
     Go,
     Java,
     C,
@@ -107,7 +112,8 @@ impl Language {
             "rs" => Some(Language::Rust),
             "py" => Some(Language::Python),
             "js" | "jsx" | "mjs" | "cjs" => Some(Language::JavaScript),
-            "ts" | "tsx" => Some(Language::TypeScript),
+            "ts" => Some(Language::TypeScript),
+            "tsx" => Some(Language::Tsx),
             "go" => Some(Language::Go),
             "java" => Some(Language::Java),
             "c" | "h" => Some(Language::C),
@@ -198,6 +204,7 @@ impl Language {
             Language::Python => tree_sitter_python::LANGUAGE.into(),
             Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
             Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            Language::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Language::Go => tree_sitter_go::LANGUAGE.into(),
             Language::Java => tree_sitter_java::LANGUAGE.into(),
             Language::C => tree_sitter_c::LANGUAGE.into(),

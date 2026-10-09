@@ -16,7 +16,7 @@ fn detects_language_from_extension() {
     );
     assert_eq!(
         Language::from_path(Path::new("a/b.tsx")),
-        Some(Language::TypeScript)
+        Some(Language::Tsx)
     );
     assert_eq!(Language::from_path(Path::new("a/b.go")), Some(Language::Go));
     assert_eq!(

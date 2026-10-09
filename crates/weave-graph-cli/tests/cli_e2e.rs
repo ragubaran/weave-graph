@@ -1008,6 +1008,464 @@ fn test_cli_check_contracts_detects_divergence_end_to_end() {
         .stdout(predicate::str::contains("Contract drift detected"));
 }
 
+/// `weave check-contracts --submodules`: the real-submodule dispatch arm
+/// (distinct from the `linked_repos` path above), driven through the
+/// compiled binary end to end.
+#[test]
+#[cfg(feature = "federation")]
+fn test_cli_check_contracts_submodules_flag_reports_a_clean_submodule() {
+    let inner = tempdir().unwrap();
+    let git = |root: &std::path::Path, args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(git(inner.path(), &["init", "-q"]));
+    assert!(git(inner.path(), &["config", "user.email", "t@t"]));
+    assert!(git(inner.path(), &["config", "user.name", "t"]));
+    std::fs::write(inner.path().join("a.rs"), "pub fn a() {}\n").unwrap();
+    assert!(git(inner.path(), &["add", "-A"]));
+    assert!(git(inner.path(), &["commit", "-q", "-m", "inner"]));
+
+    let outer = tempdir().unwrap();
+    let root = outer.path();
+    assert!(git(root, &["init", "-q"]));
+    assert!(git(root, &["config", "user.email", "t@t"]));
+    assert!(git(root, &["config", "user.name", "t"]));
+    assert!(git(
+        root,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            inner.path().to_str().unwrap(),
+            "sub",
+        ],
+    ));
+    assert!(git(root, &["add", "-A"]));
+    assert!(git(root, &["commit", "-q", "-m", "add submodule"]));
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--mode", "single"])
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["check-contracts", "--submodules"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("clean"));
+}
+
+/// `weave verify`: a clean repo passes in both the default text format and
+/// `--format json`, driven through the compiled binary end to end.
+#[test]
+#[cfg(feature = "federation")]
+fn test_cli_verify_passes_on_a_clean_repo_in_text_and_json_format() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), "pub fn a() {}\nfn b() { a(); }\n").unwrap();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--mode", "single"])
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("verify")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("pass"));
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["verify", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\": \"pass\""));
+}
+
+/// `--range` without `--file` is refused before any graph lookup — the
+/// clear, documented error, not a generic failure.
+#[test]
+#[cfg(feature = "federation")]
+fn test_cli_verify_range_without_file_is_a_clear_error() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), "pub fn a() {}\n").unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--mode", "single"])
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["verify", "--range", "1:10"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--range requires --file"));
+}
+
+/// A malformed `--range` (not `start:end` numbers) is a clear parse
+/// error, through `main.rs`'s own `parse_range`.
+#[test]
+#[cfg(feature = "federation")]
+fn test_cli_verify_rejects_a_malformed_range() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), "pub fn a() {}\n").unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--mode", "single"])
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["verify", "--file", "a.rs", "--range", "x:5"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a number"));
+}
+
+/// `weave verify` fails with exit code 1 and reports the finding when a
+/// phantom symbol is present — the tri-state exit code actually reaches
+/// the process, not just the in-process `VerifyReport`.
+#[test]
+#[cfg(feature = "federation")]
+fn test_cli_verify_fails_with_exit_code_one_on_a_phantom_symbol() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(
+        root.join("a.rs"),
+        "fn caller() { totally_undefined_fn(); }\n",
+    )
+    .unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--mode", "single"])
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("verify")
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("phantom_symbols"));
+}
+
+/// `weave pr-review`: a real two-commit diff scored end to end through
+/// the compiled binary, not just `pr_review::cmd_pr_review` called
+/// in-process.
+#[test]
+#[cfg(feature = "pr-review")]
+fn test_cli_pr_review_scores_a_real_diff_end_to_end() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(git(&["init", "-q", "-b", "main"]));
+    assert!(git(&["config", "user.email", "test@example.com"]));
+    assert!(git(&["config", "user.name", "Test"]));
+    std::fs::write(root.join("core.rs"), "pub fn core() {}\n").unwrap();
+    std::fs::write(root.join("feature.rs"), "fn feature() { core(); }\n").unwrap();
+    assert!(git(&["add", "-A"]));
+    assert!(git(&["commit", "-q", "-m", "base"]));
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--mode", "single"])
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    assert!(git(&["checkout", "-q", "-b", "pr"]));
+    std::fs::write(
+        root.join("feature.rs"),
+        "fn feature() { core(); }\nfn feature2() { feature(); }\n",
+    )
+    .unwrap();
+    assert!(git(&["add", "-A"]));
+    assert!(git(&["commit", "-q", "-m", "pr change"]));
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["pr-review", "--base", "main"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Weave PR Review"));
+}
+
+/// `weave query-federated`, `weave report-federated`, and `weave
+/// plan-migration` against the same linked pair `weave link` already
+/// proved out above — the three remaining federation commands `main.rs`
+/// dispatches to.
+#[test]
+#[cfg(feature = "federation")]
+fn test_cli_query_federated_report_federated_and_plan_migration_end_to_end() {
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    let root_a = dir_a.path();
+    let root_b = dir_b.path();
+
+    std::fs::write(
+        root_a.join("lib.rs"),
+        "pub fn exported(x: u32) -> u32 { x }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root_b.join("lib.rs"),
+        "pub fn exported(x: u32) -> u32 { x }\n",
+    )
+    .unwrap();
+
+    for root in [root_a, root_b] {
+        Command::cargo_bin("weave")
+            .unwrap()
+            .current_dir(root)
+            .args(["init", "--mode", "single"])
+            .assert()
+            .success();
+        Command::cargo_bin("weave")
+            .unwrap()
+            .current_dir(root)
+            .arg("index")
+            .assert()
+            .success();
+    }
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .args([
+            "link",
+            &root_a.display().to_string(),
+            &root_b.display().to_string(),
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .args([
+            "query-federated",
+            &root_a.display().to_string(),
+            &root_b.display().to_string(),
+            "callers(exported)",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .args([
+            "report-federated",
+            &root_a.display().to_string(),
+            &root_b.display().to_string(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote"));
+
+    std::fs::write(
+        root_a.join(".weave").join("config.toml"),
+        format!(
+            "mode = \"single\"\n\n[federation]\nlinked_repos = [\"{}\"]\n",
+            root_b.display()
+        ),
+    )
+    .unwrap();
+
+    // These two repos share no actual cross-repo call edge (just the same
+    // function name in each), so there's genuinely nothing to migrate —
+    // still a real, exercised `cmd_plan_migration` code path, not a stub.
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root_a)
+        .args(["plan-migration", "exported"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no cross-repo callers"));
+}
+
+/// `weave sync pull` without a configured `[hub] url` fails clearly,
+/// before any network attempt — the real dispatch arm, not just
+/// `sync::cmd_sync_pull` called directly.
+#[test]
+#[cfg(feature = "hub")]
+fn test_cli_sync_pull_requires_a_configured_hub_url() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), "pub fn a() {}\n").unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--mode", "single"])
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["sync", "pull"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("[hub] url"));
+}
+
+/// `weave note pin` / `weave note list`: real round trip through the
+/// compiled binary.
+#[test]
+#[cfg(feature = "notes")]
+fn test_cli_note_pin_and_list_round_trip() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), "pub fn a() {}\n").unwrap();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["init", "--mode", "single"])
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["note", "pin", "a", "worth remembering"])
+        .assert()
+        .success();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .args(["note", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("worth remembering"));
+}
+
+/// `weave rbac serve-scim`: binds loopback and answers a real SCIM
+/// request — through the compiled binary's own dispatch arm, not just
+/// `ScimServer` driven in-process.
+#[test]
+#[cfg(feature = "rbac")]
+fn test_cli_rbac_serve_scim_starts_a_real_loopback_server() {
+    use std::io::{Read, Write};
+
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".weave")).unwrap();
+
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_weave"))
+        .current_dir(root)
+        .args(["rbac", "serve-scim", "--port", "0"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    // The server prints its bound address before blocking in the accept
+    // loop — read that one line to learn the real (OS-assigned) port.
+    let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut reader, &mut line).unwrap();
+    let addr = line
+        .split("on ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    assert!(!addr.is_empty(), "could not parse bound address: {line:?}");
+
+    let mut stream = std::net::TcpStream::connect(&addr).unwrap();
+    stream.write_all(b"GET /Users HTTP/1.0\r\n\r\n").unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.0 200"), "{response}");
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// `weave index --watch` picks up a real file change on its own, through
 /// a real spawned process and a real (fast-debounced) watcher — not a
 /// mocked filesystem event.
@@ -1625,6 +2083,145 @@ fn test_cli_incremental_index_and_fast_path_over_git() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Already up to date"));
+}
+
+#[test]
+fn test_cli_index_rebuilds_when_extractor_version_is_stale() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .unwrap();
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "T"]);
+    std::fs::write(root.join("lib.rs"), "fn first() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "first"]);
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("init")
+        .assert()
+        .success();
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    // Simulate an index built by an older `weave` release: no file or commit
+    // changed, so without the extractor-version check this would silently
+    // hit the "Already up to date" fast path and never re-run the (in this
+    // simulation, fixed) extraction logic.
+    std::fs::write(root.join(".weave/extractor_version"), "0").unwrap();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Already up to date").not())
+        .stdout(predicate::str::contains("Indexed"));
+
+    // The rebuild stamps the current version, so a third run on the same
+    // commit takes the fast path again instead of rebuilding every time.
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Already up to date"));
+}
+
+#[test]
+fn test_cli_index_clears_the_snapshot_cache_on_extractor_version_mismatch() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .unwrap();
+    };
+    let git_sha = || {
+        String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(root)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "T"]);
+    std::fs::write(root.join("lib.rs"), "fn first() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "first"]);
+    let sha_a = git_sha();
+
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("init")
+        .assert()
+        .success();
+    // Caches a snapshot for commit A.
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    std::fs::write(root.join("lib.rs"), "fn first() {}\nfn second() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "second"]);
+    let sha_b = git_sha();
+    // Caches a (soon-to-be-stale) snapshot for commit B too.
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success();
+
+    // Simulate an upgrade: the stamp now disagrees with the running binary.
+    std::fs::write(root.join(".weave/extractor_version"), "0").unwrap();
+    git(&["checkout", "-q", &sha_a]);
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Indexed"));
+
+    // Without clearing the cache above, B's pre-upgrade snapshot would still
+    // be sitting on disk here and get silently restored instead of reindexed.
+    git(&["checkout", "-q", &sha_b]);
+    Command::cargo_bin("weave")
+        .unwrap()
+        .current_dir(root)
+        .arg("index")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Restored cached index").not())
+        .stdout(predicate::str::contains("Indexed"));
 }
 
 #[test]

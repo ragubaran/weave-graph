@@ -15,6 +15,8 @@ use crate::moniker;
 /// so the default build carries none of it.
 #[cfg(feature = "framework-routes")]
 mod flask_route {
+    use std::collections::HashSet;
+
     use tree_sitter::Node;
 
     use super::super::util::{line_range, text};
@@ -23,16 +25,84 @@ mod flask_route {
 
     const HTTP_METHODS: &[&str] = &["get", "post", "put", "delete", "patch"];
 
+    /// Constructors that make a name a Flask route receiver — a bare
+    /// `Flask(...)`/`Blueprint(...)` call or a `flask.Blueprint(...)`
+    /// attribute-qualified one. `route_from_decorator` only tags a
+    /// decorator when its receiver was assigned from one of these; without
+    /// this, `@x.get("...")` for any unrelated `x` (a cache, an HTTP
+    /// client, an ORM query builder) false-positives as a route.
+    const FLASK_CONSTRUCTORS: &[&str] = &["Flask", "Blueprint"];
+
     pub(super) struct Route {
         pub(super) symbol: WiringCard,
         pub(super) edge: RawStructuralEdge,
+    }
+
+    /// One pre-pass over the whole file collecting every name assigned
+    /// from `Flask(...)`/`Blueprint(...)` (`app = Flask(__name__)`,
+    /// `bp = flask.Blueprint(...)`) — module scope only, the overwhelming
+    /// common case; a reassignment or a non-module-level instance (inside
+    /// a function/class) isn't tracked, same "never a guess" discipline
+    /// as the rest of this pilot.
+    pub(super) fn instance_names(root: Node, source: &[u8]) -> HashSet<String> {
+        let mut names = HashSet::new();
+        collect_instance_names(root, source, &mut names);
+        names
+    }
+
+    fn collect_instance_names(node: Node, source: &[u8], names: &mut HashSet<String>) {
+        if node.kind() == "assignment"
+            && let Some(left) = node.child_by_field_name("left")
+            && left.kind() == "identifier"
+            && let Some(right) = node.child_by_field_name("right")
+            && right.kind() == "call"
+            && let Some(function) = right.child_by_field_name("function")
+        {
+            let ctor_name = match function.kind() {
+                "identifier" => Some(text(function, source)),
+                "attribute" => function
+                    .child_by_field_name("attribute")
+                    .map(|a| text(a, source)),
+                _ => None,
+            };
+            if ctor_name.is_some_and(|n| FLASK_CONSTRUCTORS.contains(&n)) {
+                names.insert(text(left, source).to_string());
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            collect_instance_names(child, source, names);
+        }
+    }
+
+    /// Extracts a string literal's real text content via tree-sitter's own
+    /// `string_content` child nodes — not a raw-text quote-trim, which
+    /// leaves an `f`/`r`/`b`/`u` prefix stuck to the value. `None` for any
+    /// string with an `interpolation` (an f-string with a real `{expr}`):
+    /// the path isn't statically known, never a guess at its value.
+    fn static_string_value(string_node: Node, source: &[u8]) -> Option<String> {
+        let mut cursor = string_node.walk();
+        let mut content = String::new();
+        for child in string_node.children(&mut cursor) {
+            match child.kind() {
+                "string_content" => content.push_str(text(child, source)),
+                "interpolation" => return None,
+                _ => {}
+            }
+        }
+        Some(content)
     }
 
     /// `decorated` is a tree-sitter `decorated_definition` node. Returns
     /// `None` for anything that isn't a recognized Flask route decorator
     /// directly above a `function_definition` — never a guess at a
     /// pattern this pilot doesn't actually cover.
-    pub(super) fn detect(decorated: Node, source: &[u8], path: &str) -> Option<Route> {
+    pub(super) fn detect(
+        decorated: Node,
+        source: &[u8],
+        path: &str,
+        flask_names: &HashSet<String>,
+    ) -> Option<Route> {
         let handler = decorated.child_by_field_name("definition")?;
         if handler.kind() != "function_definition" {
             return None;
@@ -44,7 +114,9 @@ mod flask_route {
             .children(&mut cursor)
             .filter(|c| c.kind() == "decorator")
         {
-            if let Some(route) = route_from_decorator(decorator, source, path, handler_name) {
+            if let Some(route) =
+                route_from_decorator(decorator, source, path, handler_name, flask_names)
+            {
                 return Some(route);
             }
         }
@@ -56,10 +128,15 @@ mod flask_route {
         source: &[u8],
         path: &str,
         handler_name: &str,
+        flask_names: &HashSet<String>,
     ) -> Option<Route> {
         let call = decorator.named_child(0).filter(|n| n.kind() == "call")?;
         let function = call.child_by_field_name("function")?;
         if function.kind() != "attribute" {
+            return None;
+        }
+        let receiver = function.child_by_field_name("object")?;
+        if receiver.kind() != "identifier" || !flask_names.contains(text(receiver, source)) {
             return None;
         }
         let method_ident = text(function.child_by_field_name("attribute")?, source);
@@ -89,7 +166,7 @@ mod flask_route {
         if first_arg.kind() != "string" {
             return None;
         }
-        let route_path = text(first_arg, source).trim_matches(['"', '\'']);
+        let route_path = static_string_value(first_arg, source)?;
         let label = format!("{method} {route_path}");
         let moniker = moniker::build(path, &format!("route:{label}"));
         let (line_start, line_end) = line_range(decorator);
@@ -113,11 +190,33 @@ mod flask_route {
 
 pub(crate) fn extract(root: Node, source: &[u8], path: &str) -> ParsedFile {
     let mut file = ParsedFile::default();
-    walk(root, source, path, &[], &mut file);
+    let flask_names = flask_instance_names(root, source);
+    walk(root, source, path, &[], &mut file, &flask_names);
     file
 }
 
-fn walk(node: Node, source: &[u8], path: &str, scope: &[String], file: &mut ParsedFile) {
+#[cfg(feature = "framework-routes")]
+fn flask_instance_names(root: Node, source: &[u8]) -> std::collections::HashSet<String> {
+    flask_route::instance_names(root, source)
+}
+
+#[cfg(not(feature = "framework-routes"))]
+fn flask_instance_names(_root: Node, _source: &[u8]) -> std::collections::HashSet<String> {
+    std::collections::HashSet::new()
+}
+
+#[cfg_attr(
+    not(feature = "framework-routes"),
+    expect(clippy::only_used_in_recursion)
+)]
+fn walk(
+    node: Node,
+    source: &[u8],
+    path: &str,
+    scope: &[String],
+    file: &mut ParsedFile,
+    flask_names: &std::collections::HashSet<String>,
+) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
@@ -139,7 +238,7 @@ fn walk(node: Node, source: &[u8], path: &str, scope: &[String], file: &mut Pars
                 let mut inner_scope = scope.to_vec();
                 inner_scope.push(name.to_string());
                 if let Some(body) = child.child_by_field_name("body") {
-                    walk(body, source, path, &inner_scope, file);
+                    walk(body, source, path, &inner_scope, file, flask_names);
                 }
             }
             "function_definition" => {
@@ -187,13 +286,13 @@ fn walk(node: Node, source: &[u8], path: &str, scope: &[String], file: &mut Pars
                 // *adds* a symbol/edge, it never changes how the wrapped
                 // `function_definition` itself gets indexed.
                 #[cfg(feature = "framework-routes")]
-                if let Some(route) = flask_route::detect(child, source, path) {
+                if let Some(route) = flask_route::detect(child, source, path, flask_names) {
                     file.symbols.push(route.symbol);
                     file.structural_edges.push(route.edge);
                 }
-                walk(child, source, path, scope, file);
+                walk(child, source, path, scope, file, flask_names);
             }
-            _ => walk(child, source, path, scope, file),
+            _ => walk(child, source, path, scope, file, flask_names),
         }
     }
 }

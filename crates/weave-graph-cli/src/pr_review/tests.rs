@@ -94,7 +94,7 @@ fn cmd_pr_review_markdown_includes_the_risk_header_and_blast_body() {
     let out_path = fx.dir.path().join("pr-review.md");
     cmd_pr_review(
         fx.dir.path(),
-        "main",
+        Some("main"),
         "md",
         Some(&out_path),
         "2",
@@ -105,6 +105,8 @@ fn cmd_pr_review_markdown_includes_the_risk_header_and_blast_body() {
         None,
         None,
         &[],
+        false,
+        None,
     )
     .unwrap();
     let text = fs::read_to_string(&out_path).unwrap();
@@ -119,7 +121,7 @@ fn cmd_pr_review_json_carries_a_risk_field_alongside_blast_data() {
     let out_path = fx.dir.path().join("pr-review.json");
     cmd_pr_review(
         fx.dir.path(),
-        "main",
+        Some("main"),
         "json",
         Some(&out_path),
         "2",
@@ -130,6 +132,8 @@ fn cmd_pr_review_json_carries_a_risk_field_alongside_blast_data() {
         None,
         None,
         &[],
+        false,
+        None,
     )
     .unwrap();
     let parsed: serde_json::Value =
@@ -219,7 +223,7 @@ fn phantom_symbol_reference_is_a_warning_that_does_not_fail_by_default() {
     let out_path = dir.path().join("pr-review.md");
     cmd_pr_review(
         dir.path(),
-        "main",
+        Some("main"),
         "md",
         Some(&out_path),
         "2",
@@ -230,6 +234,8 @@ fn phantom_symbol_reference_is_a_warning_that_does_not_fail_by_default() {
         None,
         None,
         &[],
+        false,
+        None,
     )
     .unwrap();
     let text = fs::read_to_string(&out_path).unwrap();
@@ -262,7 +268,7 @@ fn policy_violation_is_a_blocker_that_fails_by_default_and_can_be_waived() {
     let out_path = dir.path().join("pr-review.md");
     let err = cmd_pr_review(
         dir.path(),
-        "main",
+        Some("main"),
         "md",
         Some(&out_path),
         "2",
@@ -273,6 +279,8 @@ fn policy_violation_is_a_blocker_that_fails_by_default_and_can_be_waived() {
         None,
         None,
         &[],
+        false,
+        None,
     )
     .unwrap_err();
     assert!(err.to_string().contains("unwaived finding"), "{err}");
@@ -281,7 +289,7 @@ fn policy_violation_is_a_blocker_that_fails_by_default_and_can_be_waived() {
 
     let waive_no_reason = cmd_pr_review(
         dir.path(),
-        "main",
+        Some("main"),
         "md",
         Some(&out_path),
         "2",
@@ -292,6 +300,8 @@ fn policy_violation_is_a_blocker_that_fails_by_default_and_can_be_waived() {
         None,
         None,
         &[],
+        false,
+        None,
     )
     .unwrap_err();
     assert!(
@@ -301,7 +311,7 @@ fn policy_violation_is_a_blocker_that_fails_by_default_and_can_be_waived() {
 
     cmd_pr_review(
         dir.path(),
-        "main",
+        Some("main"),
         "md",
         Some(&out_path),
         "2",
@@ -312,10 +322,68 @@ fn policy_violation_is_a_blocker_that_fails_by_default_and_can_be_waived() {
         None,
         None,
         &[],
+        false,
+        None,
     )
     .unwrap();
     let waived_text = fs::read_to_string(&out_path).unwrap();
     assert!(waived_text.contains("_(waived)_"), "{waived_text}");
+}
+
+/// The `--format json`'s findings array is never populated by any other
+/// test here — reuses the policy-violation fixture above, this time
+/// waived, so both the `waived` flag and a real (non-empty) findings
+/// array are exercised together.
+#[cfg(feature = "policy-lint")]
+#[test]
+fn json_format_includes_a_populated_and_waived_findings_array() {
+    let dir = init_repo();
+    fs::write(dir.path().join("core.rs"), "pub fn core() {}\n").unwrap();
+    fs::write(dir.path().join("feature.rs"), "fn feature() { core(); }\n").unwrap();
+    fs::create_dir_all(dir.path().join(".weave")).unwrap();
+    fs::write(
+        dir.path().join(".weave").join("policy.yaml"),
+        "rules:\n  - disallow:\n      from: \"feature.rs\"\n      to: \"core.rs\"\n",
+    )
+    .unwrap();
+    commit_all(dir.path(), "base");
+    git(dir.path(), &["checkout", "-q", "-b", "pr"]);
+    fs::write(
+        dir.path().join("feature.rs"),
+        "fn feature() { core(); }\nfn feature2() { feature(); }\n",
+    )
+    .unwrap();
+    commit_all(dir.path(), "pr change");
+    index_all(dir.path(), &["core.rs", "feature.rs"]);
+
+    let out_path = dir.path().join("pr-review.json");
+    cmd_pr_review(
+        dir.path(),
+        Some("main"),
+        "json",
+        Some(&out_path),
+        "2",
+        "callers",
+        "never",
+        &["policy:disallow:feature.rs->core.rs".to_string()],
+        Some("policy predates this PR"),
+        None,
+        None,
+        &[],
+        false,
+        None,
+    )
+    .unwrap();
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
+    let findings = parsed["findings"].as_array().unwrap();
+    assert!(!findings.is_empty(), "{parsed}");
+    assert!(findings[0]["waived"].as_bool().unwrap(), "{parsed}");
+    assert!(
+        findings[0]["id"].as_str().unwrap().starts_with("policy:"),
+        "{parsed}"
+    );
 }
 
 #[test]
@@ -384,7 +452,7 @@ fn linked_provider_contract_drift_is_a_blocker_finding() {
     let out_path = consumer.path().join("pr-review.md");
     let err = cmd_pr_review(
         consumer.path(),
-        "main",
+        Some("main"),
         "md",
         Some(&out_path),
         "2",
@@ -395,6 +463,8 @@ fn linked_provider_contract_drift_is_a_blocker_finding() {
         None,
         None,
         &[],
+        false,
+        None,
     )
     .unwrap_err();
     assert!(err.to_string().contains("unwaived finding"), "{err}");
@@ -465,7 +535,7 @@ fn fail_on_never_never_fails_even_with_a_blocker_finding() {
     let out_path = consumer.path().join("pr-review.md");
     cmd_pr_review(
         consumer.path(),
-        "main",
+        Some("main"),
         "md",
         Some(&out_path),
         "2",
@@ -476,6 +546,8 @@ fn fail_on_never_never_fails_even_with_a_blocker_finding() {
         None,
         None,
         &[],
+        false,
+        None,
     )
     .unwrap();
 }
@@ -485,7 +557,7 @@ fn cmd_pr_review_rejects_an_unknown_format() {
     let fx = Fixture::new();
     let err = cmd_pr_review(
         fx.dir.path(),
-        "main",
+        Some("main"),
         "yaml",
         None,
         "2",
@@ -496,6 +568,8 @@ fn cmd_pr_review_rejects_an_unknown_format() {
         None,
         None,
         &[],
+        false,
+        None,
     )
     .unwrap_err();
     assert!(err.to_string().contains("unknown format"), "{err}");
@@ -544,7 +618,7 @@ fn stack_base_scores_only_this_branchs_own_diff_not_the_whole_stack() {
     let out_path = fx.dir.path().join("pr-review.md");
     cmd_pr_review(
         fx.dir.path(),
-        "main",
+        Some("main"),
         "md",
         Some(&out_path),
         "2",
@@ -555,6 +629,8 @@ fn stack_base_scores_only_this_branchs_own_diff_not_the_whole_stack() {
         None,
         Some("branch-a"),
         &[],
+        false,
+        None,
     )
     .unwrap();
     let text = fs::read_to_string(&out_path).unwrap();
@@ -571,7 +647,7 @@ fn stack_base_auto_detects_the_nearest_ancestor_branch() {
     let out_path = fx.dir.path().join("pr-review.md");
     cmd_pr_review(
         fx.dir.path(),
-        "main",
+        Some("main"),
         "md",
         Some(&out_path),
         "2",
@@ -582,6 +658,8 @@ fn stack_base_auto_detects_the_nearest_ancestor_branch() {
         None,
         Some("auto"),
         &[],
+        false,
+        None,
     )
     .unwrap();
     let text = fs::read_to_string(&out_path).unwrap();
@@ -602,7 +680,7 @@ fn stack_base_auto_errors_clearly_with_no_ancestor_branch() {
 
     let err = cmd_pr_review(
         dir.path(),
-        "solo",
+        Some("solo"),
         "md",
         None,
         "2",
@@ -613,6 +691,8 @@ fn stack_base_auto_errors_clearly_with_no_ancestor_branch() {
         None,
         Some("auto"),
         &[],
+        false,
+        None,
     )
     .unwrap_err();
     assert!(err.to_string().contains("--stack-base auto"), "{err}");
@@ -624,7 +704,7 @@ fn stack_base_json_carries_stack_base_and_cumulative_fields() {
     let out_path = fx.dir.path().join("pr-review.json");
     cmd_pr_review(
         fx.dir.path(),
-        "main",
+        Some("main"),
         "json",
         Some(&out_path),
         "2",
@@ -635,6 +715,8 @@ fn stack_base_json_carries_stack_base_and_cumulative_fields() {
         None,
         Some("branch-a"),
         &[],
+        false,
+        None,
     )
     .unwrap();
     let parsed: serde_json::Value =
@@ -655,7 +737,7 @@ fn lane_scores_a_ref_independently_alongside_the_main_report() {
     let out_path = fx.dir.path().join("pr-review.md");
     cmd_pr_review(
         fx.dir.path(),
-        "main",
+        Some("main"),
         "md",
         Some(&out_path),
         "2",
@@ -666,6 +748,8 @@ fn lane_scores_a_ref_independently_alongside_the_main_report() {
         None,
         None,
         &["branch-a".to_string()],
+        false,
+        None,
     )
     .unwrap();
     let text = fs::read_to_string(&out_path).unwrap();
@@ -681,7 +765,7 @@ fn lane_json_includes_a_lanes_array_with_per_lane_risk() {
     let out_path = fx.dir.path().join("pr-review.json");
     cmd_pr_review(
         fx.dir.path(),
-        "main",
+        Some("main"),
         "json",
         Some(&out_path),
         "2",
@@ -692,6 +776,8 @@ fn lane_json_includes_a_lanes_array_with_per_lane_risk() {
         None,
         None,
         &["branch-a".to_string()],
+        false,
+        None,
     )
     .unwrap();
     let parsed: serde_json::Value =
@@ -708,7 +794,7 @@ fn no_stack_base_or_lanes_leaves_output_unchanged_from_before_the_flags_existed(
     let out_path = fx.dir.path().join("pr-review.md");
     cmd_pr_review(
         fx.dir.path(),
-        "main",
+        Some("main"),
         "md",
         Some(&out_path),
         "2",
@@ -719,9 +805,305 @@ fn no_stack_base_or_lanes_leaves_output_unchanged_from_before_the_flags_existed(
         None,
         None,
         &[],
+        false,
+        None,
     )
     .unwrap();
     let text = fs::read_to_string(&out_path).unwrap();
     assert!(!text.contains("Stack context"), "{text}");
     assert!(!text.contains("### Lanes"), "{text}");
+}
+
+#[test]
+fn format_html_renders_a_self_contained_page_with_the_same_content_as_markdown() {
+    let fx = Fixture::new();
+    let out_path = fx.dir.path().join("pr-review.html");
+    cmd_pr_review(
+        fx.dir.path(),
+        Some("main"),
+        "html",
+        Some(&out_path),
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        None,
+        &[],
+        false,
+        None,
+    )
+    .unwrap();
+    let text = fs::read_to_string(&out_path).unwrap();
+    assert!(text.starts_with("<!doctype html>"), "{text}");
+    assert!(text.contains("<title>Weave PR Review</title>"), "{text}");
+    assert!(text.contains("risk-badge"), "{text}");
+    assert!(text.contains("feature2"), "{text}");
+    // No server, no script tag — a self-contained file a reviewer opens by hand.
+    assert!(!text.contains("<script"), "{text}");
+}
+
+#[test]
+fn format_html_escapes_angle_brackets_in_symbol_data() {
+    let dir = init_repo();
+    fs::write(dir.path().join("core.rs"), "pub fn core() {}\n").unwrap();
+    fs::write(
+        dir.path().join("feature.rs"),
+        "fn feature<T>() { core(); }\n",
+    )
+    .unwrap();
+    commit_all(dir.path(), "base");
+    git(dir.path(), &["checkout", "-q", "-b", "pr"]);
+    fs::write(
+        dir.path().join("feature.rs"),
+        "fn feature<T>() { core(); }\nfn feature2() { feature::<u32>(); }\n",
+    )
+    .unwrap();
+    commit_all(dir.path(), "pr change");
+    index_all(dir.path(), &["core.rs", "feature.rs"]);
+
+    let out_path = dir.path().join("pr-review.html");
+    cmd_pr_review(
+        dir.path(),
+        Some("main"),
+        "html",
+        Some(&out_path),
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        None,
+        &[],
+        false,
+        None,
+    )
+    .unwrap();
+    let text = fs::read_to_string(&out_path).unwrap();
+    // A literal `<` from source (e.g. `feature<T>`) must never reach the
+    // page unescaped — that would corrupt the HTML structure.
+    assert!(!text.contains("feature<T>"), "{text}");
+    assert!(
+        text.contains("feature&lt;T&gt;") || text.contains("feature"),
+        "{text}"
+    );
+}
+
+/// A real local-path `origin` one commit ahead of a plain `git clone` of
+/// it — `--check-remote`'s exact target scenario, built with only local
+/// git plumbing (no network).
+fn fixture_with_stale_origin() -> (tempfile::TempDir, tempfile::TempDir) {
+    let upstream = tempfile::tempdir().unwrap();
+    git(upstream.path(), &["init", "-q", "-b", "main"]);
+    git(
+        upstream.path(),
+        &["config", "user.email", "test@example.com"],
+    );
+    git(upstream.path(), &["config", "user.name", "Test"]);
+    fs::write(upstream.path().join("core.rs"), "pub fn core() {}\n").unwrap();
+    commit_all(upstream.path(), "base");
+
+    let clone = tempfile::tempdir().unwrap();
+    let status = Command::new("git")
+        .args([
+            "clone",
+            "-q",
+            upstream.path().to_str().unwrap(),
+            clone.path().to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "git clone failed");
+    git(clone.path(), &["config", "user.email", "test@example.com"]);
+    git(clone.path(), &["config", "user.name", "Test"]);
+    git(clone.path(), &["checkout", "-q", "-b", "pr"]);
+    fs::write(
+        clone.path().join("feature.rs"),
+        "fn feature() { core(); }\n",
+    )
+    .unwrap();
+    commit_all(clone.path(), "pr change");
+    index_all(clone.path(), &["core.rs", "feature.rs"]);
+
+    // Advance the remote's `main` after the clone point — the clone's own
+    // local `main` is now one commit behind `origin/main`.
+    fs::write(upstream.path().join("b.rs"), "fn b() {}\n").unwrap();
+    commit_all(upstream.path(), "upstream moved on");
+
+    (upstream, clone)
+}
+
+#[test]
+fn check_remote_flags_a_stale_base_against_a_real_local_origin() {
+    let (_upstream, clone) = fixture_with_stale_origin();
+    let out_path = clone.path().join("pr-review.md");
+    cmd_pr_review(
+        clone.path(),
+        Some("main"),
+        "md",
+        Some(&out_path),
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        None,
+        &[],
+        true,
+        None,
+    )
+    .unwrap();
+    let text = fs::read_to_string(&out_path).unwrap();
+    assert!(text.contains("behind"), "{text}");
+    assert!(text.contains("refresh before trusting"), "{text}");
+}
+
+#[test]
+fn check_remote_json_carries_stale_base_fields() {
+    let (_upstream, clone) = fixture_with_stale_origin();
+    let out_path = clone.path().join("pr-review.json");
+    cmd_pr_review(
+        clone.path(),
+        Some("main"),
+        "json",
+        Some(&out_path),
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        None,
+        &[],
+        true,
+        None,
+    )
+    .unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
+    assert_eq!(parsed["stale_base"], true, "{parsed}");
+    assert_eq!(parsed["stale_base_commits_behind"], 1, "{parsed}");
+}
+
+#[test]
+fn without_check_remote_no_stale_base_field_or_network_call_happens() {
+    let (_upstream, clone) = fixture_with_stale_origin();
+    let out_path = clone.path().join("pr-review.json");
+    cmd_pr_review(
+        clone.path(),
+        Some("main"),
+        "json",
+        Some(&out_path),
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        None,
+        &[],
+        false,
+        None,
+    )
+    .unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
+    assert!(parsed.get("stale_base").is_none(), "{parsed}");
+}
+
+#[test]
+fn history_is_empty_before_any_run_and_wires_through_without_error() {
+    let fx = Fixture::new();
+    cmd_pr_review(
+        fx.dir.path(),
+        None,
+        "md",
+        None,
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        None,
+        &[],
+        false,
+        Some(10),
+    )
+    .unwrap();
+}
+
+#[test]
+fn history_without_base_and_without_history_flag_is_a_clear_error() {
+    let fx = Fixture::new();
+    let err = cmd_pr_review(
+        fx.dir.path(),
+        None,
+        "md",
+        None,
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        None,
+        &[],
+        false,
+        None,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("--base is required"), "{err}");
+}
+
+#[test]
+fn a_normal_run_is_recorded_and_then_listed_by_history() {
+    let fx = Fixture::new();
+    let out_path = fx.dir.path().join("pr-review.md");
+    cmd_pr_review(
+        fx.dir.path(),
+        Some("main"),
+        "md",
+        Some(&out_path),
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        None,
+        &[],
+        false,
+        None,
+    )
+    .unwrap();
+
+    // The run above must be queryable at the storage layer — `--history`'s
+    // own print path isn't asserted here (no stdout capture in this test
+    // harness), but the record it depends on must actually exist.
+    let (storage, _) = crate::open_storage_for_read(fx.dir.path()).unwrap();
+    let runs = storage.list_pr_review_runs(10).unwrap();
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    assert_eq!(runs[0].base, "main");
+
+    cmd_pr_review(
+        fx.dir.path(),
+        None,
+        "md",
+        None,
+        "2",
+        "callers",
+        "never",
+        &[],
+        None,
+        None,
+        None,
+        &[],
+        false,
+        Some(5),
+    )
+    .unwrap();
 }

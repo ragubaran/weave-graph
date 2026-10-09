@@ -326,6 +326,140 @@ fn stack_markdown(
     )
 }
 
+/// Escapes the five HTML-significant characters — `--format html`'s only
+/// defense against a symbol/message containing a literal `<`/`&` (real
+/// source identifiers like `Vec<T>` are exactly this case) corrupting the
+/// page structure. No templating crate: this is the entire "template".
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn risk_color(risk: RiskLevel) -> &'static str {
+    match risk {
+        RiskLevel::Low => "#2ea043",
+        RiskLevel::Medium => "#d29922",
+        RiskLevel::High => "#db6d28",
+        RiskLevel::Critical => "#da3633",
+    }
+}
+
+/// `--format html` (P11.9): one self-contained static file, no server, no
+/// network, no new Cargo dependency — `body_markdown` is the exact same
+/// text `--format md` already renders (`risk_header` + stack/lane/findings
+/// sections + `blast::render_markdown`), only escaped and wrapped. A
+/// reviewer opens this by hand; nothing here ever runs code.
+fn render_html(risk: RiskLevel, body_markdown: &str) -> String {
+    format!(
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n\
+         <title>Weave PR Review</title>\n\
+         <style>\n\
+         body{{font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;\
+         max-width:860px;margin:2rem auto;padding:0 1rem;color:#1b1f23;background:#fff}}\n\
+         .risk-badge{{display:inline-block;padding:.25rem .9rem;border-radius:999px;\
+         color:#fff;font-weight:600;background:{risk_color}}}\n\
+         pre{{white-space:pre-wrap;background:#f6f8fa;padding:1rem;border-radius:6px;\
+         overflow-x:auto;line-height:1.5}}\n\
+         </style></head><body>\n\
+         <h1>Weave PR Review</h1>\n\
+         <p class=\"risk-badge\">{risk_label}</p>\n\
+         <pre>{body}</pre>\n\
+         </body></html>\n",
+        risk_color = risk_color(risk),
+        risk_label = risk.as_str(),
+        body = html_escape(body_markdown),
+    )
+}
+
+/// `--check-remote` (P11.10): opt-in only — omitting the flag makes this a
+/// no-op, byte-identical to before the flag existed. `base` is always
+/// checked against the true merge target, never `--stack-base`: a stacked
+/// branch's own staleness relative to its parent isn't what this answers.
+fn stale_base_commits_behind(root: &Path, check_remote: bool, base: &str) -> Option<usize> {
+    if !check_remote {
+        return None;
+    }
+    git::commits_behind_remote(root, "origin", base).filter(|&n| n > 0)
+}
+
+fn stale_base_markdown(behind: Option<usize>, base: &str) -> String {
+    match behind {
+        Some(n) => format!(
+            "> ⚠️ **Base `{base}` is {n} commit{} behind `origin/{base}`** — refresh before \
+             trusting this score.\n\n",
+            if n == 1 { "" } else { "s" }
+        ),
+        None => String::new(),
+    }
+}
+
+/// `--history [<n>]` (P11.11): read-only listing, newest first. Epoch
+/// seconds are printed as-is rather than pulling in a date-formatting
+/// dependency for one CLI listing.
+fn cmd_pr_review_history(root: &Path, limit: usize) -> Result<(), Box<dyn std::error::Error>> {
+    let (storage, _db_path) = crate::open_storage_for_read(root)?;
+    let runs = storage.list_pr_review_runs(limit)?;
+    if runs.is_empty() {
+        println!("No past `weave pr-review` runs recorded.");
+        return Ok(());
+    }
+    for run in &runs {
+        let finding_count = serde_json::from_str::<serde_json::Value>(&run.findings_json)
+            .ok()
+            .and_then(|v| v.as_array().map(|a| a.len()))
+            .unwrap_or(0);
+        let reason = run
+            .reason
+            .as_deref()
+            .map(|r| format!(" ({r})"))
+            .unwrap_or_default();
+        println!(
+            "[{}] {} -> {}  risk={}  findings={}{}",
+            run.created_at, run.base, run.head, run.risk, finding_count, reason
+        );
+    }
+    Ok(())
+}
+
+/// Best-effort: a write failure here must never fail the review it's
+/// recording (`record_pr_review_run`'s own doc comment) — e.g. a read-only
+/// network-filesystem snapshot can't write, and that's fine, history is a
+/// convenience, not part of the scored result.
+fn record_history_best_effort(
+    storage: &weave_graph_store_sqlite::SqliteStorage,
+    base: &str,
+    head: &str,
+    risk: RiskLevel,
+    findings: &[Finding],
+    waive: &[String],
+    reason: Option<&str>,
+) {
+    let findings_json = serde_json::json!(
+        findings
+            .iter()
+            .map(|f| serde_json::json!({
+                "id": f.id,
+                "severity": f.severity.as_str(),
+                "message": f.message,
+                "waived": waive.contains(&f.id),
+            }))
+            .collect::<Vec<_>>()
+    )
+    .to_string();
+    let waived_ids_json = serde_json::json!(waive).to_string();
+    let _ = storage.record_pr_review_run(
+        base,
+        head,
+        risk.as_str(),
+        &findings_json,
+        &waived_ids_json,
+        reason,
+    );
+}
+
 fn lanes_markdown(lane_reports: &[(String, blast::BlastReport, RiskLevel)]) -> String {
     if lane_reports.is_empty() {
         return String::new();
@@ -349,10 +483,36 @@ fn lanes_markdown(lane_reports: &[(String, blast::BlastReport, RiskLevel)]) -> S
     out
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Shared by `--format md` and `--format html` (the latter just escapes
+/// and wraps this exact text) — one place building the report body so the
+/// two formats can never drift apart on content, only presentation.
+#[expect(clippy::too_many_arguments)]
+fn render_report_markdown(
+    stale_behind: Option<usize>,
+    risk: RiskLevel,
+    base: &str,
+    report: &blast::BlastReport,
+    resolved_stack_base: Option<&str>,
+    cumulative: Option<&blast::BlastReport>,
+    lane_reports: &[(String, blast::BlastReport, RiskLevel)],
+    findings: &[Finding],
+    waive: &[String],
+) -> String {
+    format!(
+        "## Weave PR Review\n\n{}{}{}{}{}{}",
+        stale_base_markdown(stale_behind, base),
+        risk_header(risk, report),
+        stack_markdown(resolved_stack_base, base, cumulative),
+        lanes_markdown(lane_reports),
+        findings_markdown(findings, waive),
+        blast::render_markdown(report),
+    )
+}
+
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn cmd_pr_review(
     root: &Path,
-    base: &str,
+    base: Option<&str>,
     format: &str,
     out: Option<&Path>,
     depth: &str,
@@ -363,7 +523,13 @@ pub(crate) fn cmd_pr_review(
     as_subject: Option<&str>,
     stack_base: Option<&str>,
     lanes: &[String],
+    check_remote: bool,
+    history: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(limit) = history {
+        return cmd_pr_review_history(root, limit);
+    }
+    let base = base.ok_or("--base is required unless --history is passed")?;
     let fail_on_severity = Severity::parse_fail_on(fail_on)?;
 
     // `own_base` scores *this branch's own diff*: `stack_base` when given
@@ -393,16 +559,23 @@ pub(crate) fn cmd_pr_review(
         })
         .collect::<Result<_, _>>()?;
 
+    // Opened unconditionally: `blast::compute` above already required this
+    // same database to exist, so this adds no new requirement — reused
+    // here for the federation-gated findings below and, always, for
+    // `record_history_best_effort` at the end.
+    let (storage, _db_path) = crate::open_storage_for_read(root)?;
+
     let mut findings = Vec::new();
     findings.extend(oversized_blast_finding(&report));
     #[cfg(feature = "federation")]
     {
-        let (storage, _db_path) = crate::open_storage_for_read(root)?;
         findings.extend(contract_findings(root, &storage)?);
         findings.extend(verify_findings(&storage, &report.changed_files)?);
         #[cfg(feature = "policy-lint")]
         findings.extend(policy_findings(root, &storage)?);
     }
+
+    let stale_behind = stale_base_commits_behind(root, check_remote, base);
 
     if !waive.is_empty() {
         let reason = crate::waiver::require_reason(reason)?;
@@ -447,6 +620,13 @@ pub(crate) fn cmd_pr_review(
                             .collect(),
                     ),
                 );
+                if let Some(behind) = stale_behind {
+                    obj.insert("stale_base".to_string(), serde_json::Value::Bool(true));
+                    obj.insert(
+                        "stale_base_commits_behind".to_string(),
+                        serde_json::Value::Number(behind.into()),
+                    );
+                }
                 if let Some(stack_ref) = &resolved_stack_base {
                     obj.insert(
                         "stack_base".to_string(),
@@ -485,16 +665,36 @@ pub(crate) fn cmd_pr_review(
             }
             serde_json::to_string_pretty(&value)?
         }
-        "md" | "markdown" => format!(
-            "## Weave PR Review\n\n{}{}{}{}{}",
-            risk_header(risk, &report),
-            stack_markdown(resolved_stack_base.as_deref(), base, cumulative.as_ref()),
-            lanes_markdown(&lane_reports),
-            findings_markdown(&findings, waive),
-            blast::render_markdown(&report)
+        "md" | "markdown" => render_report_markdown(
+            stale_behind,
+            risk,
+            base,
+            &report,
+            resolved_stack_base.as_deref(),
+            cumulative.as_ref(),
+            &lane_reports,
+            &findings,
+            waive,
         ),
-        other => return Err(format!("unknown format `{other}` (expected md or json)").into()),
+        "html" => render_html(
+            risk,
+            &render_report_markdown(
+                stale_behind,
+                risk,
+                base,
+                &report,
+                resolved_stack_base.as_deref(),
+                cumulative.as_ref(),
+                &lane_reports,
+                &findings,
+                waive,
+            ),
+        ),
+        other => {
+            return Err(format!("unknown format `{other}` (expected md, json, or html)").into());
+        }
     };
+    record_history_best_effort(&storage, base, &report.head, risk, &findings, waive, reason);
     match out {
         Some(path) => {
             std::fs::write(path, text)?;

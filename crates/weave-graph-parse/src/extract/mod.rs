@@ -51,7 +51,7 @@ pub(crate) fn extract(language: Language, root: Node, source: &[u8], path: &str)
         Language::Rust => rust::extract(root, source, path),
         Language::Python => python::extract(root, source, path),
         Language::JavaScript => ecma::extract(root, source, path, false),
-        Language::TypeScript => ecma::extract(root, source, path, true),
+        Language::TypeScript | Language::Tsx => ecma::extract(root, source, path, true),
         Language::Go => go::extract(root, source, path),
         Language::Java => java::extract(root, source, path),
         Language::C => c::extract(root, source, path),
