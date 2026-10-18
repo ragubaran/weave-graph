@@ -69,8 +69,8 @@ fn extractor_of(moniker: &str) -> Option<String> {
         .map(|lang| format!("{lang:?}").to_ascii_lowercase())
 }
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::collections::hash_map::RandomState;
+use std::hash::BuildHasher;
 
 /// Sentinel marking an empty slot in `StringInterner::buckets`.
 const EMPTY_SLOT: u32 = u32::MAX;
@@ -82,6 +82,15 @@ const EMPTY_SLOT: u32 = u32::MAX;
 /// `Rc` header per string), almost double the entire pipeline's 80MB
 /// budget. This arena, keyed by an open-addressed `u32` hash table instead
 /// of a `HashMap<Rc<str>, u32>`, measured ~52MB for the same workload.
+///
+/// `hasher` is a per-instance `RandomState` (the same type `std::HashMap`
+/// uses by default), not `DefaultHasher`'s fixed keys — `weave index`
+/// interns attacker-influenced strings (symbol/file names from whatever
+/// repo it's pointed at), so a fixed, publicly-known hash would let a
+/// crafted repo pick colliding names and turn every `intern` into an O(n)
+/// probe chain instead of amortized O(1) (a classic hash-flooding DoS).
+/// `RandomState::new()` seeds from OS randomness once per `StringInterner`,
+/// same defense-in-depth property `HashMap::new()` already gets for free.
 #[derive(Debug, Default, Clone)]
 pub struct StringInterner {
     arena: String,
@@ -91,6 +100,7 @@ pub struct StringInterner {
     /// Open-addressed, linear-probed index into `ends`, power-of-two sized.
     /// Append-only interner, so slots are never cleared or tombstoned.
     buckets: Vec<u32>,
+    hasher: RandomState,
 }
 
 impl StringInterner {
@@ -104,6 +114,7 @@ impl StringInterner {
             arena: String::with_capacity(capacity.saturating_mul(16)),
             ends: Vec::with_capacity(capacity),
             buckets: Vec::new(),
+            hasher: RandomState::new(),
         };
         interner.reserve_buckets(capacity.max(1));
         interner
@@ -121,10 +132,8 @@ impl StringInterner {
         &self.arena[self.span(id)]
     }
 
-    fn hash_of(s: &str) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        s.hash(&mut hasher);
-        hasher.finish()
+    fn hash_of(&self, s: &str) -> u64 {
+        self.hasher.hash_one(s)
     }
 
     /// Grows and rehashes `buckets` so it can hold `additional` more
@@ -138,7 +147,7 @@ impl StringInterner {
         let mut new_buckets = vec![EMPTY_SLOT; new_len];
         let mask = new_len - 1;
         for id in 0..self.ends.len() as u32 {
-            let hash = Self::hash_of(self.get(id));
+            let hash = self.hash_of(self.get(id));
             let mut slot = hash as usize & mask;
             while new_buckets[slot] != EMPTY_SLOT {
                 slot = (slot + 1) & mask;
@@ -167,7 +176,7 @@ impl StringInterner {
     }
 
     pub fn intern(&mut self, s: &str) -> u32 {
-        let hash = Self::hash_of(s);
+        let hash = self.hash_of(s);
         if let Some(id) = self.find(hash, s) {
             return id;
         }
@@ -185,7 +194,7 @@ impl StringInterner {
     }
 
     pub fn get_id(&self, s: &str) -> Option<u32> {
-        self.find(Self::hash_of(s), s)
+        self.find(self.hash_of(s), s)
     }
 
     pub fn resolve(&self, id: u32) -> &str {
