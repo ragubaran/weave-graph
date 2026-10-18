@@ -1,6 +1,17 @@
 # Release Notes
 
-## Unreleased — RBAC Hardening, Registry Auth & Provenance, Storage Trait Cleanup, New MCP Tools, Corrected Binary Sizes, Federated Query Persistence, Zero-Config MCP & Ignore Management, Local Pre-Push Gate, Extractor-Version-Aware Reindex Invalidation, TSX Parsing Fix, Query Path Exclusion
+## Unreleased — Faster Multi-Core Indexing, RBAC Hardening, Registry Auth & Provenance, Storage Trait Cleanup, New MCP Tools, Corrected Binary Sizes, Federated Query Persistence, Zero-Config MCP & Ignore Management, Local Pre-Push Gate, Extractor-Version-Aware Reindex Invalidation, TSX Parsing Fix, Query Path Exclusion
+
+### Faster Multi-Core Indexing
+
+`weave index` parses, resolves, and writes across more of its pipeline in parallel now, instead of alternating single-threaded stages. Measured on a 500,000-symbol / 5,000-file corpus on one 8-core machine: indexing wall clock dropped from 24–27s to **~8s (roughly 3× faster)**, and peak memory dropped from 162 MiB to **110 MiB** (itself down from an original 381 MiB across earlier, separate fixes).
+
+- The CPU work of building nodes and resolving edges now runs inside the parser's thread pool instead of on the single thread that also writes to SQLite.
+- Parsing the next batch of files now overlaps writing the previous batch, instead of waiting for each to finish before starting the next.
+- The parse-batch size now scales with the machine's detected core count (unchanged on an 8-core machine, larger on a machine with more cores) — see `WEAVE_INDEX_THREADS` in [configuration.md](configuration.md#thread-count-override-weave_index_threads) to override the detected thread count for benchmarking.
+- The one-time full-rebuild write path (`weave index` with no prior index, or after a large change set) is faster: relaxed, explicitly-synced durability settings on the disposable rebuild file, and its secondary lookup indexes are built once after loading data instead of maintained row-by-row during it.
+- Indexing's internal string-deduplication table was rewritten to use one contiguous memory buffer instead of one allocation per unique symbol name — the single largest driver of indexing's memory use, cut from measuring ~155 MiB in isolation at 500,000 symbols to ~52 MiB.
+- Indexing memory use is still above this project's 80 MiB target at this scale (110 MiB) — closing that gap further is ongoing, tracked as `PERF-G16`.
 
 ### TSX Parsing Fix and `weave query` Path Exclusion
 

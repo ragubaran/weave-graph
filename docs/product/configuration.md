@@ -117,6 +117,18 @@ There is no dedicated toggle for this — the only two ways past the refusal are
 
 A separate, unconditional check runs before any of the above: `weave index` stamps `.weave/extractor_version` after every successful run, and forces a full rebuild — bypassing both the "already up to date" fast path and `--incremental` — whenever that stamp doesn't match the running binary's own parsing/extraction logic version. Git-diff-based change detection only sees changed file content; it can't see a `weave` upgrade that changed how files are parsed. There's no config key for this either — it's a correctness check, not a tunable.
 
+### Thread count override (`WEAVE_INDEX_THREADS`)
+
+`weave index` parses files across a `rayon` thread pool sized from the machine's detected core count (the tighter of a cgroup CPU quota and `std::thread::available_parallelism`, never more than either actually offers). Setting `WEAVE_INDEX_THREADS=<N>` narrows that pool to at most `N` threads — it can only reduce the detected ceiling, never raise it past what the machine or container actually allows:
+
+```bash
+WEAVE_INDEX_THREADS=1 weave index
+```
+
+This is a benchmarking/debugging knob, not a `.weave/config.toml` key — there is no `[index] threads` setting. Most users never need it; the default already scales with the machine.
+
+**Indexing performance (2026-10-15 measurement, 500,000 symbols / 5,000 files, one 8-core machine):** `weave index`'s wall clock dropped from 24–27s to ~8s (roughly 3× faster) and peak memory from 162 MiB to 110 MiB, after moving the parser's CPU work into the thread pool, overlapping parsing with writing, scaling the parse-batch size with the detected core count, and speeding up the once-per-rebuild SQLite write path. See `docs/proposal_multi.md` for the full before/after numbers — these are specific to that test machine and corpus shape, not a guaranteed multiplier on every setup.
+
 ---
 
 ## 4. Multi-Repo Federation (`[federation]`)

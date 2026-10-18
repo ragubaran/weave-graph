@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::Mutex;
+use std::sync::mpsc;
 
 use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 
@@ -28,7 +29,16 @@ fn fail_next_promotion(active_db: &Path) {
     }
 }
 
+/// `open_rebuild` runs with `synchronous = OFF` (P4a: the rebuild file is
+/// disposable until promoted, so skipping `fsync` on every write is safe) —
+/// which means SQLite itself never flushed these pages to stable storage.
+/// This call forces that flush via a fresh file handle (`fsync` operates on
+/// the inode, not the writer's own fd) before the rename makes the file
+/// live. Plain `fsync`, not macOS's stronger `F_FULLFSYNC`: the same
+/// trade-off every other non-SQLite-aware tool on this platform already
+/// makes, and well short of worth an `unsafe` FFI call for.
 fn promote_rebuild(rebuild_db: &Path, active_db: &Path) -> std::io::Result<()> {
+    fs::File::open(rebuild_db)?.sync_all()?;
     #[cfg(test)]
     if let Ok(mut failure) = FAIL_PROMOTION_FOR.lock()
         && failure.as_ref().is_some_and(|path| path == active_db)
@@ -36,7 +46,14 @@ fn promote_rebuild(rebuild_db: &Path, active_db: &Path) -> std::io::Result<()> {
         *failure = None;
         return Err(std::io::Error::other("injected rebuild promotion failure"));
     }
-    fs::rename(rebuild_db, active_db)
+    fs::rename(rebuild_db, active_db)?;
+    if let Some(parent) = active_db.parent() {
+        // Best-effort: durably record the rename itself. Not every
+        // filesystem supports fsync-ing a directory; failure here isn't
+        // fatal since the rename already succeeded.
+        let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
+    }
+    Ok(())
 }
 
 /// Distinct file paths already in `active_db` — the `total_indexed` input
@@ -93,14 +110,32 @@ pub(crate) fn build_project_index_from_storage(
 const PARSE_CHUNK: usize = 32;
 const STAGED_WRITE_ROWS: usize = 10_000;
 
+/// Benchmark-only override for sweeping the worker-thread count (proposal
+/// P0) — reads `WEAVE_INDEX_THREADS` once, the same one-time-env-read
+/// convention every `WEAVE_HOME` call site in this crate already uses.
+fn threads_override_env() -> Option<usize> {
+    std::env::var("WEAVE_INDEX_THREADS")
+        .ok()?
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|&n| n >= 1)
+}
+
 /// Detects the real environment once per pipeline run (P10.1/P10.9) and
 /// scales `PARSE_CHUNK`/`STAGED_WRITE_ROWS`/the parser pool's thread count
-/// down under a genuine cgroup/host-memory ceiling — an ample or
-/// undetectable one reproduces today's constants exactly. Prints one
+/// down under a genuine cgroup/host-memory ceiling, or up with the thread
+/// count (P3) — an ample or undetectable memory ceiling on an 8-or-fewer-
+/// thread machine reproduces today's constants exactly. Prints one
 /// explanatory line to stderr only when it actually reduced something.
 fn admission_budget() -> resource_budget::AdmissionBudget {
-    let budget = resource_budget::detect_admission_budget(PARSE_CHUNK, STAGED_WRITE_ROWS);
-    if let Some(explanation) = budget.explain(PARSE_CHUNK) {
+    let budget = resource_budget::detect_admission_budget(
+        PARSE_CHUNK,
+        STAGED_WRITE_ROWS,
+        threads_override_env(),
+    );
+    let baseline = resource_budget::thread_scaled_chunk(PARSE_CHUNK, budget.worker_threads);
+    if let Some(explanation) = budget.explain(baseline) {
         eprintln!("{explanation}");
     }
     budget
@@ -141,55 +176,101 @@ fn bounded_parser_pool(worker_threads: usize) -> Result<ThreadPool, StorageError
         .map_err(|error| StorageError::Backend(format!("could not start parser pool: {error}")))
 }
 
-/// The parse stage is the *only* parallel stage: chunks of files are
-/// parsed across the rayon pool, then folded strictly serially into the
-/// caller's closure — node/edge writes stay funnel-shaped through the one
-/// SQLite connection (L10's single-writer constraint). A parse error or
-/// unparseable file is reported and skipped, exactly as the sequential
-/// loop always behaved. `parse_chunk`/`worker_threads` come from the
-/// caller's [`resource_budget::AdmissionBudget`] — file processing order
-/// never changes, only batch size (P10.1's own "deterministic ordering
-/// preserved" requirement).
-fn parse_files_bounded(
+/// Parses one chunk of files on `parser_pool`: `map` turns each
+/// `ParsedFile` into the caller's owned `T` inside the pool (proposal P1 —
+/// this is the CPU work that used to run serially inside `fold`, safe to
+/// parallelize now that `ProjectIndex` holds no `Rc` and is `Sync`). A
+/// parse error or unparseable file is reported and skipped, exactly as the
+/// original sequential loop always behaved.
+fn parse_chunk_mapped<T: Send>(
+    parser_pool: &ThreadPool,
+    root: &Path,
+    chunk: &[PathBuf],
+    map: &(impl Fn(&str, &ParsedFile) -> T + Sync + Send),
+) -> Vec<(String, Option<T>)> {
+    parser_pool.install(|| {
+        chunk
+            .par_iter()
+            .map(|file_path| {
+                let rel = rel_path(root, file_path);
+                let mapped = match fs::read_to_string(file_path) {
+                    Ok(source) => match parse_file(Path::new(&rel), &source) {
+                        Some(Ok(parsed)) => Some(map(&rel, &parsed)),
+                        Some(Err(err)) => {
+                            eprintln!("skipping {}: {err}", file_path.display());
+                            None
+                        }
+                        None => None,
+                    },
+                    Err(_) => None,
+                };
+                (rel, mapped)
+            })
+            .collect::<Vec<_>>()
+    })
+}
+
+/// The parse stage is the *only* parallel stage; node/edge *writes* stay
+/// funnel-shaped through the one SQLite connection (L10's single-writer
+/// constraint). Proposal P2: a producer thread (`std::thread::scope` — no
+/// `unsafe`, no `'static`/`Arc` needed since the scope outlives it) keeps
+/// parsing chunk *N+1* on the pool while this thread's `fold` writes chunk
+/// *N*, instead of alternating parse-then-write-then-parse. The
+/// `sync_channel(1)` buffer caps the overlap at exactly one chunk ahead —
+/// bounded memory, same as the un-overlapped version. `parse_chunk`/
+/// `worker_threads` come from the caller's
+/// [`resource_budget::AdmissionBudget`] — file processing order never
+/// changes, only batch size and overlap (P10.1's own "deterministic
+/// ordering preserved" requirement): `sync_channel` is strictly FIFO, and
+/// each chunk's own `par_iter().collect()` already preserves intra-chunk
+/// order.
+fn parse_files_bounded<T: Send>(
     root: &Path,
     files: &[PathBuf],
     parse_chunk: usize,
     worker_threads: usize,
-    mut fold: impl FnMut(&str, &ParsedFile) -> Result<(), StorageError>,
+    map: impl Fn(&str, &ParsedFile) -> T + Sync + Send,
+    mut fold: impl FnMut(&str, T) -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
     let parser_pool = bounded_parser_pool(worker_threads)?;
-    let mut failure = None;
-    for chunk in files.chunks(parse_chunk.max(1)) {
-        let parsed = parser_pool.install(|| {
-            chunk
-                .par_iter()
-                .map(|file_path| {
-                    let rel = rel_path(root, file_path);
-                    let parsed = match fs::read_to_string(file_path) {
-                        Ok(source) => match parse_file(Path::new(&rel), &source) {
-                            Some(Ok(parsed)) => Some(parsed),
-                            Some(Err(err)) => {
-                                eprintln!("skipping {}: {err}", file_path.display());
-                                None
-                            }
-                            None => None,
-                        },
-                        Err(_) => None,
-                    };
-                    (rel, parsed)
-                })
-                .collect::<Vec<_>>()
+    let (tx, rx) = mpsc::sync_channel::<Vec<(String, Option<T>)>>(1);
+    std::thread::scope(|scope| {
+        // `move`: `SyncSender::send` only needs `&self`, so without `move`
+        // the closure would capture `tx` *by reference* and the real,
+        // owning `tx` would still be alive back in this stack frame after
+        // the thread finishes — the channel would never actually close,
+        // and `for mapped in &rx` below would block forever. `move` makes
+        // this thread the sole owner, so `tx` drops when it returns.
+        scope.spawn(move || {
+            for chunk in files.chunks(parse_chunk.max(1)) {
+                let mapped = parse_chunk_mapped(&parser_pool, root, chunk, &map);
+                if tx.send(mapped).is_err() {
+                    // The receiving end below dropped `rx` after a `fold`
+                    // error — stop parsing further chunks, same early-exit
+                    // the pre-P2 version got by just not looping again.
+                    break;
+                }
+            }
         });
-        for (rel, parsed) in parsed {
-            if let Some(parsed) = parsed
-                && failure.is_none()
-                && let Err(err) = fold(&rel, &parsed)
-            {
-                failure = Some(err);
+        let mut failure = None;
+        for mapped in &rx {
+            for (rel, mapped) in mapped {
+                if let Some(mapped) = mapped
+                    && failure.is_none()
+                    && let Err(err) = fold(&rel, mapped)
+                {
+                    failure = Some(err);
+                }
+            }
+            if failure.is_some() {
+                // Drop `rx` (by breaking out of its own iterator) so the
+                // producer's next `send` fails fast instead of blocking on
+                // a full channel forever.
+                break;
             }
         }
-    }
-    failure.map_or(Ok(()), Err)
+        failure.map_or(Ok(()), Err)
+    })
 }
 
 // Parses all files in memory for contract hashing or federated queries
@@ -233,7 +314,7 @@ fn upsert_all_nodes(
         budget.parse_chunk,
         budget.worker_threads,
         |rel, parsed| {
-            let nodes = parsed
+            parsed
                 .symbols
                 .iter()
                 .map(|symbol| Node {
@@ -246,7 +327,9 @@ fn upsert_all_nodes(
                     line_end: symbol.line_end,
                     signature: symbol.signature.clone(),
                 })
-                .collect::<Vec<_>>();
+                .collect::<Vec<_>>()
+        },
+        |rel, nodes: Vec<Node>| {
             let node_ids = storage.upsert_nodes(&nodes)?;
             let written_rows = node_ids.len();
             ids.extend(node_ids.into_iter().map(|id| (rel.to_string(), id)));
@@ -276,7 +359,7 @@ fn upsert_all_edges(
         files,
         budget.parse_chunk,
         budget.worker_threads,
-        |rel, parsed| {
+        |_rel, parsed| {
             let (edges, unresolved) = project_index.resolve_ids(parsed);
             let resolved = edges
                 .into_iter()
@@ -294,6 +377,9 @@ fn upsert_all_edges(
                     })
                 })
                 .collect::<Vec<_>>();
+            (resolved, unresolved)
+        },
+        |rel, (resolved, unresolved): (Vec<Edge>, Vec<String>)| {
             let written_rows = resolved.len() + unresolved.len();
             storage.upsert_edges(&resolved)?;
             use weave_graph_core::Storage;
@@ -521,9 +607,13 @@ pub(crate) fn full_reindex(
     if rebuild_db.exists() {
         fs::remove_file(&rebuild_db)?;
     }
-    let mut storage = SqliteStorage::open(&rebuild_db)?;
+    // `open_rebuild`, not `open`: this file is disposable until
+    // `promote_rebuild` renames it over the live database (P4a's
+    // `synchronous = OFF` relies on exactly that distinction).
+    let mut storage = SqliteStorage::open_rebuild(&rebuild_db)?;
     storage.begin_bulk_write()?;
     let budget = admission_budget();
+    let deferred_indexes = storage.drop_non_unique_indexes(&["nodes", "edges"])?;
 
     // One parse pass writes nodes only — edge resolution needs its own
     // separate pass regardless (the *complete* index only exists after
@@ -541,7 +631,7 @@ pub(crate) fn full_reindex(
         budget.parse_chunk,
         budget.worker_threads,
         |rel, parsed| {
-            let nodes = parsed
+            parsed
                 .symbols
                 .iter()
                 .map(|symbol| Node {
@@ -554,7 +644,9 @@ pub(crate) fn full_reindex(
                     line_end: symbol.line_end,
                     signature: symbol.signature.clone(),
                 })
-                .collect::<Vec<_>>();
+                .collect::<Vec<_>>()
+        },
+        |_rel, nodes: Vec<Node>| {
             let written_rows = storage.insert_fresh_nodes(&nodes)?.len();
             total_symbols += written_rows;
             rotate_staged_write(
@@ -579,6 +671,10 @@ pub(crate) fn full_reindex(
         &budget,
     )?;
     let total_edges = storage.edge_count()?;
+    // Recreate what `drop_non_unique_indexes` deferred now, in one pass
+    // over the now-fully-populated tables — before any optional feature
+    // below runs its own by-symbol/by-path lookups against them.
+    storage.recreate_indexes(&deferred_indexes)?;
     #[cfg(feature = "docs")]
     {
         let parsed_md = crate::docs::parse_markdown_files(files);
@@ -683,16 +779,21 @@ pub(crate) fn incremental_reindex(
         budget.parse_chunk,
         budget.worker_threads,
         |_rel, parsed| {
-            for symbol in &parsed.symbols {
-                short_names.insert(
+            parsed
+                .symbols
+                .iter()
+                .map(|symbol| {
                     symbol
                         .symbol
                         .rsplit("::")
                         .next()
                         .unwrap_or(&symbol.symbol)
-                        .to_string(),
-                );
-            }
+                        .to_string()
+                })
+                .collect::<Vec<_>>()
+        },
+        |_rel, names: Vec<String>| {
+            short_names.extend(names);
             Ok(())
         },
     );

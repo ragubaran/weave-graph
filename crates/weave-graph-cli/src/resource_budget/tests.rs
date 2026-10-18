@@ -177,6 +177,52 @@ fn cgroup_v1_positive_quota_computes_thread_count() {
     assert_eq!(detect_cpu_threads(dir.path(), 16), 1);
 }
 
+#[test]
+fn thread_scaled_chunk_matches_todays_default_at_eight_threads() {
+    // The dev machine this crate's own defaults were tuned against —
+    // today's exact 32-file chunk, unchanged.
+    assert_eq!(thread_scaled_chunk(32, 8), 32);
+}
+
+#[test]
+fn thread_scaled_chunk_grows_past_the_default_on_a_wider_machine() {
+    assert_eq!(thread_scaled_chunk(32, 16), 64);
+    assert_eq!(
+        thread_scaled_chunk(32, 1),
+        32,
+        "never shrinks below the default"
+    );
+}
+
+#[test]
+fn ample_ceiling_on_a_wide_machine_reproduces_the_grown_baseline() {
+    let ceiling = MemoryCeiling {
+        bytes: Some(8 * 1024 * 1024 * 1024),
+        source: CeilingSource::HostPhysicalMemory,
+    };
+    let budget = compute_admission_budget(ceiling, 16, 32, 10_000);
+    assert_eq!(budget.parse_chunk, 64);
+    assert!(budget.explain(64).is_none());
+}
+
+#[test]
+fn a_tight_ceiling_on_a_wide_machine_still_scales_down_from_the_grown_baseline() {
+    // reserved_bytes = 512MiB / 4 = 128MiB -> scale = 0.25, well clear of
+    // MIN_PARSE_CHUNK's floor for both the 32- and 64-file baselines below.
+    let ceiling = MemoryCeiling {
+        bytes: Some(512 * 1024 * 1024),
+        source: CeilingSource::CgroupV2,
+    };
+    let narrow = compute_admission_budget(ceiling, 8, 32, 10_000);
+    let wide = compute_admission_budget(ceiling, 16, 32, 10_000);
+    assert_eq!(narrow.parse_chunk, 8);
+    // Baseline here is 64, not 32 — the same proportional scale factor
+    // against a wider baseline must land at double the 8-thread case's
+    // parse_chunk, not the same absolute number.
+    assert_eq!(wide.parse_chunk, narrow.parse_chunk * 2);
+    assert!(wide.parse_chunk >= MIN_PARSE_CHUNK);
+}
+
 /// `a_tight_ceiling_scales_batch_sizes_down...` above only names
 /// `CgroupV2` in its explanation text — the other three `CeilingSource`
 /// arms of `explain`'s own match are exercised nowhere else.

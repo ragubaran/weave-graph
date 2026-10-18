@@ -408,6 +408,50 @@ fn external_package_import_call_wrongly_resolves_to_an_unrelated_local_function_
     );
 }
 
+// --- StringInterner: growth, collision probing, and round-trips ---
+
+#[test]
+fn intern_returns_a_stable_id_for_a_repeated_string() {
+    let mut interner = StringInterner::default();
+    let first = interner.intern("a.rs#helper");
+    let second = interner.intern("a.rs#helper");
+    assert_eq!(first, second);
+    assert_eq!(interner.resolve(first), "a.rs#helper");
+}
+
+#[test]
+fn get_id_returns_none_for_a_string_never_interned() {
+    let mut interner = StringInterner::default();
+    interner.intern("a.rs#helper");
+    assert_eq!(interner.get_id("a.rs#other"), None);
+}
+
+#[test]
+fn interning_enough_strings_to_force_several_bucket_resizes_round_trips_every_id() {
+    // Starting at the default's empty bucket table and a deliberately tiny
+    // `with_capacity`, intern far more strings than either fits without
+    // growing — forces `reserve_buckets` to resize (and rehash every
+    // existing entry) multiple times, and at this count some strings are
+    // near-certain to collide on their initial probe slot before resizing,
+    // exercising the linear-probing loop in both `find` and `intern`.
+    let mut interner = StringInterner::with_capacity(2);
+    let strings: Vec<String> = (0..5_000)
+        .map(|i| format!("src/file_{}.rs#symbol_{i}", i / 10))
+        .collect();
+
+    let ids: Vec<u32> = strings.iter().map(|s| interner.intern(s)).collect();
+
+    for (s, &id) in strings.iter().zip(&ids) {
+        assert_eq!(interner.resolve(id), s.as_str());
+        assert_eq!(interner.get_id(s), Some(id));
+    }
+
+    // Re-interning after growth must still return the original, stable ids.
+    for (s, &id) in strings.iter().zip(&ids) {
+        assert_eq!(interner.intern(s), id);
+    }
+}
+
 #[test]
 fn resolution_kind_as_str_matches_the_schema_free_form_values() {
     assert_eq!(ResolutionKind::SameFileExact.as_str(), "SAME_FILE_EXACT");

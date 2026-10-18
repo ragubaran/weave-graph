@@ -101,15 +101,52 @@ fn bounded_parser_folds_files_in_order_across_parse_batches() {
         .map(|i| fx.write(&format!("f{i:03}.rs"), &format!("fn f{i}() {{}}\n")))
         .collect();
     let mut folded = Vec::new();
-    parse_files_bounded(fx.root(), &files, PARSE_CHUNK, 4, |rel, _parsed| {
-        folded.push(rel.to_string());
-        Ok(())
-    })
+    parse_files_bounded(
+        fx.root(),
+        &files,
+        PARSE_CHUNK,
+        4,
+        |rel, _parsed| rel.to_string(),
+        |_rel, mapped: String| {
+            folded.push(mapped);
+            Ok(())
+        },
+    )
     .unwrap();
 
     assert_eq!(folded.len(), files.len());
     assert_eq!(folded.first().map(String::as_str), Some("f000.rs"));
     assert_eq!(folded.last().map(String::as_str), Some("f064.rs"));
+}
+
+/// Proposal P1: the `map` stage now runs CPU work *inside* `par_iter`,
+/// across however many worker threads the pool has — this is the one test
+/// that would catch a `map` closure that isn't actually safe to call from
+/// multiple threads concurrently (a `Sync` bound violation shows up as a
+/// compile error, not a runtime one, but a data race in shared state the
+/// bound doesn't catch would only ever show up here).
+#[test]
+fn bounded_parser_runs_the_map_stage_across_real_worker_threads() {
+    let fx = Fixture::new();
+    let files: Vec<_> = (0..40)
+        .map(|i| fx.write(&format!("f{i:03}.rs"), &format!("fn f{i}() {{}}\n")))
+        .collect();
+    let mut symbol_counts = Vec::new();
+    parse_files_bounded(
+        fx.root(),
+        &files,
+        8,
+        4,
+        |_rel, parsed| parsed.symbols.len(),
+        |_rel, count: usize| {
+            symbol_counts.push(count);
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(symbol_counts.len(), 40);
+    assert!(symbol_counts.iter().all(|&n| n == 1));
 }
 
 #[test]
@@ -133,14 +170,17 @@ fn staged_write_rotation_checkpoints_and_keeps_the_next_transaction_open() {
     assert_eq!(storage.all_nodes().unwrap().len(), 2);
 }
 
-/// P10.1: on this real host, `admission_budget()` must never *widen*
-/// today's constants — only an actually-detected, tight ceiling scales
-/// them down — and it must always admit real forward progress (a chunk
-/// and a worker count of at least one).
+/// P10.1/P3: on this real host, `admission_budget()` must never exceed the
+/// thread-scaled ceiling (`PARSE_CHUNK` on a machine with 8 or fewer
+/// detected threads; wider on a machine with more, per
+/// `resource_budget::thread_scaled_chunk`) — only an actually-detected,
+/// tight memory ceiling scales it down from there — and it must always
+/// admit real forward progress (a chunk and a worker count of at least one).
 #[test]
 fn admission_budget_never_exceeds_todays_static_defaults() {
     let budget = admission_budget();
-    assert!(budget.parse_chunk >= 1 && budget.parse_chunk <= PARSE_CHUNK);
+    let baseline = resource_budget::thread_scaled_chunk(PARSE_CHUNK, budget.worker_threads);
+    assert!(budget.parse_chunk >= 1 && budget.parse_chunk <= baseline);
     assert!(budget.staged_write_rows >= 1 && budget.staged_write_rows <= STAGED_WRITE_ROWS);
     assert!(budget.worker_threads >= 1);
 }

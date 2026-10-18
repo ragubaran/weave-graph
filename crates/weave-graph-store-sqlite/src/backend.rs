@@ -79,12 +79,20 @@ impl SqliteStorage {
 
     /// Opens a fresh database at `rebuild_path` for a bulk rebuild.
     /// Caller atomically renames it over the live path on success; a crash
-    /// orphans the temp file and leaves the live index intact.
+    /// orphans the temp file and leaves the live index intact — so unlike
+    /// `open`, this connection runs with `synchronous = OFF`: a crash before
+    /// this file is ever promoted just means the next rebuild discards and
+    /// recreates it (`index.rs`'s own `fail_next_promotion`/stale-rebuild
+    /// cleanup already assumes that). The caller must still call
+    /// `sync_rebuild_file` after the final commit/checkpoint and before
+    /// promoting, since `OFF` means SQLite itself never calls `fsync`.
     pub fn open_rebuild(rebuild_path: &Path) -> Result<Self, StorageError> {
         #[cfg(feature = "vector")]
         crate::vector::ensure_vector_extension();
         let conn = Connection::open(rebuild_path).map_err(backend_err)?;
         conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(backend_err)?;
+        conn.pragma_update(None, "synchronous", "OFF")
             .map_err(backend_err)?;
         conn.pragma_update(None, "mmap_size", 0)
             .map_err(backend_err)?;
@@ -209,6 +217,50 @@ impl SqliteStorage {
     /// the transaction open, rolled back automatically when `self` drops.
     pub fn begin_bulk_write(&self) -> Result<(), StorageError> {
         self.conn.execute_batch("BEGIN").map_err(backend_err)
+    }
+
+    /// Proposal P4b: drops every non-unique index on `tables` and returns
+    /// their own original `CREATE INDEX` SQL (read from `sqlite_master`,
+    /// not a second, hand-maintained copy that could drift from
+    /// `weave-graph-core`'s migrations), so a bulk rebuild's row inserts
+    /// don't pay to maintain them one row at a time — `recreate_indexes`
+    /// rebuilds them in one pass instead, after the table is already full.
+    /// Unique indexes are never touched: this crate's own `ON CONFLICT`
+    /// targets (natural-key dedup on `nodes`/`edges`) depend on them
+    /// staying in place for the very same bulk load.
+    pub fn drop_non_unique_indexes(&self, tables: &[&str]) -> Result<Vec<String>, StorageError> {
+        let mut select = self
+            .conn
+            .prepare(
+                "SELECT name, sql FROM sqlite_master \
+                 WHERE type = 'index' AND tbl_name = ?1 \
+                 AND sql NOT LIKE 'CREATE UNIQUE INDEX%'",
+            )
+            .map_err(backend_err)?;
+        let mut definitions = Vec::new();
+        for table in tables {
+            let rows: Vec<(String, String)> = select
+                .query_map(params![table], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(backend_err)?
+                .collect::<Result<_, _>>()
+                .map_err(backend_err)?;
+            for (name, sql) in rows {
+                self.conn
+                    .execute_batch(&format!("DROP INDEX \"{name}\""))
+                    .map_err(backend_err)?;
+                definitions.push(sql);
+            }
+        }
+        Ok(definitions)
+    }
+
+    /// Recreates indexes previously dropped by `drop_non_unique_indexes`,
+    /// from their own saved `CREATE INDEX` SQL.
+    pub fn recreate_indexes(&self, index_sql: &[String]) -> Result<(), StorageError> {
+        for sql in index_sql {
+            self.conn.execute_batch(sql).map_err(backend_err)?;
+        }
+        Ok(())
     }
 
     /// Inserts a batch into a fresh staged database without identity lookups.

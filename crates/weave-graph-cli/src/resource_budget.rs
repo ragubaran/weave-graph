@@ -144,11 +144,26 @@ pub(crate) fn detect_cpu_threads(cgroup_root: &Path, available_parallelism: usiz
 
 /// The memory level today's static `PARSE_CHUNK`/`STAGED_WRITE_ROWS`
 /// constants are already sized for (a typical dev machine) — admission
-/// only ever scales them *down*, and only once the detected ceiling
+/// only ever scales them *down* from the (possibly thread-scaled, see
+/// `thread_scaled_chunk`) baseline, and only once the detected ceiling
 /// implies less than a quarter of this is available to the pipeline.
 const REFERENCE_BUDGET_BYTES: u64 = 512 * 1024 * 1024;
 const MIN_PARSE_CHUNK: usize = 4;
 const MIN_STAGED_WRITE_ROWS: usize = 500;
+
+/// Proposal P3: a fixed 32-file parse chunk leaves extra worker threads idle
+/// once a machine has more logical cores than that — each `rayon` chunk can
+/// only ever occupy as many threads as it has files. Scaling the chunk with
+/// the thread count keeps every worker fed without changing anything on a
+/// typical 8-thread dev machine (`8 * 4 == 32`, today's exact default).
+const CHUNK_FILES_PER_THREAD: usize = 4;
+
+/// The parse-chunk size before any memory-ceiling scaling: never smaller
+/// than the caller's own default, grown to keep `worker_threads` busy on a
+/// machine with more cores than `default_parse_chunk` already assumes.
+pub(crate) fn thread_scaled_chunk(default_parse_chunk: usize, worker_threads: usize) -> usize {
+    default_parse_chunk.max(worker_threads.saturating_mul(CHUNK_FILES_PER_THREAD))
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AdmissionBudget {
@@ -163,26 +178,28 @@ pub(crate) struct AdmissionBudget {
 /// pipeline's own working-set budget and scales the parse-batch and
 /// staged-write-row sizes linearly against `REFERENCE_BUDGET_BYTES` —
 /// never below a floor that would make progress on a genuinely tiny
-/// container, never above the caller's own defaults (so an ample/unknown
-/// ceiling reproduces today's exact behavior). File processing order is
-/// untouched either way — only batch *size* changes, never *order*.
+/// container, never above the thread-scaled baseline (so an ample/unknown
+/// ceiling reproduces that baseline exactly, unchanged from today's
+/// constants on a typical dev machine). File processing order is untouched
+/// either way — only batch *size* changes, never *order*.
 pub(crate) fn compute_admission_budget(
     ceiling: MemoryCeiling,
     worker_threads: usize,
     default_parse_chunk: usize,
     default_staged_write_rows: usize,
 ) -> AdmissionBudget {
+    let baseline_chunk = thread_scaled_chunk(default_parse_chunk, worker_threads);
     let reserved_bytes = ceiling.bytes.map(|b| b / 4);
     let (parse_chunk, staged_write_rows) = match reserved_bytes {
         Some(budget) if budget < REFERENCE_BUDGET_BYTES => {
             let scale = budget as f64 / REFERENCE_BUDGET_BYTES as f64;
-            let chunk = ((default_parse_chunk as f64 * scale).round() as usize)
-                .clamp(MIN_PARSE_CHUNK, default_parse_chunk);
+            let chunk = ((baseline_chunk as f64 * scale).round() as usize)
+                .clamp(MIN_PARSE_CHUNK, baseline_chunk);
             let rows = ((default_staged_write_rows as f64 * scale).round() as usize)
                 .clamp(MIN_STAGED_WRITE_ROWS, default_staged_write_rows);
             (chunk, rows)
         }
-        _ => (default_parse_chunk, default_staged_write_rows),
+        _ => (baseline_chunk, default_staged_write_rows),
     };
     AdmissionBudget {
         parse_chunk,
@@ -194,12 +211,14 @@ pub(crate) fn compute_admission_budget(
 }
 
 impl AdmissionBudget {
-    /// One line explaining *why* concurrency/batch size was reduced —
-    /// `None` when this budget reproduces the caller's defaults exactly,
-    /// so a normal dev-machine run prints nothing new (P10.9's own ask:
-    /// "expose why concurrency was reduced", not "always print something").
-    pub(crate) fn explain(&self, default_parse_chunk: usize) -> Option<String> {
-        if self.parse_chunk == default_parse_chunk {
+    /// One line explaining *why* concurrency/batch size was reduced below
+    /// `baseline_parse_chunk` (the thread-scaled value, before any
+    /// memory-ceiling scaling — see `thread_scaled_chunk`) — `None` when
+    /// this budget reproduces that baseline exactly, so a normal dev-machine
+    /// run prints nothing new (P10.9's own ask: "expose why concurrency was
+    /// reduced", not "always print something").
+    pub(crate) fn explain(&self, baseline_parse_chunk: usize) -> Option<String> {
+        if self.parse_chunk == baseline_parse_chunk {
             return None;
         }
         let source = match self.ceiling.source {
@@ -222,9 +241,19 @@ impl AdmissionBudget {
 /// caller's own default constants. The one impure entry point in this
 /// module — everything it calls is a plain file read or a `sysctl`
 /// subprocess, no caching, no global state, called once per pipeline run.
+///
+/// Proposal P0: `threads_override` lets a benchmark sweep the worker-thread
+/// count without a CLI flag's signature change rippling through every
+/// `full_reindex`/`incremental_reindex` test call site — the caller reads
+/// `WEAVE_INDEX_THREADS` once (same one-time-env-read-at-the-call-site
+/// convention `storage_location::resolve_data_dir` already uses for
+/// `WEAVE_HOME`) and passes the parsed value here. Can only ever *narrow*
+/// the detected ceiling, same as a CLI flag "clamped to `[1,
+/// detect_cpu_threads(..)]`" would; `None` changes nothing.
 pub(crate) fn detect_admission_budget(
     default_parse_chunk: usize,
     default_staged_write_rows: usize,
+    threads_override: Option<usize>,
 ) -> AdmissionBudget {
     let cgroup_root = Path::new("/sys/fs/cgroup");
     let proc_meminfo = Path::new("/proc/meminfo");
@@ -232,6 +261,9 @@ pub(crate) fn detect_admission_budget(
         .map(|c| c.get())
         .unwrap_or(1);
     let worker_threads = detect_cpu_threads(cgroup_root, available);
+    let worker_threads = threads_override
+        .map(|override_threads| override_threads.clamp(1, worker_threads))
+        .unwrap_or(worker_threads);
     let ceiling = detect_memory_ceiling(cgroup_root, proc_meminfo);
     compute_admission_budget(
         ceiling,
