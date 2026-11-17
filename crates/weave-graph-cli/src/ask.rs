@@ -134,7 +134,7 @@ pub(crate) fn cmd_ask(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn finish(
     storage: &dyn Storage,
     grounded: &RoutedCall,

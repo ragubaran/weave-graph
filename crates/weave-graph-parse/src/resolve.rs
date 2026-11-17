@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 
 use crate::Language;
@@ -202,12 +201,18 @@ impl StringInterner {
     }
 }
 
+/// Sentinel bit marking an overflow index in `ProjectIndex::first_candidate`.
+const OVERFLOW_BIT: u32 = 1 << 31;
+
 /// Project-wide symbol table used to turn raw per-file references into edges.
-/// Uses uint32 string interning internally to stay within the 80MB envelope.
+/// Uses uint32 string interning and inline single-candidate storage to stay
+/// within the 80MB resource envelope.
 #[derive(Debug, Default)]
 pub struct ProjectIndex {
     interner: StringInterner,
-    by_short_name: HashMap<u32, Vec<u32>>,
+    short_names: StringInterner,
+    first_candidate: Vec<u32>,
+    overflow: Vec<Vec<u32>>,
 }
 
 impl ProjectIndex {
@@ -215,13 +220,14 @@ impl ProjectIndex {
         Self::default()
     }
 
-    /// Pre-sizes the interner and `by_short_name` table for a known total
-    /// symbol count, avoiding the unsized-growth allocations profiling
-    /// identified as the dominant driver of indexing peak RSS.
+    /// Pre-sizes the interners and candidate table for a known total symbol
+    /// count, avoiding unsized-growth allocations and per-symbol heap vectors.
     pub fn with_capacity(symbol_count: usize) -> Self {
         Self {
-            interner: StringInterner::with_capacity(symbol_count * 2),
-            by_short_name: HashMap::with_capacity(symbol_count),
+            interner: StringInterner::with_capacity(symbol_count),
+            short_names: StringInterner::with_capacity(symbol_count),
+            first_candidate: Vec::with_capacity(symbol_count),
+            overflow: Vec::new(),
         }
     }
 
@@ -233,12 +239,20 @@ impl ProjectIndex {
     }
 
     pub fn add_symbol(&mut self, moniker: &str, short_name: &str) -> u32 {
-        let name_id = self.interner.intern(short_name);
+        let name_id = self.short_names.intern(short_name) as usize;
         let moniker_id = self.interner.intern(moniker);
-        self.by_short_name
-            .entry(name_id)
-            .or_default()
-            .push(moniker_id);
+        if name_id == self.first_candidate.len() {
+            self.first_candidate.push(moniker_id);
+        } else {
+            let entry = self.first_candidate[name_id];
+            if entry & OVERFLOW_BIT == 0 {
+                let overflow_idx = self.overflow.len() as u32;
+                self.overflow.push(vec![entry, moniker_id]);
+                self.first_candidate[name_id] = OVERFLOW_BIT | overflow_idx;
+            } else {
+                self.overflow[(entry & !OVERFLOW_BIT) as usize].push(moniker_id);
+            }
+        }
         moniker_id
     }
 
@@ -247,10 +261,15 @@ impl ProjectIndex {
     }
 
     fn candidates(&self, short_name: &str) -> &[u32] {
-        self.interner
-            .get_id(short_name)
-            .and_then(|id| self.by_short_name.get(&id).map(Vec::as_slice))
-            .unwrap_or(&[])
+        let Some(name_id) = self.short_names.get_id(short_name) else {
+            return &[];
+        };
+        let entry = &self.first_candidate[name_id as usize];
+        if *entry & OVERFLOW_BIT == 0 {
+            std::slice::from_ref(entry)
+        } else {
+            &self.overflow[(*entry & !OVERFLOW_BIT) as usize]
+        }
     }
 
     fn resolve_one(

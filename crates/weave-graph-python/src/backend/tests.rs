@@ -240,4 +240,42 @@ fn test_trace_calls_edge_cases() {
     // Test with zero depth
     let result = graph.trace_calls("caller", 0);
     assert!(result.is_ok());
+
+    // Test multi-hop cycle and corrupt database errors
+    let mut storage = SqliteStorage::open(&path).unwrap();
+    let d = storage.upsert_node(&node("d.rs", "deep", 30)).unwrap();
+    storage.upsert_edge(&edge(d, 1)).unwrap();
+    storage.upsert_edge(&edge(1, d)).unwrap();
+    let graph = open_graph(&path);
+    let (out, inc) = graph.trace_calls("caller", 3).unwrap();
+    assert!(!out.is_empty());
+    assert!(!inc.is_empty());
+
+    let bad_db = dir.path().join("corrupt.db");
+    std::fs::write(&bad_db, b"not a sqlite file").unwrap();
+    Python::with_gil(|py| {
+        assert!(WeaveGraph::new(bad_db.to_str().unwrap()).is_err());
+        assert!(schema_version(bad_db.to_str().unwrap()).is_err());
+        let m = PyModule::new(py, "weave_graph").unwrap();
+        assert!(super::weave_graph(&m).is_ok());
+        let path_str = path.to_str().unwrap();
+        let ver: u32 = m
+            .getattr("schema_version")
+            .unwrap()
+            .call1((path_str,))
+            .unwrap()
+            .extract()
+            .unwrap();
+        assert_eq!(ver, weave_graph_core::schema::LATEST_SCHEMA_VERSION);
+        let py_graph = m.getattr("WeaveGraph").unwrap().call1((path_str,)).unwrap();
+        assert!(py_graph.call_method1("get_node", (1u32,)).is_ok());
+        assert!(py_graph.call_method1("get_edges", (1u32,)).is_ok());
+        assert!(py_graph.call_method1("query_path", (1u32, 2u32)).is_ok());
+        assert!(py_graph.call_method1("impact_radius", ("caller",)).is_ok());
+        assert!(
+            py_graph
+                .call_method1("trace_calls", ("caller", 2u32))
+                .is_ok()
+        );
+    });
 }

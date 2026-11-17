@@ -859,50 +859,42 @@ fn test_cli_uncompiled_features_fail_with_clear_message() {
 
     // Every one of these is a real command once its gating feature is
     // compiled in, so it's only still a stub in a build that leaves that
-    // feature out. mut is only exercised when at least one push below runs.
-    #[allow(unused_mut)]
-    let mut uncompiled_commands: Vec<Vec<&str>> = Vec::new();
-    #[cfg(not(feature = "federation"))]
-    uncompiled_commands.push(vec!["link", "a", "b"]);
-    #[cfg(not(feature = "federation"))]
-    uncompiled_commands.push(vec!["check-contracts"]);
-    // `ask`/`slm`/`journal` are real commands once `slm` is compiled.
-    #[cfg(not(feature = "slm"))]
-    uncompiled_commands.push(vec!["ask", "test"]);
-    #[cfg(not(feature = "slm"))]
-    uncompiled_commands.push(vec!["slm", "list"]);
-    #[cfg(not(feature = "slm"))]
-    uncompiled_commands.push(vec!["journal"]);
-    // `sync pull`/`push` are real commands once `hub` is compiled.
-    #[cfg(not(feature = "hub"))]
-    uncompiled_commands.push(vec!["sync", "pull"]);
-    // `weave index --watch` is real once `watch` is compiled.
-    #[cfg(not(feature = "watch"))]
-    uncompiled_commands.push(vec!["index", "--watch"]);
-    // `weave note ...` is real once `notes` is compiled.
-    #[cfg(not(feature = "notes"))]
-    uncompiled_commands.push(vec!["note", "list"]);
-    // `weave traces ...` and `weave policy ...` are real commands once
-    // `otel`/`policy-lint` are compiled.
-    #[cfg(not(feature = "otel"))]
-    uncompiled_commands.push(vec!["traces", "import", "traces.json"]);
-    #[cfg(not(feature = "policy-lint"))]
-    uncompiled_commands.push(vec!["policy", "lint"]);
-    // `weave rbac serve-scim` and `weave plan-migration` are real once
-    // `rbac`/`federation` are compiled.
-    #[cfg(not(feature = "rbac"))]
-    uncompiled_commands.push(vec!["rbac", "serve-scim"]);
-    #[cfg(not(feature = "federation"))]
-    uncompiled_commands.push(vec!["plan-migration", "f"]);
-    #[cfg(not(feature = "federation"))]
-    uncompiled_commands.push(vec!["query-federated", "a", "b", "impact(x)"]);
-    #[cfg(not(feature = "federation"))]
-    uncompiled_commands.push(vec!["report-federated", "a", "b"]);
+    // feature out.
+    let uncompiled_commands: &[&[&str]] = &[
+        #[cfg(not(feature = "federation"))]
+        &["link", "a", "b"],
+        #[cfg(not(feature = "federation"))]
+        &["check-contracts"],
+        #[cfg(not(feature = "slm"))]
+        &["ask", "test"],
+        #[cfg(not(feature = "slm"))]
+        &["slm", "list"],
+        #[cfg(not(feature = "slm"))]
+        &["journal"],
+        #[cfg(not(feature = "hub"))]
+        &["sync", "pull"],
+        #[cfg(not(feature = "watch"))]
+        &["index", "--watch"],
+        #[cfg(not(feature = "notes"))]
+        &["note", "list"],
+        #[cfg(not(feature = "otel"))]
+        &["traces", "import", "traces.json"],
+        #[cfg(not(feature = "policy-lint"))]
+        &["policy", "lint"],
+        #[cfg(not(feature = "rbac"))]
+        &["rbac", "serve-scim"],
+        #[cfg(not(feature = "federation"))]
+        &["plan-migration", "f"],
+        #[cfg(not(feature = "federation"))]
+        &["query-federated", "a", "b", "impact(x)"],
+        #[cfg(not(feature = "federation"))]
+        &["report-federated", "a", "b"],
+    ];
 
     for args in uncompiled_commands {
         let mut cmd = Command::cargo_bin("weave").unwrap();
         cmd.current_dir(root)
-            .args(&args)
+            .args(*args)
             .assert()
             .failure()
             .stderr(predicate::str::contains("requires the"));

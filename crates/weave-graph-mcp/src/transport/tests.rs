@@ -379,10 +379,11 @@ fn http_transport_run_security_check() {
 
 #[test]
 fn http_transport_run_bind_error() {
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = occupied.local_addr().unwrap().port();
     let storage = setup_storage();
     let handler = McpHandler::new(storage).unwrap();
-    // Port 1 usually requires root privileges or is unusable, giving Io error
-    let mut transport = HttpTransport::new("127.0.0.1", 1, false);
+    let mut transport = HttpTransport::new("127.0.0.1", port, false);
     assert!(transport.run(&handler).is_err());
 }
 

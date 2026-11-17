@@ -7,7 +7,7 @@ use std::sync::Once;
 
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use weave_graph_core::embedding::EmbeddingProvider;
-use weave_graph_core::{NodeId, StorageError};
+use weave_graph_core::{Node, NodeId, StorageError};
 
 /// Fixed to match `MockEmbeddingProvider`'s default — `vec0`'s column
 /// dimension is baked into `CREATE VIRTUAL TABLE`, so a different
@@ -20,24 +20,11 @@ fn backend_err(e: rusqlite::Error) -> StorageError {
 
 static REGISTER_EXTENSION: Once = Once::new();
 
-/// Registers `sqlite-vec`'s C extension once per process via
-/// `sqlite3_auto_extension` — every `Connection` opened afterward (in
-/// this process) gets `vec0`/`vec_quantize_*` for free.
-///
-/// Safety: `sqlite_vec::sqlite3_vec_init` is a valid, ABI-compatible
-/// SQLite extension entry point — this is `sqlite-vec`'s own documented
-/// registration incantation (its crate-level test uses the identical
-/// cast), verified live against this exact dependency version before
-/// landing here. SQLite itself deduplicates repeat registration of the
-/// same pointer, making the `Once` a belt-and-suspenders guard.
-///
-/// Must run before the *first* `Connection::open*` call in the process —
-/// `sqlite3_auto_extension` only affects connections opened after
-/// registration, never ones already open (caught live: calling this from
-/// inside `ensure_vector_table`, after the connection it was given had
-/// already been opened, left every `vec0` query failing with "no such
-/// module").
-#[allow(unsafe_code)]
+// Registers `sqlite-vec`'s C extension once per process before the first
+// `Connection::open*` call.
+// Safety: `sqlite_vec::sqlite3_vec_init` is a valid, ABI-compatible SQLite
+// extension entry point deduplicated by `Once` and SQLite itself.
+#[expect(unsafe_code)]
 pub(crate) fn ensure_vector_extension() {
     REGISTER_EXTENSION.call_once(|| unsafe {
         rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
@@ -216,28 +203,16 @@ pub(crate) fn purge_excluded_paths(
     Ok(deleted as u64)
 }
 
-/// Three-stage funnel: binary ANN oversampled by `oversample`, reranked
-/// against the int8 column, capped at `limit` — never queries the binary
-/// index standalone, since recall drops sharply without this rerank.
-///
-/// Stage 2 reranks in Rust rather than a second `vec0` KNN query: `WHERE
-/// int8_vec MATCH ... AND rowid IN (...)` reliably fails live with "A
-/// LIMIT or 'k = ?' constraint is required on vec0 knn queries" — `vec0`
-/// doesn't recognize its own KNN constraint once an extra predicate joins
-/// it. A plain (non-KNN) row read of the stored `int8_vec` bytes for
-/// exactly the stage-1 candidates has no such restriction.
-///
-/// `visible` (SEC-01) filters candidates *before* `truncate(limit)`, not
-/// after — filtering post-truncation starves `limit` of any masked hit
-/// ranked ahead of a visible one, sometimes down to zero results, and lets
-/// a caller infer a hidden file's existence from the result-count drop.
+// Three-stage funnel: binary ANN oversampled by `oversample`, joined with
+// `nodes` to apply `visible` without N+1 queries, reranked against `int8_vec`,
+// and capped at `limit`.
 pub(crate) fn search(
     conn: &Connection,
     embedder: &dyn EmbeddingProvider,
     query_text: &str,
     limit: usize,
     oversample: usize,
-    visible: Option<&dyn Fn(NodeId) -> bool>,
+    visible: Option<&dyn Fn(&Node) -> bool>,
 ) -> Result<Vec<NodeId>, StorageError> {
     validate_dimensions(embedder)?;
     let has_vectors: bool = conn
@@ -275,26 +250,46 @@ pub(crate) fn search(
     }
 
     let placeholders = candidates.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!("SELECT rowid, int8_vec FROM vec_chunks WHERE rowid IN ({placeholders})");
+    let sql = if visible.is_some() {
+        format!(
+            "SELECT v.rowid, v.int8_vec, n.repo_id, n.path, n.symbol, n.kind, \
+             n.line_start, n.line_end, n.signature \
+             FROM vec_chunks v JOIN nodes n ON n.id = v.rowid \
+             WHERE v.rowid IN ({placeholders})"
+        )
+    } else {
+        format!("SELECT rowid, int8_vec FROM vec_chunks WHERE rowid IN ({placeholders})")
+    };
     let mut stage2 = conn.prepare(&sql).map_err(backend_err)?;
-    let mut scored: Vec<(NodeId, f32)> = stage2
-        .query_map(params_from_iter(candidates.iter()), |r| {
-            Ok((r.get::<_, i64>(0)? as NodeId, r.get::<_, Vec<u8>>(1)?))
-        })
-        .map_err(backend_err)?
-        .map(|row| {
-            let (id, int8_bytes) = row.map_err(backend_err)?;
-            let dot: f32 = int8_bytes
-                .iter()
-                .map(|&b| b as i8 as f32)
-                .zip(&query)
-                .map(|(a, b)| a * b)
-                .sum();
-            Ok((id, dot))
-        })
-        .collect::<Result<_, StorageError>>()?;
-    if let Some(visible) = visible {
-        scored.retain(|(id, _)| visible(*id));
+    let mut rows = stage2
+        .query(params_from_iter(candidates.iter()))
+        .map_err(backend_err)?;
+    let mut scored: Vec<(NodeId, f32)> = Vec::new();
+    while let Some(r) = rows.next().map_err(backend_err)? {
+        let id = r.get::<_, i64>(0).map_err(backend_err)? as NodeId;
+        if let Some(check) = visible {
+            let node = Node {
+                id,
+                repo_id: r.get(2).map_err(backend_err)?,
+                path: r.get(3).map_err(backend_err)?,
+                symbol: r.get(4).map_err(backend_err)?,
+                kind: r.get(5).map_err(backend_err)?,
+                line_start: r.get(6).map_err(backend_err)?,
+                line_end: r.get(7).map_err(backend_err)?,
+                signature: r.get(8).map_err(backend_err)?,
+            };
+            if !check(&node) {
+                continue;
+            }
+        }
+        let int8_bytes: Vec<u8> = r.get(1).map_err(backend_err)?;
+        let dot: f32 = int8_bytes
+            .iter()
+            .map(|&b| b as i8 as f32)
+            .zip(&query)
+            .map(|(a, b)| a * b)
+            .sum();
+        scored.push((id, dot));
     }
     scored.sort_by(|a, b| b.1.total_cmp(&a.1));
     scored.truncate(limit);

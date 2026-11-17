@@ -12,7 +12,7 @@
 #[path = "../src/slm.rs"]
 // Standalone bench compilation sees only a slice of the module's
 // internal API — dead-code analysis is meaningless in this context.
-#[allow(dead_code)]
+#[expect(dead_code)]
 mod slm;
 
 use criterion::{Criterion, criterion_group, criterion_main};

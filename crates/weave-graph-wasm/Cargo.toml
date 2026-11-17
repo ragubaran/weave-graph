@@ -11,7 +11,6 @@ name = "weave_graph_wasm"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 wasm-bindgen = "0.2"
 weave-graph-core = { path = "../weave-graph-core" }

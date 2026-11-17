@@ -369,7 +369,7 @@ fn provenance_status_names_the_verification_mode() {
     // Both arms are pure label selection; exercise them directly since
     // only `main` calls them otherwise. The `mut` only matters for
     // provenance builds, which reassign the key-file path below.
-    #[allow(unused_mut)]
+    #[cfg_attr(not(feature = "hub-provenance"), expect(unused_mut))]
     let mut args = Args {
         bind: String::new(),
         data_dir: PathBuf::new(),

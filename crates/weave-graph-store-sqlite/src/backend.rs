@@ -1367,16 +1367,7 @@ impl Storage for SqliteStorage {
         oversample: usize,
         visible: Option<&dyn Fn(&Node) -> bool>,
     ) -> Result<Vec<NodeId>, StorageError> {
-        let node_visible = |id: NodeId| match self.get_node(id) {
-            Ok(Some(node)) => visible.is_none_or(|v| v(&node)),
-            _ => false,
-        };
-        let filter: Option<&dyn Fn(NodeId) -> bool> = if visible.is_some() {
-            Some(&node_visible as &dyn Fn(NodeId) -> bool)
-        } else {
-            None
-        };
-        crate::vector::search(&self.conn, embedder, query_text, limit, oversample, filter)
+        crate::vector::search(&self.conn, embedder, query_text, limit, oversample, visible)
     }
 
     /// POL-02: self-KNN over already-embedded chunks, no fresh query text.

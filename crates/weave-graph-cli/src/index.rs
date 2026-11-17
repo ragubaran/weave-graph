@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::Mutex;
 use std::sync::mpsc;
+use std::time::Instant;
 
 use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 
@@ -594,37 +595,31 @@ fn path_is_excluded(path: &str, prefix: &str) -> bool {
 }
 
 /// Full rebuild: parse everything, write into a fresh `.rebuild` file, then
-/// atomically swap it in (Core Invariant 2). The safe default when there's
-/// no existing index to diff against, or `should_bail_out` says the change
-/// set is too large for a targeted update to be worth it.
+/// atomically swap it in when no existing index or incremental bail-out applies.
 pub(crate) fn full_reindex(
     root: &Path,
     weave_dir: &Path,
     active_db: &Path,
     files: &[PathBuf],
 ) -> Result<IndexStats, Box<dyn std::error::Error>> {
+    let report_timings = std::env::var_os("WEAVE_INDEX_TIMINGS").is_some_and(|v| v == "1");
+    let total_start = Instant::now();
     let rebuild_db = weave_dir.join("graph.db.rebuild");
     if rebuild_db.exists() {
         fs::remove_file(&rebuild_db)?;
     }
-    // `open_rebuild`, not `open`: this file is disposable until
-    // `promote_rebuild` renames it over the live database (P4a's
-    // `synchronous = OFF` relies on exactly that distinction).
+    // `open_rebuild` disables per-commit fsync while staging into the
+    // disposable `.rebuild` file before `promote_rebuild` renames it live.
     let mut storage = SqliteStorage::open_rebuild(&rebuild_db)?;
     storage.begin_bulk_write()?;
     let budget = admission_budget();
     let deferred_indexes = storage.drop_non_unique_indexes(&["nodes", "edges"])?;
 
-    // One parse pass writes nodes only — edge resolution needs its own
-    // separate pass regardless (the *complete* index only exists after
-    // every file is seen), so building a `ProjectIndex` here too would be
-    // pure waste: `build_project_index_from_storage` below builds the one
-    // that's actually used, from the now-written `nodes` table, cheaper
-    // than a second parse. The `ParsedFile` is dropped per chunk; nothing
-    // accumulates (PERF-06's streaming constraint, bounded by the
-    // admission budget's `parse_chunk` instead of one-at-a-time).
+    // Pass 1 writes nodes only and drops each chunk's `ParsedFile`;
+    // `build_project_index_from_storage` then builds the resolver from SQLite.
     let mut total_symbols = 0usize;
     let mut pending_rows = 0usize;
+    let nodes_start = Instant::now();
     parse_files_bounded(
         root,
         files,
@@ -659,8 +654,13 @@ pub(crate) fn full_reindex(
         },
     )?;
     restart_staged_write(&storage, &mut pending_rows)?;
+    let nodes_ms = nodes_start.elapsed().as_millis();
 
+    let project_index_start = Instant::now();
     let (project_index, moniker_id_to_node) = build_project_index_from_storage(&storage)?;
+    let project_index_ms = project_index_start.elapsed().as_millis();
+
+    let edges_start = Instant::now();
     upsert_all_edges(
         &mut storage,
         root,
@@ -671,10 +671,15 @@ pub(crate) fn full_reindex(
         &budget,
     )?;
     let total_edges = storage.edge_count()?;
-    // Recreate what `drop_non_unique_indexes` deferred now, in one pass
-    // over the now-fully-populated tables — before any optional feature
-    // below runs its own by-symbol/by-path lookups against them.
+    let edges_ms = edges_start.elapsed().as_millis();
+
+    // Recreate deferred secondary indexes in one pass over populated tables
+    // before optional features query symbols or paths.
+    let indexes_start = Instant::now();
     storage.recreate_indexes(&deferred_indexes)?;
+    let recreate_indexes_ms = indexes_start.elapsed().as_millis();
+
+    let optional_start = Instant::now();
     #[cfg(feature = "docs")]
     {
         let parsed_md = crate::docs::parse_markdown_files(files);
@@ -684,7 +689,7 @@ pub(crate) fn full_reindex(
     }
     #[cfg(feature = "notes")]
     {
-        // Carry notes over from the old database the rebuild is replacing,
+        // Carry notes over from the old database the rebuild is replacing.
         crate::notes::carry_over_and_prune(
             &storage,
             active_db,
@@ -711,10 +716,26 @@ pub(crate) fn full_reindex(
     {
         rebuild_fts_text(root, &storage)?;
     }
+    let optional_ms = optional_start.elapsed().as_millis();
+
+    let promote_start = Instant::now();
     storage.commit_bulk_write()?;
     storage.checkpoint_wal()?;
     drop(storage);
     promote_rebuild(&rebuild_db, active_db)?;
+    let promote_ms = promote_start.elapsed().as_millis();
+
+    if report_timings {
+        let total_ms = total_start.elapsed().as_millis();
+        eprintln!(
+            "timings files={} symbols={total_symbols} edges={total_edges} threads={} \
+             nodes_ms={nodes_ms} project_index_ms={project_index_ms} edges_ms={edges_ms} \
+             recreate_indexes_ms={recreate_indexes_ms} optional_ms={optional_ms} \
+             promote_ms={promote_ms} total_ms={total_ms}",
+            files.len(),
+            budget.worker_threads,
+        );
+    }
 
     Ok(IndexStats {
         files: files.len(),

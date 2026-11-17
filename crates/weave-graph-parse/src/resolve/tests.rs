@@ -360,16 +360,18 @@ fn a_structural_edge_with_multiple_candidates_is_tagged_ambiguous_heuristic() {
         "class Base:\n    pass\nclass Child(Base):\n    pass\n",
     );
     let b = parse(Language::Python, "b.py", "class Base:\n    pass\n");
+    let c = parse(Language::Python, "c.py", "class Base:\n    pass\n");
     let mut index = ProjectIndex::new();
     index.add_file(&a);
     index.add_file(&b);
+    index.add_file(&c);
 
     let edges = index.resolve(&a);
     let inherits: Vec<_> = edges.0.iter().filter(|e| e.kind == "INHERITS").collect();
     assert_eq!(
         inherits.len(),
-        2,
-        "both same-named Base candidates must appear"
+        3,
+        "all three same-named Base candidates must appear via overflow bucket"
     );
     assert!(
         inherits

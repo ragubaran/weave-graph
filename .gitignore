@@ -32,3 +32,9 @@ docs/*
 !docs/product/
 !docs/product/**
 .github/copilot-instructions.md
+
+# Remote cloud build & Mutagen config
+.cloud/
+mutagen.yml
+mutagen.yml.lock
+.mcp.json
