@@ -38,3 +38,6 @@ docs/*
 mutagen.yml
 mutagen.yml.lock
 .mcp.json
+.playwright-mcp/
+.playwright-mcp-cache/
+.playwright/

@@ -1,6 +1,6 @@
 # Model Context Protocol (MCP) Integration
 
-`weave serve --mcp` implements the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) specification (version `2024-11-05`), exposing the indexed code intelligence graph directly to AI coding agents (Claude Desktop, Claude Code, Cursor, Windsurf, Zed, Continue, Copilot).
+`weave serve --mcp` implements the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) specification (negotiating `2025-06-18`, `2025-03-26`, and `2024-11-05` during `initialize`), exposing the indexed code intelligence graph directly to AI coding agents (Claude Desktop, Claude Code, Cursor, Windsurf, Zed, Continue, Copilot).
 
 Unlike agent plugins that invoke external LLMs or third-party web services, `weave` executes **100% deterministically and offline**: tool queries are answered in microseconds directly from the on-disk SQLite database (`.weave/graph.db`) and in-memory CSR adjacency matrix.
 
@@ -509,11 +509,11 @@ You can test `weave serve --mcp` directly from the command line using standard J
 
 ### Test Initialize
 ```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}' | weave serve --mcp
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' | weave serve --mcp
 ```
 **Expected Response:**
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"tools":{}},"protocolVersion":"2024-11-05","serverInfo":{"name":"weave","version":"0.1.0"}}}
+{"jsonrpc":"2.0","id":1,"result":{"capabilities":{"tools":{}},"protocolVersion":"2025-06-18","serverInfo":{"name":"weave","version":"1.0.1"}}}
 ```
 
 ### Test Tools List

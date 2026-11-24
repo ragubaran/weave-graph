@@ -14,7 +14,8 @@ mod resolve;
 
 pub use language::Language;
 pub use model::{
-    ParsedFile, RawCall, RawStructuralEdge, StructuralEdgeKind, SymbolKind, WiringCard,
+    ImportedSymbol, ParsedFile, RawCall, RawStructuralEdge, StructuralEdgeKind, SymbolKind,
+    WiringCard,
 };
 pub use parser::{ParseError, SourceParser, parse_file};
 pub use resolve::{ProjectIndex, ResolutionKind, ResolvedEdge};

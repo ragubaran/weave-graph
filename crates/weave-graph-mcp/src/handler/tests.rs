@@ -100,6 +100,81 @@ fn handle_initialize() {
     assert_eq!(res.id, Some(json!(1)));
     let result = res.result.unwrap();
     assert_eq!(result["serverInfo"]["name"], "weave");
+    assert_eq!(result["protocolVersion"], "2025-06-18");
+}
+
+#[test]
+fn mcp_spec_conformance_version_negotiation_and_jsonrpc_errors() {
+    let storage = setup_storage();
+    let handler = McpHandler::new(storage).unwrap();
+
+    for ver in ["2024-11-05", "2025-03-26", "2025-06-18"] {
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 10,
+            "method": "initialize",
+            "params": { "protocolVersion": ver }
+        })
+        .to_string();
+        let res = handler.handle_message(&req).unwrap();
+        assert_eq!(res.result.unwrap()["protocolVersion"], ver);
+    }
+
+    let unsupported = json!({
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "initialize",
+        "params": { "protocolVersion": "1999-01-01" }
+    })
+    .to_string();
+    let res = handler.handle_message(&unsupported).unwrap();
+    assert_eq!(res.result.unwrap()["protocolVersion"], "2025-06-18");
+
+    let bad_rpc = json!({
+        "jsonrpc": "1.0",
+        "id": 12,
+        "method": "ping"
+    })
+    .to_string();
+    assert_eq!(
+        handler
+            .handle_message(&bad_rpc)
+            .unwrap()
+            .error
+            .unwrap()
+            .code,
+        -32600
+    );
+
+    let missing_params = json!({
+        "jsonrpc": "2.0",
+        "id": 13,
+        "method": "tools/call"
+    })
+    .to_string();
+    assert_eq!(
+        handler
+            .handle_message(&missing_params)
+            .unwrap()
+            .error
+            .unwrap()
+            .code,
+        -32602
+    );
+
+    let list_req = json!({
+        "jsonrpc": "2.0",
+        "id": 14,
+        "method": "tools/list"
+    })
+    .to_string();
+    let tools = handler.handle_message(&list_req).unwrap().result.unwrap()["tools"]
+        .as_array()
+        .unwrap()
+        .clone();
+    for tool in tools {
+        assert_eq!(tool["inputSchema"]["type"], "object");
+    }
 }
 
 #[test]

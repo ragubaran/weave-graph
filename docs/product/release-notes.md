@@ -10,15 +10,17 @@
 - Parsing the next batch of files now overlaps writing the previous batch, instead of waiting for each to finish before starting the next.
 - The parse-batch size now scales with the machine's detected core count (unchanged on an 8-core machine, larger on a machine with more cores) — see `WEAVE_INDEX_THREADS` in [configuration.md](configuration.md#thread-count-override-weave_index_threads) to override the detected thread count for benchmarking.
 - The one-time full-rebuild write path (`weave index` with no prior index, or after a large change set) is faster: relaxed, explicitly-synced durability settings on the disposable rebuild file, and its secondary lookup indexes are built once after loading data instead of maintained row-by-row during it.
-- Indexing's internal string-deduplication table was rewritten to use one contiguous memory buffer instead of one allocation per unique symbol name — the single largest driver of indexing's memory use, cut from measuring ~155 MiB in isolation at 500,000 symbols to ~52 MiB.
-- Indexing memory use is still above this project's 80 MiB target at this scale (110 MiB) — closing that gap further is ongoing, tracked as `PERF-G16`.
+- Indexing's internal string-deduplication table and `ProjectIndex` short-name lookup were rewritten to use contiguous arena storage (`StringInterner` + inline `first_candidate: Vec<u32>`). On the 6-vCPU Linux VM (`500,000` symbols / `5,000` files), full CLI indexing dropped from `28.55s` to **`14.21s` (`2.01×`)** and peak RSS dropped to **`57 MiB`** (`<= 80 MiB`, closing `PERF-G16`).
 
-### TSX Parsing Fix and `weave query` Path Exclusion
+### Graft Issue-Tracker Audit Fixes (TSX Parsing, `weave query` Path Exclusion, Import Provenance, `REFERENCES` Edges & MCP Protocol Negotiation)
 
-Two correctness fixes found while auditing another tree-sitter-based tool's issue tracker for gap classes worth checking here (see `docs/recom_new_fea.md`):
+Fixes verified against `weave-graph`'s codebase from auditing another tree-sitter-based tool's issue tracker (see `docs/recom_new_fea.md`):
 
 - **`.tsx` files now use the TSX grammar, not plain TypeScript's.** Previously `.tsx` was parsed with `LANGUAGE_TYPESCRIPT`, which cannot parse JSX syntax — any function whose body contained JSX became an unrecoverable parse error and silently vanished from the symbol table entirely, not just missing an edge. New `Language::Tsx` variant routes `.tsx` to `LANGUAGE_TSX` (same `tree-sitter-typescript` dependency, no new crate), sharing the existing TypeScript/JavaScript extractor. JSX component-usage reference edges (`<Foo />` → `Foo`) still aren't extracted — this fix closes the data-loss bug, not the separate, narrower missing-edge gap.
 - **`weave query`'s `path:` filter now supports exclusion**: `path:!<prefix>` drops nodes whose path starts with `<prefix>`, composable with a positive `path:` in the same call (`impact(foo) path:src path:!tests`). Previously there was no way to exclude anything from any search/query surface in `weave-graph`.
+- **External-package-import provenance filtering**: TypeScript/JavaScript, Python, and Rust extractors now record imported local symbol bindings (`ImportedSymbol`) alongside their module specifier on `ParsedFile`, so `ProjectIndex` avoids falsely resolving calls through external package imports to unrelated local symbols of the same name.
+- **`REFERENCES` by-value edges in Rust**: Passing a function as a value (`let _bound = my_fn;`, `.map(my_fn)`, `callbacks.push(my_fn)`) now emits `StructuralEdgeKind::References` (`"REFERENCES"`) edges surfaced by `get_callers` / `weave query` / MCP `weave_trace_calls`, without polluting `file.calls` or local variable bindings.
+- **MCP protocol version negotiation & JSON-RPC 2.0 validation**: `weave serve --mcp` now negotiates `protocolVersion` dynamically across `2025-06-18`, `2025-03-26`, and `2024-11-05` during `initialize`, reports `env!("CARGO_PKG_VERSION")`, and rejects non-`"2.0"` `jsonrpc` requests with `-32600`.
 
 ### Extractor-Version-Aware Reindex Invalidation
 

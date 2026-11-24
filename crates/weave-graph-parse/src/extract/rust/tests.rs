@@ -56,20 +56,18 @@ fn calling_through_a_parenthesized_closure_is_not_treated_as_a_named_call() {
     );
 }
 
-// `collect_calls` only records an edge from a `call_expression`'s own
-// callee. A function passed by value — bound, mapped, pushed into a Vec —
-// never appears as a callee, so no edge of any kind records it; "who uses
-// this function" queries silently miss it.
 #[test]
-fn referencing_a_function_as_a_value_without_calling_it_produces_no_edge() {
+fn referencing_a_function_as_a_value_emits_references_edge() {
     let file = parse(
         "fn my_fn(x: i32) -> i32 { x }\n\
          fn caller() {\n\
+         let local_val = 42;\n\
          let _bound = my_fn;\n\
          let v: Vec<i32> = Vec::new();\n\
          let _ = v.into_iter().map(my_fn);\n\
          let mut callbacks: Vec<fn(i32) -> i32> = Vec::new();\n\
          callbacks.push(my_fn);\n\
+         let _ = Some(local_val);\n\
          }\n",
     );
     assert_eq!(file.symbols.len(), 2, "both functions are still indexed");
@@ -78,10 +76,18 @@ fn referencing_a_function_as_a_value_without_calling_it_produces_no_edge() {
         "my_fn is never invoked, so no CALLS_* edge should name it"
     );
     assert!(
+        file.structural_edges.iter().any(|e| {
+            e.kind == crate::model::StructuralEdgeKind::References
+                && e.source_moniker == "a.rs#caller"
+                && e.target_name == "my_fn"
+        }),
+        "by-value reference to my_fn must emit a REFERENCES edge"
+    );
+    assert!(
         file.structural_edges
             .iter()
-            .all(|e| e.target_name != "my_fn"),
-        "no structural edge kind (IMPORTS/INHERITS/IMPLEMENTS) covers a by-value reference either"
+            .all(|e| e.target_name != "local_val"),
+        "local variable bindings must not emit REFERENCES edges"
     );
 }
 

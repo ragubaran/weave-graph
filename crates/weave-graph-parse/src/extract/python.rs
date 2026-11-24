@@ -268,8 +268,20 @@ fn walk(
                 }
             }
             "import_from_statement" => {
+                let module_path = child
+                    .child_by_field_name("module_name")
+                    .map(|m| text(m, source).to_string())
+                    .unwrap_or_default();
                 let mut c = child.walk();
                 for name in child.children_by_field_name("name", &mut c) {
+                    if let Some(local_name) = python_import_local_name(name, source)
+                        && !module_path.is_empty()
+                    {
+                        file.imported_symbols.push(crate::model::ImportedSymbol {
+                            local_name,
+                            module_path: module_path.clone(),
+                        });
+                    }
                     if let Some(leaf) = dotted_leaf(name, source) {
                         file.structural_edges.push(RawStructuralEdge {
                             source_moniker: format!("{path}#<module>"),
@@ -326,6 +338,16 @@ fn push_symbol(
         signature: signature(node, source),
     });
     moniker
+}
+
+fn python_import_local_name(node: Node, source: &[u8]) -> Option<String> {
+    match node.kind() {
+        "aliased_import" => node
+            .child_by_field_name("alias")
+            .map(|n| text(n, source).to_string())
+            .or_else(|| dotted_leaf(node, source)),
+        _ => dotted_leaf(node, source),
+    }
 }
 
 fn dotted_leaf(node: Node, source: &[u8]) -> Option<String> {

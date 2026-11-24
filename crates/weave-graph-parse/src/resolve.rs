@@ -337,6 +337,16 @@ impl ProjectIndex {
         let mut unresolved = Vec::new();
 
         for call in &file.calls {
+            if !call.is_member_call
+                && self.is_blocked_external_import(
+                    file,
+                    file_of(&call.caller_moniker),
+                    &call.callee_name,
+                )
+            {
+                unresolved.push(call.callee_name.clone());
+                continue;
+            }
             let resolved =
                 self.resolve_one(&call.caller_moniker, &call.callee_name, call.is_member_call);
             if resolved.is_empty() {
@@ -410,6 +420,15 @@ impl ProjectIndex {
             if !self.candidates(&call.callee_name).is_empty() {
                 continue;
             }
+            if !call.is_member_call
+                && fallback.is_blocked_external_import(
+                    file,
+                    file_of(&call.caller_moniker),
+                    &call.callee_name,
+                )
+            {
+                continue;
+            }
             let extractor = extractor_of(&call.caller_moniker);
             for (target, kind, _) in
                 fallback.resolve_one(&call.caller_moniker, &call.callee_name, call.is_member_call)
@@ -447,6 +466,55 @@ impl ProjectIndex {
 
         edges
     }
+
+    fn is_blocked_external_import(
+        &self,
+        file: &ParsedFile,
+        caller_file: &str,
+        short_name: &str,
+    ) -> bool {
+        let Some(imp) = file
+            .imported_symbols
+            .iter()
+            .find(|imp| imp.local_name == short_name)
+        else {
+            return false;
+        };
+        let candidates = self.candidates(short_name);
+        if candidates
+            .iter()
+            .any(|&m_id| file_of(self.interner.resolve(m_id)) == caller_file)
+        {
+            return false;
+        }
+        if is_relative_module(&imp.module_path) {
+            return false;
+        }
+        !candidates.iter().any(|&m_id| {
+            file_matches_module(file_of(self.interner.resolve(m_id)), &imp.module_path)
+        })
+    }
+}
+
+fn is_relative_module(module_path: &str) -> bool {
+    module_path.starts_with('.')
+        || module_path == "crate"
+        || module_path.starts_with("crate::")
+        || module_path == "self"
+        || module_path.starts_with("self::")
+        || module_path == "super"
+        || module_path.starts_with("super::")
+}
+
+fn file_matches_module(file_path: &str, module_path: &str) -> bool {
+    let normalized = module_path.replace("::", "/").replace('.', "/");
+    let stem = file_path.rsplit_once('.').map_or(file_path, |(s, _)| s);
+    stem == normalized
+        || stem.ends_with(&format!("/{normalized}"))
+        || stem.ends_with(&format!("/{normalized}/index"))
+        || stem.ends_with(&format!("/{normalized}/mod"))
+        || stem == format!("{normalized}/index")
+        || stem == format!("{normalized}/mod")
 }
 
 #[cfg(test)]

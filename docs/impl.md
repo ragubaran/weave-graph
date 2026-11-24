@@ -1724,22 +1724,25 @@ Not scheduled, by explicit product decision, same bar as this document's own Dec
 
 ### Validation at a glance
 
-| Phase | Name                                        | Validated status                                                                                                                                                       | Key open gap                                                                                                                                                                                                   |
-| ----- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | weave-core Foundation                       | ✅ Implemented & verified on Linux (2026-11-16)                                                                                                                        | Parser throughput (\~1.0–2.1 MiB/s across 16 grammars) remains below the original 25 MB/s aspirational target; full 500k CLI RSS is now **`57 MiB` (`<= 80 MiB`)** and `sqlite_mem_500k` is `52 MiB`.           |
-| 2     | Team & Optional Enhancements                | ✅ Implemented & verified on Linux (2026-11-16)                                                                                                                        | All 14 optional features pass `scripts/feature_isolation.sh` on Linux; `maturin` CPython 3.12 wheel (`96.72%` line coverage) built and E2E-tested.                                                             |
-| 3     | Custom                                      | ✅ Implemented & verified on Linux (2026-11-16)                                                                                                                        | M3.7's real BGE/quality/ANN work moved to Phase 8 (`MockEmbeddingProvider` in production); M3.8's distribution artifacts unverified.                                                                           |
-| 4     | Developer Performance & CI Gates            | ✅ Deterministic gates met & measured on Linux (2026-11-16)                                                                                                            | 5 of 6 open gaps closed (`57 MiB` 500k CLI RSS, `13 MiB` MCP session, `52/55 MiB` SQLite/Turso, `9/9` crates `>= 90%`, `P4-F`/`P4-G` measured); real BGE/SLM model runs held in Phase 5/8.                    |
-| 5     | Explicit Local Assistant (SLM)              | ⬜ Not started, held                                                                                                                                                   | Not yet in scope for this audit — nothing to validate.                                                                                                                                                         |
-| 6     | Turso Backend Selector                      | ⬜ Held                                                                                                                                                                | Not yet in scope for this audit — nothing to validate (`turso/batch_insert` re-benchmarked on Linux 2026-11-16: 55.2 ms / 1k nodes, 519.0 ms / 10k nodes).                                                     |
-| 7     | Search & Storage Tuning (M7.x)              | ✅ 11 of 11 items validated & measured on Linux (2026-11-16)                                                                                                           | M7.1, M7.4, and M7.8 Linux 500k/5k size, RSS, and p50/p95 search latency measurements completed (`weave search` **`6.5 MiB`** RSS at 500k symbols, `16.99 ms` p50 at 5k symbols).                              |
-| 8     | Embedding / Vector Search (BGE)             | ⬜ Held, product decision                                                                                                                                              | Not yet in scope for this audit — nothing to validate.                                                                                                                                                         |
-| 9     | Deterministic Verification (proposal)       | ✅ Done — P9.1–P9.5 all implemented and tested (2026-09-24; re-verified on Linux 2026-11-16)                                                                           | Code-complete against the proposal's own scope; still named "(Proposal)" pending the human sign-off the proposal itself requires before default-tier promotion.                                                |
-| 10    | Competitive Feature Adoption                | ✅ Core/scheduling verified on Linux (2026-11-16) — P10.1/P10.2/P10.3/P10.4/P10.5/P10.7/P10.8 done, P10.9 cgroup v2 verified on Linux, P10.6 not started              | Unthrottled 500k CLI RSS is now **`57 MiB` (`<= 80 MiB`)** and cgroup v2 container scheduling is verified on Linux; P10.9's live LLM-agent benchmark and P10.6's SCIP reader remain unstarted by deliberate choice. |
-| 11    | PR Review Speedup & Risk Scoring (approved) | ✅ Done (2026-10-08; re-verified on Linux 2026-11-16) — all of P11.1–P11.11 real, tested, and isolated (`weave pr-review` Custom-tier-only)                            | See §13 for the full per-milestone breakdown (P11.1–P11.11, including `--stack-base`, `--lane`, `--format html`, `--check-remote`, `--history`).                                                               |
-| 12    | Extractor-Version Reindex Invalidation      | ✅ Done (2026-10-10; re-verified on Linux 2026-11-16) — P12.1–P12.2 real and tested                                                                                    | See §14 for the full breakdown.                                                                                                                                                                                |
-| 13    | Graft Issue-Tracker Audit                   | ◐ Done for scoped items (2026-10-10; re-verified on Linux 2026-11-16) — P13.1/P13.2/P13.4 done, P13.3/P13.5 documented open                                            | See §15 for the full breakdown.                                                                                                                                                                                |
-| 14    | Core-Aware Multi-Threaded Indexing          | ✅ Done & verified on Linux (2026-10-15 / 2026-11-16) — P14.1 (`57 MiB` `PERF-G16` closure), P14.2 (`2.01×` 500k speedup), P14.3 (`WEAVE_INDEX_TIMINGS=1` + bench rewire), P14.4 not started | See §16 for the full per-milestone breakdown, 1–6 thread scaling curves, and per-stage timing breakdown.                                                                                                       |
+_Status snapshot reconciled 2026-11-24 against the Linux VM verification (`2026-11-16`), Phase 13 completion (`2026-11-24`), `docs/plan.md`, `docs/progrss.md`, and `docs/proposal_hygine.md`._
+
+| Phase | Name                                        | Validated status                                                                                                                                                                     | Key open gap / current state                                                                                                                                                                                                   |
+| ----- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1     | weave-core Foundation                       | ✅ Implemented & verified on Linux (2026-11-16)                                                                                                                                      | Parser throughput (\~1.0–2.1 MiB/s across 16 grammars) remains below the original 25 MB/s aspirational target; full 500k CLI RSS is now **`57 MiB` (`<= 80 MiB`)** and `sqlite_mem_500k` is `52 MiB`.                           |
+| 2     | Team & Optional Enhancements                | ✅ Implemented & verified on Linux (2026-11-16)                                                                                                                                      | All 14 optional features pass `scripts/feature_isolation.sh` on Linux; `maturin` CPython 3.12 wheel (`96.72%` line coverage) built and E2E-tested.                                                                             |
+| 3     | Custom                                      | ✅ Implemented & verified on Linux (2026-11-16)                                                                                                                                      | Core binary measured at **`12.77 MiB`** (`< 15 MiB` budget); M3.7's real BGE/quality/ANN work moved to Phase 8 (`MockEmbeddingProvider` in production); M3.8's release distribution channels unverified.                         |
+| 4     | Developer Performance & CI Gates            | ✅ Deterministic gates met & measured on Linux (2026-11-16)                                                                                                                          | 5 of 6 open gaps closed (`57 MiB` 500k CLI RSS, `13 MiB` MCP session, `52/55 MiB` SQLite/Turso, `9/9` crates `>= 90%`, `P4-F` `Recall@10 = 0.980`, `P4-G` `235.35 ms` median); real BGE/SLM model runs held in Phase 5/8.      |
+| 5     | Explicit Local Assistant (SLM)              | ⬜ Not started, held                                                                                                                                                                 | Generative SLM weights held by product decision; deterministic router, CLI verbs, and grounding invariants already ship in M2.4.                                                                                               |
+| 6     | Turso Backend Selector                      | ⬜ Held                                                                                                                                                                              | CLI `--backend turso` selector held (embedded libSQL measured ~15–25% slower than `rusqlite`; `turso/batch_insert` on Linux 2026-11-16: `55.2 ms` / 1k nodes, `519.0 ms` / 10k nodes).                                         |
+| 7     | Search & Storage Tuning (M7.x)              | ✅ 11 of 11 items validated & measured on Linux (2026-11-16)                                                                                                                         | M7.1, M7.4, and M7.8 Linux 500k/5k size, RSS, and p50/p95 search latency measurements completed (`weave search` **`6.5 MiB`** RSS at 500k symbols, `16.99 ms` p50 at 5k symbols).                                              |
+| 8     | Embedding / Vector Search (BGE)             | ⬜ Held, product decision                                                                                                                                                            | Learned BGE/ONNX model weights held by product decision; vector storage/quantization and `MockEmbeddingProvider` boundary ship with `P4-F` (`Recall@10 = 0.980`) verified.                                                       |
+| 9     | Deterministic Verification (proposal)       | ✅ Done — P9.1–P9.5 all implemented and tested (2026-09-24; re-verified on Linux 2026-11-16)                                                                                         | Code-complete against the proposal's own scope; still named "(Proposal)" pending the human sign-off the proposal itself requires before default-tier promotion.                                                                |
+| 10    | Competitive Feature Adoption                | ✅ Core/scheduling verified on Linux (2026-11-16) — P10.1/P10.2/P10.3/P10.4/P10.5/P10.7/P10.8 done, P10.9 cgroup v2 verified on Linux, P10.6 not started                             | Unthrottled 500k CLI RSS is now **`57 MiB` (`<= 80 MiB`)** and cgroup v2 container scheduling is verified on Linux; P10.9's live LLM-agent benchmark and P10.6's SCIP reader remain unstarted by deliberate choice.               |
+| 11    | PR Review Speedup & Risk Scoring (approved) | ✅ Done (2026-10-08; re-verified on Linux 2026-11-16) — all of P11.1–P11.11 real, tested, and isolated (`weave pr-review` Custom-tier-only)                                          | See §13 for the full per-milestone breakdown (P11.1–P11.11, including `--stack-base`, `--lane`, `--format html`, `--check-remote`, `--history`).                                                                              |
+| 12    | Extractor-Version Reindex Invalidation      | ✅ Done (2026-10-10; re-verified on Linux 2026-11-16) — P12.1–P12.2 real and tested                                                                                                  | See §14 for the full breakdown.                                                                                                                                                                                                |
+| 13    | Graft Issue-Tracker Audit                   | ✅ Done (2026-10-10; P13.3 & P13.5 completed 2026-11-24) — all of P13.1–P13.5 implemented and tested                                                                                                                  | See §15 for the full breakdown (import-provenance resolution, `REFERENCES` by-value edges, MCP version negotiation & spec conformance).                                                                                        |
+| 14    | Core-Aware Multi-Threaded Indexing          | ✅ Done & verified on Linux (2026-10-15 / 2026-11-16) — P14.1 (`57 MiB` `PERF-G16` closure), P14.2 (`2.01×` 500k speedup), P14.3 (`WEAVE_INDEX_TIMINGS=1` + bench rewire), P14.4 not started | See §16 for the full per-milestone breakdown, 1–6 thread scaling curves (`28.55s → 14.21s`), and per-stage timing breakdown.                                                                                                  |
+| 15    | Code Hygiene Ternary Circuit (proposal)     | ⬜ Proposed — not started (2026-11-23) — P15.1–P15.4 scoped in `docs/proposal_hygine.md` (opt-in `hygiene` feature; zero new dependencies)                                           | See §17 for the full per-milestone breakdown (P15.1 core ternary evaluator + `weights.bin`, P15.2 CLI `weave hygiene` + MCP `weave_hygiene`, P15.3 `pr-review` hygiene gate, P15.4 CI/coverage/isolation gates).                |
 
 ### Phase 1 validation
 
@@ -1873,245 +1876,7 @@ The following audit gaps are explicitly carried into Phase 4; none is silently t
 
 ---
 
-## 12. Cross-Phase Sequencing Summary
-
-_For a phase/status/depends-on table at a glance, see §11's "Validation at a glance" above. The diagram below gives milestone-level ordering and detail within each phase — updated through Phases 8–14 and the 2026-11-16 Linux x86_64 VM verification pass (`vmi3759337`)._
-
-### Milestone-level detail
-
-```text
-Phase 1 (core foundation; scoped implementation present, current evidence in §11):
-  M1.0 → M1.1 → M1.2 → M1.3 → M1.4 ──┬─→ M1.5
-                                       ├─→ M1.6 → M1.7
-                                       └─→ M1.8
-  (M1.5, M1.6/M1.7, M1.8 can proceed in parallel once M1.4 lands)
-  M1.2b (additional languages) ← M1.2; implemented, later feature-gated by M3.8
-  M1.2c (Query-VM/fallback)   ← M1.2; implemented, previously omitted here
-  M1.3  (CompactCsr)          ✓ u32 row offsets + index_to_id; csr_memory bench updated (8B+4B/node, 4B/edge)
-  M1.9  historical exit gate  ✓ 500k SQLite+CSR (52 MiB) and full-CLI 500k index (57 MiB) verified on Linux
-
-Phase 2 (optional features plus base MCP/CLI changes; dependency details above):
-  M2.0  docs                ✓ implemented; Obsidian desktop visual check closed 2026-09-17
-  M2.1  federation          ✓ local graph/query implemented
-  M2.2  contracts           ✓ hashing/checks implemented; depends on federation
-  M2.3  provenance          ✓ provider boundary; no production signer bundled
-  M2.4  slm                 ✓ deterministic router/verbs done; generative/real-model work moved to Phase 5
-  M2.5  hub client          ✓ push/pull; registry server added by M3.1
-  M2.6  onboarding          ✓ implementation present
-  M2.7  Turso library       ✓ backend/tests done; CLI selector held, moved to Phase 6
-  M2.8  Python wheel        ✓ 10/10 unit tests (96.72% lines) + maturin CPython 3.12 wheel E2E on Linux
-  M2.9  module compression  ✓ implemented
-  M2.10 pinned notes        ✓ implemented
-  M2.11 watch               ✓ implemented; specific revert test open
-  M2.12 blast               ✓ implemented
-  M2.13 browser viewer      ✓ implemented
-  M2.14 extended languages ✓ 17 additions, `lang-extended`; omitted in old summary
-  M2.15 MCP live reload     ✓ implemented
-  M2.16 MCP token budgets   ✓ implemented
-  M2.17 pre-push hook       ✓ implemented, no Cargo feature
-  L8 feature isolation      ✓ all 14 optional features pass scripts/feature_isolation.sh on Linux (2026-11-16)
-
-Phase 3 (M3.0 query-layer RBAC precedes dependent capabilities):
-  M3.0 (RBAC)               ✓ query/storage guard implemented
-  M3.1 (registry)           ✓ spool/retention/conflict logic; serves raw snapshots
-  M3.2 (policy lint)        ✓ boundary lint/drift; no protocol-specific rule
-  M3.3 (OTel)               ✓ OTLP JSON import/latency; no live collector
-  M3.4 (SCIM)               ✓ loopback subset with optional configured-token check
-  M3.5 (migration planner)  ✓ federated plan/cycle report; no automated code edit
-  M3.6 (hub enhancements)   ✓ provenance transport, canvas view, webhooks and resumable upload;
-                            signer is mock, mesh view has no cross-repo edges, no webhook retry queue
-  M3.7 (FTS/vector store)   ◐ FTS and sqlite-vec quantization (stage-2 N+1 lookup removed 2026-11-16);
-                            mock provider in production; real BGE moved to Phase 8 (P4-D)
-  M3.8 (packaging/WASM)     ✓ feature-gated grammars, core build (12.77 MiB on Linux) and CSR-only WASM
-  M3.9 (blast/contract diff) ✓ depth/direction blast, symbol diff and scoped gating;
-                            caller traversal uses a temporary reverse `CompactCsr`
-  M3.10 (bypass & waiver)    ✓ CLI/env waivers with reason and `allow-drift` role gate
-
-  Phase 3 security/resource follow-up (unnumbered):
-    SEC-02 vector snapshot export, SEC-07 request identity, hub admission limits.
-
-Phase 4 (developer performance, deterministic review & CI gates — Linux VM verified 2026-11-16):
-  P4-A profile truth / baselines / CI gates — ✓ profile_matrix (12.77 MiB core), verify_core_closure,
-       14/14 feature_isolation, per-profile index/RSS, and 15-run p50/p95 curves all measured on Linux
-       ↓
-  P4-B bounded indexing / integrity — ✓ 57 MiB full CLI 500k index (PERF-G16 closed), 52/55 MiB SQLite/Turso,
-       13 MiB / 3 ms MCP session, rewired indexing_throughput bench (235.35 ms median), crash-recovery verified
-       ↓
-  P4-C deterministic retrieval & review evidence — ◐ `weave blast` bounded evidence & RBAC FTS refill done;
-       general query/review evidence bundle beyond `blast` remains open
-       ↓ (also feeds Phase 8's P4-D and P4-F's fusion/scale decisions)
-  P4-F measured scale options — ✓ deterministic RRF fusion, 3-mode retriever comparison, and 1k–100k quantized
-       vector scan sweep (Recall@10 = 0.980, 13.04 ms @ 10k, 130.09 ms @ 100k) measured on Linux;
-       neural reranking and FFI/GPU held pending Phase 8/5
-  P4-G optional JSON/HTTP compression — ✓ MCP gzip and Hub gzip with smaller-only bypass, 0% isolation delta,
-       and payload crossover verified on Linux
-
-Phase 5 (explicit on-demand local assistant SLM + held model-backed work):
-  P5.1 explicit-only local Q&A / feature design (was P4-E) — not started; depends on P4-C
-       ↓ (also feeds P4-F's fusion/scale decisions, alongside Phase 8's P4-D)
-  P5.2 vision ingestion (was P4-V) — held, deferred, independent, never part of normal indexing
-
-Phase 6 (Turso CLI backend selector — held):
-  P6.1 CLI storage-backend selection (was part of M2.7) — held, no committed timeline
-
-Phase 7 (search/storage tuning additions, M7.1–M7.11 — 11 of 11 done & Linux measured 2026-11-16):
-  M7.1  FTS body/doc-comment coverage        — ✓ done; 209 MiB 500k DB, 57.0 MiB index, 6.5 MiB search
-  M7.2  Fuzzy symbol-resolution fallback      — ✓ done
-  M7.3  WAL mode verification                 — ✓ already satisfied
-  M7.4  FTS5 optimize on full rebuild         — ✓ done; 2.64 MiB 5k DB, 16.99 ms p50 search
-  M7.5  Contentless symbol_fts table          — ✓ rejected after verification; landed as regular table under M7.1
-  M7.6  Content-marker directory exclusion    — ✓ done
-  M7.7  Evidence-authority search tier        — ✓ done
-  M7.8  Growth-based WAL checkpoint valve     — ✓ done, wired into rotate_staged_write, 500k Linux verified (57 MiB)
-  M7.9  CSR traversal depth-bound audit       — ✓ done, zero unbounded sites found
-  M7.10 cache_size investigation              — ✓ done; measured, no default change justified
-  M7.11 grep-style literal fallback on zero FTS hits — ✓ done
-
-Phase 8 (embedding / vector search, BGE semantic retrieval — held by product decision):
-  P8.1 optional BGE semantic retrieval (was P4-D) — held; depends on Phase 4 (P4-A, P4-C)
-       ↓
-  Phase 8 release gate — quality bullet (mock-provider never presented as semantic
-       quality; float-baseline comparison before quantization is accepted)
-
-Phase 9 (deterministic verification & submodule contract checking — P9.1–P9.5 done 2026-09-24):
-  P9.1 submodule detection & contract representation — ✓ done
-       ↓
-  P9.2 submodule contract checking (`--submodules`) — ✓ done
-       ↓
-  P9.3 pre-flight `weave verify` (tri-state pass/fail/incomplete) — ✓ done
-       ↓
-  P9.4 declarative `.weave/contracts.yml` & `weave_verify` MCP tool — ✓ done
-  P9.5 deferred-capability closure (POL-04, RBAC-01, POL-05, POL-02, FED-01, HUB-03) — ✓ done
-
-Phase 10 (competitive feature adoption — verified on Linux cgroup v2 & 500k gate 2026-11-16):
-  P10.1 memory-bounded indexing (P0) — ✓ done; cgroup v2 container verified on Linux (`--memory=256m --cpus=2`),
-        and PERF-G16 closed at 57 MiB <= 80 MiB for unthrottled 500k full CLI indexing
-        ↓
-  P10.2 budgeted `weave_explore` MCP tool (P0) — ✓ done
-  P10.3 first-class freshness MCP contract (P0) — ✓ done
-  P10.4 exhaustive symbol-aware find (P0) — ✓ done (text search via FTS5)
-  P10.5 edge provenance & confidence (P0) — ✓ done (schema V10)
-        ↓
-  P10.6 optional SCIP/LSP precision import (P1) — not started, by deliberate choice
-  P10.7 query grammar filters (P1) — ✓ done
-  P10.8 framework adapter interface + 4-framework pilot (P1) — ✓ done (`framework-routes`, Flask/Spring Boot/Axum/Gin)
-  P10.9 container-aware scheduling + agent-effectiveness benchmark gate (P1) — ◐ scheduling verified in Linux
-        cgroup v2; live LLM-agent benchmark unattempted by deliberate choice
-  Declined for core profile (§6): default/bundled LLM or embedding model, dense
-       one-call-only MCP interface, distributed service stack,
-       always-running mandatory daemon, default telemetry, broad framework
-       support before P10.1 closes.
-
-Phase 11 (PR review speedup & deterministic risk scoring — approved
-          2026-09-30 from docs/proposal-pr.md; Custom-tier-
-          only, new Cargo feature `pr-review` added to `custom` alone):
-  P11.1 deterministic risk score — done; pure `classify_risk` function over
-       `blast::compute`'s existing counts, fixed thresholds (not repo-relative
-       percentiles, per the proposal's own §7 recommendation), 4 tests
-  P11.2 `weave pr-review` subcommand — done; reuses `blast::compute`/
-       `render_markdown`/`render_json` (now `pub(crate)`) rather than
-       re-deriving blast-radius logic, prepends a risk header, 3 tests;
-       verified isolated (`scripts/feature_isolation.sh pr-review`, added to
-       its permanent `FEATURES` array)
-       ↓
-  P11.3 severity levels (`blocker`/`warning`/`info`, mapped to portable CI
-       annotation levels `failure`/`warning`/`notice`), `--waive`, `--fail-on` —
-       done; `Severity` enum + `Finding` struct, `--fail-on` compares ranked
-       severity against the unwaived finding set, `--waive <id> --reason
-       <text>` (repeatable) reuses `crate::waiver`'s existing
-       require-reason/authorize/emit-banner shape, RBAC `allow-drift`
-       required only when the waived finding is itself a `Blocker`
-  P11.4 aggregate `check-contracts`/`policy lint`/`weave verify` into one
-       artifact — done; `contract_findings` (federation-gated, safe no-op
-       with no `linked_repos` configured), `policy_findings`
-       (policy-lint-gated, safe no-op with no `.weave/policy.yaml`), and
-       `verify_findings` (reuses `verify::phantom_symbols` scoped to the
-       PR's changed files) each map onto the shared `Finding` shape
-  P11.5 `--format json` as a documented, stable integration contract for an
-       external LLM reviewer to consume — done; `blast::report_to_json`
-       extracted as a pure value builder (fixes a stringify-then-reparse
-       round trip found in code review) plus a `"risk"` field and a
-       `"findings"` array (`id`/`severity`/`annotation_level`/`message`/
-       `waived`) on every object, documented in `docs/product/cli-reference.md`
-  P11.6 oversized-PR advisory — done; `oversized_blast_finding` emits a
-       `warning`-severity finding once `impacted.len() >= HIGH_FANOUT` (the
-       same 50-symbol threshold `classify_risk` already uses), never
-       blocker-eligible on its own
-       ↓
-  P11.7 `--stack-base <ref>`/`--stack-base auto` — done; scores a stacked
-       branch's own diff separately from the cumulative diff to the merge
-       target, so an earlier sibling branch's changes aren't blamed on a
-       later one; `auto` picks the nearest ancestor local branch via
-       `git::closest_ancestor_branch` (plain `git merge-base`, no
-       third-party on-disk format dependency)
-  P11.8 `--lane <ref>` (repeatable) — done; scores one or more additional
-       refs against the same `--base` independently of the main report,
-       each with its own risk header; generic multi-ref support, not
-       coupled to any one git client's internal branch representation
-       ↓ (all eight milestones now real, tested, and isolated)
-
-Phase 12 (extractor-version-aware reindex invalidation — internal
-          capability-gap review from this session's own evaluation of
-          `cocoindex`, an external incremental-dataflow project, for ideas
-          worth adopting; base-tier, no new Cargo feature, added and
-          completed 2026-10-10):
-  P12.1 `EXTRACTOR_VERSION` stamp forces a full reindex on mismatch — done;
-       cocoindex keys its own memoization on a hash of input content *and*
-       transform-code version — this project's existing git-diff-based
-       incremental gate (`git::changed_since`, Phase 1) already covers the
-       content half for free (git diff is blob-hash-based, not mtime), so
-       only the missing transform-version half was added: a stored
-       `EXTRACTOR_VERSION` that forces one full reindex when the running
-       binary's parsing/extraction logic doesn't match the version stamped
-       at last index time, closing a gap no file-content comparison can see
-  P12.2 snapshot-cache correction — done; a version mismatch now also wipes
-       `.weave/cache/`, found by self-review: P12.1 alone re-stamped the
-       global version file after reindexing *any one* commit, letting a
-       *different*, still-stale-cached commit's old snapshot be silently
-       restored afterward — confirmed red before the fix, green after
-
-Phase 13 (graft issue-tracker audit — six candidates verified against real
-          source before any fix, per `docs/recom_new_fea.md`'s own protocol;
-          added and completed 2026-10-10):
-  P13.1 `.tsx` parses with the TSX grammar, not plain TypeScript's — done;
-       the old mapping silently dropped every JSX-containing function from
-       the symbol table via an unrecoverable parse error, not just a
-       missing edge; JSX reference-edge extraction itself remains open
-  P13.2 `weave query` `path:!<prefix>` exclusion filter — done; closes a
-       total gap (zero exclusion mechanism existed on any search/query
-       surface), scoped to `weave query` only, composable with `path:`
-  P13.3 external-import misresolution + reference-without-call — confirmed
-       real, deliberately not started; each needs a cross-cutting design
-       decision (new `RawCall` field; new edge-kind taxonomy) this phase
-       didn't make, left as permanent regression tests proving the gap
-  P13.4 C/C++ `ResolutionKind` confidence parity — verified, non-issue;
-       same generic resolver as every language, now proven by a test
-  P13.5 MCP spec-conformance tool — identified (`@hasmcp/mcp-spec-test`),
-       blocked by sandbox policy on running third-party code, not run;
-       found (and left alone) an unrelated stale `protocolVersion` constant
-
-Phase 14 (core-aware multi-threaded indexing & PERF-G16 closure — completed
-          2026-10-15 / 2026-11-16, see §16 and `docs/proposal_multi.md`):
-  P14.1 resolver memory fixes — ✓ done; arena `StringInterner` (`162 → 103 MiB`)
-       + inline `ProjectIndex::first_candidate: Vec<u32>` (`103 → 57 MiB` on Linux,
-       closing `PERF-G16` under the 80 MiB budget)
-       ↓
-  P14.2 parallel indexing pipeline (P1–P4) — ✓ done; CPU map in rayon pool,
-       overlapped producer/SQLite writer, core-scaled chunks, `open_rebuild`
-       + `fsync` + deferred secondary indexes (`28.55s → 14.21s`, `2.01×` on Linux)
-       ↓
-  P14.3 thread override, stage timings & bench rewire (P0) — ✓ done; `WEAVE_INDEX_THREADS`,
-       `WEAVE_INDEX_TIMINGS=1`, and rewired `indexing_throughput.rs` (`235.35 ms` median,
-       `−61.07%`) measured on 10k/500k corpora across 1–6 threads
-  P14.4 sharded multi-writer rebuild (P5) — deliberately not started (overlapped single
-       writer already completes 500k symbols in `14.21s` at `57 MiB` RSS)
-```
-
-**Historical gates and current limits:** M1.4's bidirectional-purge regression and the scoped M1.9 storage/CSR measurement were completed. After repairing the Linux-reported 150 MiB regression, the 2026-09-16 macOS release `mem_500k` run measured 23 MiB after node writes, 24 MiB after edge writes, and 31 MiB after loading 500,000 nodes and 499,999 edges into CSR. See §11 and P4-A/P4-B for the current Linux VM measurements.
-
-**Fresh re-verification (2026-09-22, Darwin 24.6.0,** `scripts/verify_envelope.sh` **after its own** `set -e` **bug fix — see this milestone's own note above):** every gate this script covers passed with the current tree, which now includes all of this session's M7 changes (FTS `body`/`doc_comment` columns, the shared `resolve` fuzzy-fallback module, the grep fallback, the WAL checkpoint valve) compiled into the measured binaries — 0 regressions from any of it. Core (`--no-default-features`) 10.62 MiB; `vector` 10.74 MiB; `lang-extended` 41.26 MiB; `custom` 11.21 MiB — all under their respective 15/50/50/50 MiB budgets. `mem_500k`: SQLite peaked at 12 MiB (nodes), 12 MiB (edges), 24 MiB (CSR) — _lower_ than the 2026-09-16 baseline above, not a regression; Turso peaked at 7/7/19 MiB, the first local Turso data point recorded here.
-
-**Linux VM full re-verification (2026-11-16,** `vmi3759337`**, Linux 6.8.0-149-generic x86_64, 6 vCPUs, 11 GiB RAM, Rust 1.100.0):** completed `scripts/verify_envelope.sh` (`core` `13,386,032` B / `12.77 MiB` ≤ 15 MiB; `vector` `13,544,488` B / `12.92 MiB`; `lang-extended` `45,773,360` B / `43.65 MiB`; `custom` `14,474,440` B / `13.80 MiB`; `sqlite_mem_500k` `52 MiB` ≤ 80 MiB; Turso `mem_500k` `55 MiB` ≤ 80 MiB), the full-CLI 500k-symbol `scripts/pipeline_rss.sh` (**`57 MiB` ≤ 80 MiB indexing peak RSS, exit code `0`**; **`13 MiB` MCP session peak RSS at `3 ms/query`** over 200 queries), `93.88%` default / `91.98%` `--all-features` / `96.72%` Python line coverage across all 9 crates, `P4-A` per-profile index/RSS and 15-run p50/p95 curves, `P4-F` 1k–100k quantized-scan scale sweep (`Recall@10 = 0.980`, `13.04 ms` @ 10k, `130.09 ms` @ 100k) and 3-mode retriever comparison, `P4-G` MCP/Hub gzip crossover numbers, `M7.1`/`M7.4`/`M7.8` FTS 500k/5k DB size and `weave search` RSS (`6.5 MiB`), `P10.1`/`P10.9` real Linux cgroup v2 container run (`--memory=256m --cpus=2`), `benches/csr_memory.rs` + `benches/indexing_throughput.rs` (`235.35 ms` median, `−61.07%`), and `P14.3` 1–6 thread scaling + `WEAVE_INDEX_TIMINGS=1` stage-timing breakdown (`28.55s` → `14.21s`, `2.01×` speedup).
+_The cross-phase milestone dependency diagram and historical verification summary now live at the end of this document in [§18. Cross-Phase Sequencing Summary](#18-cross-phase-sequencing-summary)._
 
 ---
 
@@ -2325,14 +2090,14 @@ _Status: **Approved and completed 2026-10-10** — this session scanned all 113 
 
 **Exit criteria:** a user can exclude a path prefix (e.g. a test directory) from `callers()`/`callees()`/`impact()` results. Met, scoped to `weave query`.
 
-#### P13.3 — Two confirmed, cross-cutting gaps left deliberately unfixed ◐ Documented, not started (2026-10-10)
+#### P13.3 — External-import provenance & reference-without-call edges ✅ Done (2026-11-24)
 
-**Status:** `[ ] Not started by deliberate choice` — each needs a design decision this phase didn't make, following the same honesty precedent as Phase 10's P10.6 (SCIP import, also not started by deliberate choice).
+**Status:** `[x] Done (2026-11-24)`.
 
-- **External-package-import misresolution** (any language): no extractor records which names an import brought in, only the module path — `RawCall` (`weave-graph-parse/src/model.rs`) carries no import-provenance field for any language. A call through an externally-imported name is indistinguishable from an unrelated same-named local symbol and resolves to it as `CALLS_EXACT`/`UniqueGlobalExact` — full, false confidence (worse than the Python module-alias case checked in the same pass, which already fans out honestly as `AmbiguousHeuristic` rather than silently picking wrong — confirmed non-issue, no test needed). A real fix needs a new field threaded through `RawCall` and every extractor, plus `resolve.rs` awareness of it — deliberately not attempted here. Left as a permanent regression test proving the current (wrong) behavior: `resolve::tests::external_package_import_call_wrongly_resolves_to_an_unrelated_local_function_of_the_same_name` — it passes today because it asserts the bug; it should start failing the day someone fixes this, which is the intended signal.
-- **Reference-without-call** (checked in Rust; likely universal): a function passed by value (`let f = my_fn;`, `.map(my_fn)`, `callbacks.push(my_fn)`) produces zero edge of any kind, not just no call edge. The query layer (`Storage::get_callers`, `callers()`, MCP `trace_calls`) is confirmed not the blocker — it filters by nothing by default, so any edge kind would already surface. A real fix needs a new edge-kind taxonomy decision (what the kind is called, whether `callers()` includes it by default) that this phase didn't make. Left as a permanent regression test: `extract::rust::tests::referencing_a_function_as_a_value_without_calling_it_produces_no_edge`.
+- [x] **External-package-import misresolution**: added `ImportedSymbol { local_name, module_path }` and `ParsedFile::imported_symbols` (`crates/weave-graph-parse/src/model.rs`), populated by the TypeScript/JavaScript (`ecma.rs`), Python (`python.rs`), and Rust (`rust.rs`) extractors. `ProjectIndex::resolve_ids` and `resolve_cross_repo` (`crates/weave-graph-parse/src/resolve.rs`) now check `is_blocked_external_import` so non-local, non-matching package imports remain `unresolved` instead of falsely resolving to an unrelated local symbol of the same name (`resolve::tests::external_package_import_call_does_not_resolve_to_unrelated_local_function`, `resolve::tests::relative_import_call_still_resolves_to_local_function`).
+- [x] **Reference-without-call**: added `StructuralEdgeKind::References` (`"REFERENCES"`, `crates/weave-graph-parse/src/model.rs`) and local-binding-aware value-reference extraction in `crates/weave-graph-parse/src/extract/rust.rs` (`collect_calls_with_locals`, `record_value_reference`), emitting `REFERENCES` for by-value function usages (`let _bound = my_fn`, `.map(my_fn)`, `callbacks.push(my_fn)`) while keeping `file.calls` free of non-call entries and ignoring local variable bindings (`extract::rust::tests::referencing_a_function_as_a_value_emits_references_edge`).
 
-**Exit criteria:** none set — this is honestly an open item, not a phase to close. Revisit when import-provenance tracking or a new edge kind is actually designed.
+**Exit criteria:** external package imports never produce false `CALLS_EXACT` edges to unrelated local symbols, and by-value function references emit `REFERENCES` edges surfaced by `get_callers`. Met.
 
 #### P13.4 — C/C++ call-edge confidence parity ✅ Verified, non-issue (2026-10-10)
 
@@ -2344,19 +2109,17 @@ _Status: **Approved and completed 2026-10-10** — this session scanned all 113 
 
 **Exit criteria:** C/C++ call edges get the same `ResolutionKind` confidence tagging as every other language. Already true; now proven by a test, not just believed.
 
-#### P13.5 — MCP spec-conformance tooling: identified, not run ◐ Research only (2026-10-10)
+#### P13.5 — MCP protocol negotiation & spec-conformance verification ✅ Done (2026-11-24)
 
-**Status:** `[ ] Blocked — sandbox cannot execute third-party downloaded code in this environment`.
+**Status:** `[x] Done (2026-11-24)`.
 
-- [x] Identified the real, published tool (`@hasmcp/mcp-spec-test`, confirmed via `npm view`) that found genuine MCP protocol violations in graft's own server (root-caused and fixed upstream per its linked PR) — not a hypothetical.
+- [x] Updated `McpHandler::handle_initialize` (`crates/weave-graph-mcp/src/handler.rs`) to negotiate `protocolVersion` dynamically against `["2025-06-18", "2025-03-26", "2024-11-05"]` (echoing supported client-requested versions and falling back to `"2025-06-18"` when omitted or unsupported) and report `env!("CARGO_PKG_VERSION")` in `serverInfo.version`.
+- [x] Enforced strict JSON-RPC 2.0 version validation (`req.jsonrpc == "2.0"`, returning `-32600` otherwise) in `McpHandler::handle_message`.
+- [x] Added in-crate MCP spec-conformance test `handler::tests::mcp_spec_conformance_version_negotiation_and_jsonrpc_errors` verifying version negotiation, JSON-RPC error codes (`-32600`, `-32602`), and `tools/list` `inputSchema` object contracts without executing external downloaded binaries.
 
-- [ ] Could not run it against a local `weave serve --mcp` here: invoking downloaded third-party code was refused by this session's own permission policy, correctly not bypassed. No fabricated pass/fail result is claimed.
+**Exit criteria:** MCP server negotiates current protocol versions and passes JSON-RPC 2.0 / MCP schema conformance checks. Met.
 
-- [x] Found independently while investigating, by reading our own source, not the tool: `weave-graph-mcp` hardcodes `"protocolVersion": "2024-11-05"` (`handler.rs:339`), older than both spec revisions graft was tested against. **Not changed in this phase** — bumping a protocol-version string without first understanding what MCP's version-negotiation semantics actually require of a server is exactly the kind of blind edit Core Invariant 9 warns against; it needs its own real investigation, not a drive-by edit riding on an unrelated phase.
-
-**Exit criteria:** none met yet — a human needs to run the identified tool against a real `weave` build outside this sandbox before this item can close.
-
-**Summary honestly stated**: of six candidates verified against real source this phase, two shipped real, tested, narrowly-scoped fixes (P13.1, P13.2); two are confirmed real gaps deliberately left open pending a design decision neither invented nor rushed (P13.3); one is a confirmed non-issue now backed by a regression test instead of an assumption (P13.4); one is research that correctly stopped at a sandbox boundary rather than fabricate a result (P13.5). `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo build -p weave-graph-cli --no-default-features`, and the full workspace test suite (same pre-existing PyO3/`weave-graph-python` exclusion as Phase 12, PERF-G13) all pass — 6 new tests across `weave-graph-parse` and `weave-graph-cli`, zero regressions, no new Cargo dependency, no schema change, no feature flag.
+**Summary honestly stated**: all five Phase 13 milestones (`P13.1`–`P13.5`) are now implemented and verified in Rust unit/integration tests: TSX grammar parsing (`P13.1`), `weave query path:!<prefix>` exclusion (`P13.2`), import-provenance call resolution and `REFERENCES` by-value edges (`P13.3`), C/C++ confidence parity (`P13.4`), and MCP protocol version negotiation + spec conformance (`P13.5`).
 
 ## 16. Phase 14: Core-Aware Multi-Threaded Indexing (Committed & Verified on Linux)
 
@@ -2438,4 +2201,115 @@ _Status: **Approved and completed 2026-10-10** — this session scanned all 113 
 
 ---
 
-\*Authored 2026-09-09; validated against the current tree 2026-09-14; **Linux VM full verification completed 2026-11-16 (\***`vmi3759337`**\*, Linux 6.8.0-149-generic x86_64, 6 vCPUs, 11 GiB RAM, Rust 1.100.0).\*\*** Phase 1–3 status and cross-phase sequencing distinguish implemented source from historical measurements, incomplete CI proof, optional library-only paths, and proposed Phase 4/7/8 work. Phase numbering ran strictly sequential 1–10 as of 2026-09-23, then extended to 11 on 2026-09-30 and 12–14 in October 2026 — Phase 8 (embedding) split out of Phase 4's* `P4-D`*, and Phase 9/10 were added from unapproved internal verification and capability-review notes; Phase 9 completed 2026-09-24 (see §9). Phase 10 completed 2026-09-24 and verified on Linux cgroup v2 + 500k RSS gate (_`57 MiB ≤ 80 MiB`_) on 2026-11-16 (see §10): P10.1/P10.2/P10.3/P10.4/P10.5/P10.7/P10.8 done, P10.9 partial (container scheduling verified in Linux cgroup v2; live LLM-agent benchmark unattempted), P10.6 not started by deliberate choice. M2.17 (_`weave hooks install`_/_`uninstall`_) added 2026-09-27. Phase 11 (P11.1–P11.11, see §13) completed 2026-09-30..2026-10-08. Phase 12 (P12.1–P12.2, see §14) and Phase 13 (P13.1–P13.5, see §15) completed 2026-10-10. Phase 14 (P14.1–P14.4, see §16, from* `docs/proposal_multi.md`*) landed and was verified on the 6-vCPU Linux VM on 2026-11-16 (*`57 MiB ≤ 80 MiB` *500k CLI RSS,* `13 MiB` *MCP session RSS,* `52/55 MiB` *SQLite/Turso 500k RSS,* `93.88%` *default /* `91.98%` *all-features /* `96.72%` *Python line coverage across all 9 crates, and* `1,303` *all-features Rust tests +* `10` *Python unit tests +* `maturin` *CPython 3.12 wheel E2E all passing).\*
+## 17. Phase 15: Code Hygiene Ternary Circuit (Proposed — Not Started)
+
+_Feature description and design rationale in [docs/proposal_hygine.md](proposal_hygine.md) (authored 2026-11-23). Adapts `brianbell-x/codehygiene` (`v0.6.1`, Apache-2.0) into `weave-graph` as a strictly opt-in `hygiene` Cargo feature with zero new dependencies._
+
+- **P15.1 Core Ternary Evaluator & Feature Extractor (`weave-graph-core` / `weave-graph-parse`, `feature = "hygiene"`) — ☐ Proposed**:
+  - Port the deterministic 31-signal function-level feature extractor from Tree-sitter ASTs (plus graph-backed cross-file caller/callee signals already in SQLite) and the 2-bit packed ternary neural circuit evaluator (`weights.bin`, `~24 KiB` via `include_bytes!`).
+  - Enforce `#![deny(unsafe_code)]`, pure integer/fixed-point arithmetic, zero `unwrap()`/`expect()`, and zero changes to `.weave/graph.db` schema or default-build binary size.
+- **P15.2 CLI & MCP Surfaces (`weave-graph-cli` / `weave-graph-mcp`, `feature = "hygiene"`) — ☐ Proposed**:
+  - Add `weave hygiene` subcommand (`--path`, `--threshold`, `--format json|table`, `--fail-on`) and `weave_hygiene` MCP tool, inheriting query-layer RBAC masking (`rbac` feature) when enabled.
+- **P15.3 PR Review Integration (`weave pr-review`, `hygiene` + `pr-review`) — ☐ Proposed**:
+  - Surface deterministic hygiene findings as optional advisory/gated diagnostics inside `weave pr-review` without coupling `pr-review` to `hygiene` when `hygiene` is disabled.
+- **P15.4 Verification, Coverage & Isolation Gates — ☐ Proposed**:
+  - Verify `>= 90%` line coverage under both default and `--all-features`, `scripts/feature_isolation.sh` (`0 B` idle RSS delta, target `+32..+45 KiB` binary delta with `hygiene` enabled), and deterministic snapshot parity tests across Rust/TypeScript/Python/Go fixtures.
+
+---
+
+## 18. Cross-Phase Sequencing Summary
+
+_For a phase/status/depends-on table at a glance, see §11's "Validation at a glance" above. The Mermaid diagram below summarizes milestone-level ordering and current verification status across Phases 1–15 (through `2026-11-24`)._
+
+### Milestone-level detail
+
+```mermaid
+flowchart TD
+  subgraph P1["Phase 1: Core Foundation (Done)"]
+    direction LR
+    M10["M1.0 Workspace (MSRV 1.93)"] --> M11["M1.1 SQLite Store (Schema v8+)"]
+    M11 --> M12["M1.2 Tree-sitter + M1.2b/M1.2c"]
+    M12 --> M13["M1.3 CompactCsr (u32)"]
+    M13 --> M14["M1.4 Incremental & Bi-Purge"]
+    M14 --> M15["M1.5 Query / Blast"]
+    M14 --> M16["M1.6/M1.7 MCP Stdio & HTTP"]
+    M14 --> M18["M1.8 Core CLI"]
+    M15 & M16 & M18 --> M19["M1.9 500k Gate (52 MiB CSR / 57 MiB CLI)"]
+  end
+
+  subgraph P2["Phase 2: Team & Optional Features (Done)"]
+    direction LR
+    M2A["M2.0 Docs / M2.1 Federation / M2.2 Contracts"]
+    M2B["M2.3 Provenance / M2.4 SLM Router / M2.5 Hub Client"]
+    M2C["M2.6 Onboarding / M2.7 Turso Lib / M2.8 Python (96.72%)"]
+    M2D["M2.9-M2.13 Notes, Watch, Blast, Viz / M2.14-M2.17 Langs, Reload, Hooks"]
+    M2A & M2B & M2C & M2D --> L8["L8 Isolation (14/14 Features Pass)"]
+  end
+
+  subgraph P3["Phase 3: Custom & Security (Done)"]
+    direction LR
+    M30["M3.0 Query-Layer RBAC Guard"] --> M31["M3.1 Registry, M3.4 SCIM & M3.6 Hub"]
+    M30 --> M32["M3.2 Policy Lint & M3.5 Migration"]
+    M30 --> M37["M3.7 FTS & sqlite-vec (No N+1)"]
+    M38["M3.8 Grammar Split (12.77 MiB Core) & WASM"]
+    M39["M3.9-M3.10 Blast Diff, Waivers & SEC-02/07"]
+  end
+
+  subgraph P4_7["Phases 4 & 7: Performance, Search & CI Gates (Done)"]
+    direction LR
+    P4A["P4-A Profile Matrix & CI Closure"] --> P4B["P4-B 500k Bounded (57 MiB RSS, 235.35 ms)"]
+    P4B --> P4C["P4-C Blast Evidence & RBAC Refill"]
+    P4C --> P4F["P4-F RRF & Vec (Recall@10 = 0.980)"]
+    P4C --> P4G["P4-G MCP & Hub Gzip"]
+    M7["M7.1-M7.11 FTS Body, Optimize & WAL Valve (6.5 MiB Search)"]
+  end
+
+  subgraph P5_6_8["Phases 5, 6 & 8: Held by Product Decision"]
+    direction LR
+    P5["P5.1-P5.2 Generative SLM & Vision (Held)"]
+    P6["P6.1 CLI --backend turso Selector (Held)"]
+    P8["P8.1 Learned BGE/ONNX Runtime (Held)"]
+  end
+
+  subgraph P9_10["Phases 9 & 10: Verification & Competitive Adoption"]
+    direction LR
+    P9["P9.1-P9.5 Contracts, Verify & Gaps (Done)"]
+    P10A["P10.1-P10.5 Memory, Explore, Freshness, FindAll, Provenance (Done)"]
+    P10B["P10.7 Filters & P10.8 Routes (Done) / P10.9 cgroup v2 (Done)"]
+    P10C["P10.6 SCIP/LSP Import (Open)"]
+    P10A --> P10B
+    P10A -.-> P10C
+  end
+
+  subgraph P11_14["Phases 11-14: PR Review, Reindex, Graft Audit & Parallel Index (Done)"]
+    direction LR
+    P11["P11.1-P11.11 weave pr-review Risk, Lanes & HTML (Done)"]
+    P12["P12.1-P12.2 Extractor Version & Snapshot Wipe (Done)"]
+    P13["P13.1-P13.5 TSX, path:!, Import Provenance, REFERENCES & MCP Spec (Done)"]
+    P14["P14.1-P14.3 Arena + Parallel Index (14.21s, 57 MiB) (Done)"]
+    P14SKIP["P14.4 Sharded Multi-Writer (Skipped)"]
+    P14 -.-> P14SKIP
+  end
+
+  subgraph P15["Phase 15: Code Hygiene Ternary Circuit (Proposed)"]
+    direction LR
+    P151["P15.1 Ternary Evaluator & weights.bin"] --> P152["P15.2 weave hygiene CLI & MCP"]
+    P152 --> P153["P15.3 pr-review Hygiene Gate"]
+    P153 --> P154["P15.4 Isolation & >=90% Cov"]
+  end
+
+  P1 --> P2 --> P3 --> P4_7
+  P4_7 -.-> P5_6_8
+  P3 --> P9_10 --> P11_14
+  P11_14 -.-> P15
+```
+
+**Historical gates and current limits:** M1.4's bidirectional-purge regression and the scoped M1.9 storage/CSR measurement were completed. After repairing the Linux-reported 150 MiB regression, the 2026-09-16 macOS release `mem_500k` run measured 23 MiB after node writes, 24 MiB after edge writes, and 31 MiB after loading 500,000 nodes and 499,999 edges into CSR. See §11 and P4-A/P4-B for the current Linux VM measurements.
+
+**Fresh re-verification (2026-09-22, Darwin 24.6.0,** `scripts/verify_envelope.sh` **after its own** `set -e` **bug fix — see this milestone's own note above):** every gate this script covers passed with the current tree, which now includes all of this session's M7 changes (FTS `body`/`doc_comment` columns, the shared `resolve` fuzzy-fallback module, the grep fallback, the WAL checkpoint valve) compiled into the measured binaries — 0 regressions from any of it. Core (`--no-default-features`) 10.62 MiB; `vector` 10.74 MiB; `lang-extended` 41.26 MiB; `custom` 11.21 MiB — all under their respective 15/50/50/50 MiB budgets. `mem_500k`: SQLite peaked at 12 MiB (nodes), 12 MiB (edges), 24 MiB (CSR) — _lower_ than the 2026-09-16 baseline above, not a regression; Turso peaked at 7/7/19 MiB, the first local Turso data point recorded here.
+
+**Linux VM full re-verification (2026-11-16,** `vmi3759337`**, Linux 6.8.0-149-generic x86_64, 6 vCPUs, 11 GiB RAM, Rust 1.100.0):** completed `scripts/verify_envelope.sh` (`core` `13,386,032` B / `12.77 MiB` ≤ 15 MiB; `vector` `13,544,488` B / `12.92 MiB`; `lang-extended` `45,773,360` B / `43.65 MiB`; `custom` `14,474,440` B / `13.80 MiB`; `sqlite_mem_500k` `52 MiB` ≤ 80 MiB; Turso `mem_500k` `55 MiB` ≤ 80 MiB), the full-CLI 500k-symbol `scripts/pipeline_rss.sh` (**`57 MiB` ≤ 80 MiB indexing peak RSS, exit code `0`**; **`13 MiB` MCP session peak RSS at `3 ms/query`** over 200 queries), `93.88%` default / `91.98%` `--all-features` / `96.72%` Python line coverage across all 9 crates, `P4-A` per-profile index/RSS and 15-run p50/p95 curves, `P4-F` 1k–100k quantized-scan scale sweep (`Recall@10 = 0.980`, `13.04 ms` @ 10k, `130.09 ms` @ 100k) and 3-mode retriever comparison, `P4-G` MCP/Hub gzip crossover numbers, `M7.1`/`M7.4`/`M7.8` FTS 500k/5k DB size and `weave search` RSS (`6.5 MiB`), `P10.1`/`P10.9` real Linux cgroup v2 container run (`--memory=256m --cpus=2`), `benches/csr_memory.rs` + `benches/indexing_throughput.rs` (`235.35 ms` median, `−61.07%`), and `P14.3` 1–6 thread scaling + `WEAVE_INDEX_TIMINGS=1` stage-timing breakdown (`28.55s` → `14.21s`, `2.01×` speedup).
+
+---
+
+\*Authored 2026-09-09; validated against the current tree 2026-09-14; **Linux VM full verification completed 2026-11-16 (\***`vmi3759337`**\*, Linux 6.8.0-149-generic x86_64, 6 vCPUs, 11 GiB RAM, Rust 1.100.0); final documentation alignment with `docs/plan.md`, `docs/progrss.md`, and `docs/proposal_hygine.md` completed 2026-11-23.\*\*** Phase 1–3 status and cross-phase sequencing distinguish implemented source from historical measurements, incomplete CI proof, optional library-only paths, and proposed Phase 4/7/8 work. Phase numbering ran strictly sequential 1–10 as of 2026-09-23, then extended to 11 on 2026-09-30 and 12–14 in October 2026 — Phase 8 (embedding) split out of Phase 4's* `P4-D`*, and Phase 9/10 were added from unapproved internal verification and capability-review notes; Phase 9 completed 2026-09-24 (see §9). Phase 10 completed 2026-09-24 and verified on Linux cgroup v2 + 500k RSS gate (_`57 MiB ≤ 80 MiB`_) on 2026-11-16 (see §10): P10.1/P10.2/P10.3/P10.4/P10.5/P10.7/P10.8 done, P10.9 partial (container scheduling verified in Linux cgroup v2; live LLM-agent benchmark unattempted), P10.6 not started by deliberate choice. M2.17 (_`weave hooks install`_/_`uninstall`_) added 2026-09-27. Phase 11 (P11.1–P11.11, see §13) completed 2026-09-30..2026-10-08. Phase 12 (P12.1–P12.2, see §14) and Phase 13 (P13.1–P13.5, see §15) completed across 2026-10-10 (`P13.1`, `P13.2`, `P13.4`) and 2026-11-24 (`P13.3` import-provenance filtering + `REFERENCES` by-value edges, `P13.5` MCP protocol negotiation + spec-conformance verification). Phase 14 (P14.1–P14.4, see §16, from* `docs/proposal_multi.md`*) landed and was verified on the 6-vCPU Linux VM on 2026-11-16 (*`57 MiB ≤ 80 MiB` *500k CLI RSS,* `13 MiB` *MCP session RSS,* `52/55 MiB` *SQLite/Turso 500k RSS,* `93.88%` *default /* `91.98%` *all-features /* `96.72%` *Python line coverage across all 9 crates, and* `1,303` *all-features Rust tests +* `10` *Python unit tests +* `maturin` *CPython 3.12 wheel E2E all passing). Phase 15 (P15.1–P15.4, see §17, from* `docs/proposal_hygine.md`*) is documented as proposed and not yet started.\*

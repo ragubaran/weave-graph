@@ -264,8 +264,19 @@ impl McpHandler {
             }
         };
 
+        if req.jsonrpc != "2.0" {
+            return Some(JsonRpcResponse::error(
+                req.id,
+                -32600,
+                "Invalid Request: jsonrpc must be \"2.0\"",
+            ));
+        }
+
         match req.method.as_str() {
-            "initialize" => Some(JsonRpcResponse::success(req.id, self.handle_initialize())),
+            "initialize" => Some(JsonRpcResponse::success(
+                req.id,
+                self.handle_initialize(req.params.as_ref()),
+            )),
             "notifications/initialized" => None,
             "ping" => Some(JsonRpcResponse::success(req.id, json!({}))),
             "tools/list" => Some(JsonRpcResponse::success(req.id, self.handle_tools_list())),
@@ -334,15 +345,23 @@ impl McpHandler {
         }
     }
 
-    fn handle_initialize(&self) -> Value {
+    fn handle_initialize(&self, params: Option<&Value>) -> Value {
+        const SUPPORTED: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+        const LATEST: &str = "2025-06-18";
+        let requested = params
+            .and_then(|p| p.get("protocolVersion"))
+            .and_then(Value::as_str);
+        let negotiated = requested
+            .filter(|v| SUPPORTED.contains(v))
+            .unwrap_or(LATEST);
         json!({
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": negotiated,
             "capabilities": {
                 "tools": {}
             },
             "serverInfo": {
                 "name": "weave",
-                "version": "0.1.0"
+                "version": env!("CARGO_PKG_VERSION")
             }
         })
     }

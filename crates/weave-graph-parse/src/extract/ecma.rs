@@ -6,7 +6,8 @@ use tree_sitter::Node;
 
 use super::util::{line_range, qualify, signature_spanning, text};
 use crate::model::{
-    ParsedFile, RawCall, RawStructuralEdge, StructuralEdgeKind, SymbolKind, WiringCard,
+    ImportedSymbol, ParsedFile, RawCall, RawStructuralEdge, StructuralEdgeKind, SymbolKind,
+    WiringCard,
 };
 use crate::moniker;
 
@@ -68,6 +69,7 @@ fn walk(
                     .child_by_field_name("source")
                     .map(|s| unquote(text(s, source)))
                 {
+                    collect_ecma_imported_names(child, source, &target, file);
                     file.structural_edges.push(RawStructuralEdge {
                         source_moniker: format!("{path}#<module>"),
                         target_name: target,
@@ -303,6 +305,51 @@ fn collect_calls(node: Node, source: &[u8], caller_moniker: &str, file: &mut Par
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         collect_calls(child, source, caller_moniker, file);
+    }
+}
+
+fn collect_ecma_imported_names(
+    node: Node,
+    source: &[u8],
+    module_path: &str,
+    file: &mut ParsedFile,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "import_clause" | "named_imports" => {
+                collect_ecma_imported_names(child, source, module_path, file);
+            }
+            "import_specifier" => {
+                let local = child
+                    .child_by_field_name("alias")
+                    .or_else(|| child.child_by_field_name("name"));
+                if let Some(local_node) = local {
+                    file.imported_symbols.push(ImportedSymbol {
+                        local_name: text(local_node, source).to_string(),
+                        module_path: module_path.to_string(),
+                    });
+                }
+            }
+            "identifier" => {
+                file.imported_symbols.push(ImportedSymbol {
+                    local_name: text(child, source).to_string(),
+                    module_path: module_path.to_string(),
+                });
+            }
+            "namespace_import" => {
+                let mut ns_cursor = child.walk();
+                for ns_child in child.children(&mut ns_cursor) {
+                    if ns_child.kind() == "identifier" {
+                        file.imported_symbols.push(ImportedSymbol {
+                            local_name: text(ns_child, source).to_string(),
+                            module_path: module_path.to_string(),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 

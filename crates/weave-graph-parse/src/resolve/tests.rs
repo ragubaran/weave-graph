@@ -381,17 +381,42 @@ fn a_structural_edge_with_multiple_candidates_is_tagged_ambiguous_heuristic() {
 }
 
 #[test]
-fn external_package_import_call_wrongly_resolves_to_an_unrelated_local_function_of_the_same_name() {
-    // No extractor records which names an import brought in (only the
-    // module path, as an IMPORTS edge), so a call through an externally
-    // imported name is indistinguishable from an unrelated same-named local
-    // symbol and wrongly resolves to it with full confidence.
+fn external_package_import_call_does_not_resolve_to_unrelated_local_function() {
+    // External package imports record their module specifier so a call
+    // through an imported name is not matched to an unrelated local symbol.
     let a = parse(
         Language::TypeScript,
         "a.ts",
         "import { helper } from 'external-pkg';\nfunction run() { helper(); }\n",
     );
     let b = parse(Language::TypeScript, "b.ts", "function helper() {}\n");
+    let mut index = ProjectIndex::new();
+    index.add_file(&a);
+    index.add_file(&b);
+
+    let (edges, unresolved) = index.resolve(&a);
+    assert!(
+        edges.is_empty(),
+        "external package import must not resolve to unrelated local symbol: {edges:?}"
+    );
+    assert!(
+        unresolved.contains(&"helper".to_string()),
+        "expected unresolved to contain 'helper': {unresolved:?}"
+    );
+}
+
+#[test]
+fn relative_import_call_still_resolves_to_local_function() {
+    let a = parse(
+        Language::TypeScript,
+        "a.ts",
+        "import { helper } from './b';\nfunction run() { helper(); }\n",
+    );
+    let b = parse(
+        Language::TypeScript,
+        "b.ts",
+        "export function helper() {}\n",
+    );
     let mut index = ProjectIndex::new();
     index.add_file(&a);
     index.add_file(&b);
@@ -404,9 +429,7 @@ fn external_package_import_call_wrongly_resolves_to_an_unrelated_local_function_
             kind: "CALLS_EXACT".into(),
             resolution_kind: ResolutionKind::UniqueGlobalExact,
             extractor: Some("typescript".into()),
-        }],
-        "BUG: a call to a name imported from an external package must not \
-         resolve to an unrelated local function of the same name"
+        }]
     );
 }
 

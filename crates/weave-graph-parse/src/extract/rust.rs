@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use tree_sitter::Node;
 
 use super::util::{line_range, qualify, signature, text};
@@ -216,7 +218,14 @@ fn walk(node: Node, source: &[u8], path: &str, scope: &[String], file: &mut Pars
             }
             "use_declaration" => {
                 if let Some(argument) = child.child_by_field_name("argument") {
+                    let root_mod = use_root_segment(argument, source);
                     for leaf in use_leaves(argument, source) {
+                        if let Some(ref module_path) = root_mod {
+                            file.imported_symbols.push(crate::model::ImportedSymbol {
+                                local_name: leaf.clone(),
+                                module_path: module_path.clone(),
+                            });
+                        }
                         file.structural_edges.push(RawStructuralEdge {
                             source_moniker: format!("{path}#<module>"),
                             target_name: leaf,
@@ -253,6 +262,12 @@ fn push_symbol(
     moniker
 }
 
+fn use_root_segment(node: Node, source: &[u8]) -> Option<String> {
+    let raw = text(node, source);
+    let head = raw.split("::").next()?.trim();
+    (!head.is_empty()).then(|| head.to_string())
+}
+
 /// `use std::a::b::{c, d as e, f::*}` style leaves: only the final
 /// segment of each path matters for our by-short-name resolver, which
 /// resolves within a repo and does not follow full crate paths.
@@ -282,60 +297,156 @@ fn use_leaves(node: Node, source: &[u8]) -> Vec<String> {
 }
 
 fn collect_calls(node: Node, source: &[u8], caller_moniker: &str, file: &mut ParsedFile) {
-    if node.kind() == "call_expression" {
-        if let Some(function) = node.child_by_field_name("function") {
-            let (callee_name, is_member_call) = match function.kind() {
-                "field_expression" => (
-                    function
-                        .child_by_field_name("field")
-                        .map(|f| text(f, source).to_string()),
-                    true,
-                ),
-                "identifier" | "scoped_identifier" => (Some(callee_leaf(function, source)), false),
-                _ => (None, false),
-            };
-            if let Some(callee_name) = callee_name {
-                file.calls.push(RawCall {
-                    caller_moniker: caller_moniker.to_string(),
-                    callee_name,
-                    is_member_call,
-                });
+    let mut locals = HashSet::new();
+    collect_calls_with_locals(node, source, caller_moniker, &mut locals, file);
+}
+
+fn collect_calls_with_locals(
+    node: Node,
+    source: &[u8],
+    caller_moniker: &str,
+    locals: &mut HashSet<String>,
+    file: &mut ParsedFile,
+) {
+    match node.kind() {
+        "let_declaration" => {
+            if let Some(pat) = node.child_by_field_name("pattern") {
+                collect_pattern_locals(pat, source, locals);
+            }
+            if let Some(val) = node.child_by_field_name("value") {
+                record_value_reference(val, source, caller_moniker, locals, file);
             }
         }
-        // Reuses this same traversal rather than a second pass over the
-        // file — every `call_expression` is already visited here. `path`
-        // is recovered from `caller_moniker` (`moniker::build`'s own
-        // `"{path}#{symbol}"` format) rather than threading a new
-        // parameter through every `collect_calls` call site.
-        #[cfg(feature = "framework-routes")]
-        if let Some((file_path, _)) = caller_moniker.split_once('#')
-            && let Some(route) = axum_route::detect(node, source, file_path)
-        {
-            file.symbols.push(route.symbol);
-            file.structural_edges.push(route.edge);
-        }
-    } else if node.kind() == "macro_invocation"
-        && let Some(macro_node) = node.child_by_field_name("macro")
-    {
-        let m_name = text(macro_node, source);
-        if (m_name == "env" || m_name == "option_env")
-            && let Some(token_tree) = super::util::child_by_kind(node, "token_tree")
-        {
-            let raw = text(token_tree, source);
-            let var_name =
-                raw.trim_matches(|c| c == '(' || c == ')' || c == '"' || c == ' ' || c == '\n');
-            if !var_name.is_empty() {
-                file.structural_edges.push(RawStructuralEdge {
-                    source_moniker: caller_moniker.to_string(),
-                    target_name: var_name.to_string(),
-                    kind: StructuralEdgeKind::Imports,
-                });
+        "for_expression" => {
+            if let Some(pat) = node.child_by_field_name("pattern") {
+                collect_pattern_locals(pat, source, locals);
             }
         }
+        "closure_expression" => {
+            if let Some(params) = node.child_by_field_name("parameters") {
+                collect_pattern_locals(params, source, locals);
+            }
+        }
+        "call_expression" => {
+            if let Some(function) = node.child_by_field_name("function") {
+                let (callee_name, is_member_call) = match function.kind() {
+                    "field_expression" => (
+                        function
+                            .child_by_field_name("field")
+                            .map(|f| text(f, source).to_string()),
+                        true,
+                    ),
+                    "identifier" | "scoped_identifier" => {
+                        (Some(callee_leaf(function, source)), false)
+                    }
+                    _ => (None, false),
+                };
+                if let Some(callee_name) = callee_name {
+                    file.calls.push(RawCall {
+                        caller_moniker: caller_moniker.to_string(),
+                        callee_name,
+                        is_member_call,
+                    });
+                }
+            }
+            if let Some(args) = node.child_by_field_name("arguments") {
+                let mut ac = args.walk();
+                for arg in args.named_children(&mut ac) {
+                    record_value_reference(arg, source, caller_moniker, locals, file);
+                }
+            }
+            #[cfg(feature = "framework-routes")]
+            if let Some((file_path, _)) = caller_moniker.split_once('#')
+                && let Some(route) = axum_route::detect(node, source, file_path)
+            {
+                file.symbols.push(route.symbol);
+                file.structural_edges.push(route.edge);
+            }
+        }
+        "return_expression" | "assignment_expression" | "field_initializer" => {
+            let value_node = node
+                .child_by_field_name("right")
+                .or_else(|| node.child_by_field_name("value"))
+                .or_else(|| node.named_child(0));
+            if let Some(val) = value_node {
+                record_value_reference(val, source, caller_moniker, locals, file);
+            }
+        }
+        "array_expression" | "tuple_expression" => {
+            let mut tc = node.walk();
+            for item in node.named_children(&mut tc) {
+                record_value_reference(item, source, caller_moniker, locals, file);
+            }
+        }
+        "macro_invocation" => {
+            if let Some(macro_node) = node.child_by_field_name("macro") {
+                let m_name = text(macro_node, source);
+                if (m_name == "env" || m_name == "option_env")
+                    && let Some(token_tree) = super::util::child_by_kind(node, "token_tree")
+                {
+                    let raw = text(token_tree, source);
+                    let var_name = raw.trim_matches(|c| {
+                        c == '(' || c == ')' || c == '"' || c == ' ' || c == '\n'
+                    });
+                    if !var_name.is_empty() {
+                        file.structural_edges.push(RawStructuralEdge {
+                            source_moniker: caller_moniker.to_string(),
+                            target_name: var_name.to_string(),
+                            kind: StructuralEdgeKind::Imports,
+                        });
+                    }
+                }
+            }
+        }
+        _ => {}
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_calls(child, source, caller_moniker, file);
+        collect_calls_with_locals(child, source, caller_moniker, locals, file);
+    }
+}
+
+fn collect_pattern_locals(node: Node, source: &[u8], locals: &mut HashSet<String>) {
+    if node.kind() == "identifier" {
+        locals.insert(text(node, source).to_string());
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_pattern_locals(child, source, locals);
+    }
+}
+
+fn record_value_reference(
+    node: Node,
+    source: &[u8],
+    caller_moniker: &str,
+    locals: &HashSet<String>,
+    file: &mut ParsedFile,
+) {
+    if node.kind() != "identifier" && node.kind() != "scoped_identifier" {
+        return;
+    }
+    let name = callee_leaf(node, source);
+    if locals.contains(&name)
+        || matches!(
+            name.as_str(),
+            "self" | "Self" | "super" | "crate" | "true" | "false" | "None" | "Some" | "Ok" | "Err"
+        )
+    {
+        return;
+    }
+    let already_recorded = file.structural_edges.iter().any(|e| {
+        e.kind == StructuralEdgeKind::References
+            && e.source_moniker == caller_moniker
+            && e.target_name == name
+    });
+    if !already_recorded {
+        file.structural_edges.push(RawStructuralEdge {
+            source_moniker: caller_moniker.to_string(),
+            target_name: name,
+            kind: StructuralEdgeKind::References,
+        });
     }
 }
 

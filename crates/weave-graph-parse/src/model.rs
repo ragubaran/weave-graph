@@ -56,9 +56,10 @@ pub struct RawCall {
     pub is_member_call: bool,
 }
 
-/// `IMPORTS`/`INHERITS`/`IMPLEMENTS` structural edges.
+/// `IMPORTS`/`INHERITS`/`IMPLEMENTS`/`REFERENCES` structural edges.
 /// `target_name` is the raw textual reference (an import path, a base
-/// class, a trait); these resolve the same way `RawCall` does.
+/// class, a trait, or a by-value symbol reference); these resolve the
+/// same way `RawCall` does.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawStructuralEdge {
     pub source_moniker: String,
@@ -71,6 +72,7 @@ pub enum StructuralEdgeKind {
     Imports,
     Inherits,
     Implements,
+    References,
     /// P10.8: a route declaration edge to its handler function.
     #[cfg(feature = "framework-routes")]
     Handles,
@@ -82,10 +84,20 @@ impl StructuralEdgeKind {
             StructuralEdgeKind::Imports => "IMPORTS",
             StructuralEdgeKind::Inherits => "INHERITS",
             StructuralEdgeKind::Implements => "IMPLEMENTS",
+            StructuralEdgeKind::References => "REFERENCES",
             #[cfg(feature = "framework-routes")]
             StructuralEdgeKind::Handles => "ROUTES_TO",
         }
     }
+}
+
+/// Records an imported local symbol name and its source module specifier
+/// so call resolution can avoid matching external-package calls to
+/// unrelated local symbols of the same name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportedSymbol {
+    pub local_name: String,
+    pub module_path: String,
 }
 
 /// Everything extracted from one source file.
@@ -94,6 +106,7 @@ pub struct ParsedFile {
     pub symbols: Vec<WiringCard>,
     pub calls: Vec<RawCall>,
     pub structural_edges: Vec<RawStructuralEdge>,
+    pub imported_symbols: Vec<ImportedSymbol>,
 }
 
 #[cfg(test)]
