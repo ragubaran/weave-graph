@@ -185,3 +185,145 @@ fn pull_model_creates_parent_directory_before_curl() {
         "parent dir must be created before curl spawn"
     );
 }
+
+struct StubRouter(Result<RoutedCall, ()>);
+
+impl IntentRouter for StubRouter {
+    fn route(&self, _: &str, _: &[String]) -> Result<RoutedCall, RouterError> {
+        self.0
+            .clone()
+            .map_err(|()| RouterError::Unavailable("stub".to_string()))
+    }
+
+    fn name(&self) -> &'static str {
+        "stub"
+    }
+}
+
+fn call(tool: &str, symbol: &str) -> RoutedCall {
+    RoutedCall {
+        tool: tool.to_string(),
+        symbol: symbol.to_string(),
+        second: None,
+    }
+}
+
+#[test]
+fn doctor_reports_wrong_tool_wrong_symbol_and_total_failure() {
+    let wrong_tool = run_doctor(&StubRouter(Ok(call("nonexistent", "x"))));
+    assert!(!wrong_tool.pass());
+    assert!(wrong_tool.failures[0].contains("tool nonexistent"));
+
+    let wrong_symbol = run_doctor(&StubRouter(Ok(call("callers", "zzz"))));
+    assert!(
+        wrong_symbol
+            .failures
+            .iter()
+            .any(|f| f.contains("symbol zzz"))
+    );
+
+    let failed = run_doctor(&StubRouter(Err(())));
+    assert!(failed.fallback_used);
+    let report = render_doctor("m", &failed);
+    assert!(report.contains("routing failed entirely"));
+    assert!(report.contains("no graceful per-entry fallback"));
+    assert!(report.ends_with("→ FAIL"));
+}
+
+#[test]
+fn sha256_file_hashes_content_and_reports_missing_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let file = tmp.path().join("f");
+    std::fs::write(&file, b"abc").unwrap();
+    assert_eq!(
+        sha256_file(&file).unwrap(),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    assert!(sha256_file(&tmp.path().join("missing")).is_err());
+}
+
+#[test]
+fn pull_model_installs_on_match_and_removes_partial_on_mismatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src.gguf");
+    std::fs::write(&src, b"abc").unwrap();
+    let url: &'static str = Box::leak(format!("file://{}", src.display()).into_boxed_str());
+    let spec = ModelSpec {
+        name: "local",
+        url,
+        ram_mb: 0,
+        role: "test",
+    };
+    let good = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    let bad_dest = tmp.path().join("bad.gguf");
+    let err = pull_model(&spec, &"0".repeat(64), &bad_dest).unwrap_err();
+    assert!(err.contains("checksum mismatch"), "{err}");
+    assert!(!bad_dest.exists());
+    assert!(!bad_dest.with_extension("gguf.part").exists());
+
+    let dest = tmp.path().join("ok.gguf");
+    pull_model(&spec, &good.to_uppercase(), &dest).unwrap();
+    assert_eq!(std::fs::read(&dest).unwrap(), b"abc");
+}
+
+#[test]
+fn pull_model_reports_a_failed_download() {
+    let tmp = tempfile::tempdir().unwrap();
+    let spec = ModelSpec {
+        name: "gone",
+        url: "file:///nonexistent/weave-model.gguf",
+        ram_mb: 0,
+        role: "test",
+    };
+    let err = pull_model(&spec, &"0".repeat(64), &tmp.path().join("m.gguf")).unwrap_err();
+    assert!(err.contains("download failed"), "{err}");
+}
+
+#[cfg(unix)]
+fn fake_llama(dir: &std::path::Path, body: &str) -> LlamaCliRouter {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("llama");
+    std::fs::write(&bin, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let model = dir.join("m.gguf");
+    std::fs::write(&model, b"x").unwrap();
+    LlamaCliRouter {
+        llama_bin: bin.display().to_string(),
+        model_path: model,
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn llama_router_parses_subprocess_output_and_maps_failures() {
+    let tmp = tempfile::tempdir().unwrap();
+    let symbols = table(&["helper"]);
+
+    let ok = fake_llama(
+        tmp.path(),
+        r#"echo '{"tool":"callers","symbol":"helper","second":null}'"#,
+    );
+    let routed = ok.route("who calls helper?", &symbols).unwrap();
+    assert_eq!(routed.expression(), "callers(helper)");
+
+    let failing = fake_llama(tmp.path(), "exit 3");
+    let err = failing.route("q", &symbols).unwrap_err();
+    assert!(matches!(err, RouterError::Unavailable(m) if m.contains("exit status")));
+
+    let missing_bin = LlamaCliRouter {
+        llama_bin: tmp.path().join("nope").display().to_string(),
+        model_path: tmp.path().join("m.gguf"),
+    };
+    let err = missing_bin.route("q", &symbols).unwrap_err();
+    assert!(matches!(err, RouterError::Unavailable(_)));
+}
+
+#[test]
+fn build_prompt_lists_at_most_200_symbols() {
+    let names: Vec<String> = (0..300).map(|i| format!("sym{i}")).collect();
+    let prompt = build_prompt("q?", &names);
+    assert!(prompt.contains("sym199"));
+    assert!(!prompt.contains("sym200"));
+    assert!(prompt.ends_with("Question: q?"));
+}
